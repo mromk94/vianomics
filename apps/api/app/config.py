@@ -20,6 +20,18 @@ class Settings(BaseSettings):
     # Hard gate: no order path may execute unless this is enabled AND
     # risk + human approvals exist. Default off.
     execution_enabled: bool = False
+    execution_broker: str = "paper"   # paper|ibkr — only 'paper' works
+    max_order_notional: float = 100_000
+    max_order_qty: float = 100_000
+    # IBKR — all required before the adapter instantiates
+    ibkr_host: str | None = None
+    ibkr_port: int | None = None
+    ibkr_client_id: int | None = None
+
+    @property
+    def ibkr_configured(self) -> bool:
+        return bool(self.execution_enabled and self.ibkr_host
+                    and self.ibkr_port and self.ibkr_client_id)
 
     @property
     def cors_origin_list(self) -> list[str]:

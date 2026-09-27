@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { CandlestickSeries, createChart, HistogramSeries, LineSeries } from "lightweight-charts";
 
 import { apiGet } from "@/lib/api";
-import { fmtNum } from "@/lib/format";
+import { fmtNum, fmtTime } from "@/lib/format";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
@@ -43,6 +43,20 @@ interface ScanRow {
   last_close: number | null; fresh: boolean;
 }
 
+interface ExecOrder {
+  id: string; symbol: string; broker: string; side: string;
+  qty: number; status: string; filled_qty: number;
+  avg_fill: number | null; commission: number | null;
+  reject: string | null; submit_latency_ms: number | null;
+  idempotency: string; created_at: string;
+}
+
+interface ExecStatus {
+  execution_enabled: boolean; execution_broker: string;
+  kill_switch: boolean; fsm_version: string;
+  adapters: Record<string, { operational: boolean; reason?: string; mode?: string }>;
+}
+
 const TFS = ["1d", "2d", "3d", "1w", "1mo"] as const;
 const TONE: Record<string, "pos" | "warn" | "neg" | "info"> = {
   entry_signal: "pos", wait: "warn", invalid_data: "info",
@@ -62,10 +76,14 @@ export function TradingPage() {
   const [scan, setScan] = useState<ScanRow[]>([]);
   const [delayed, setDelayed] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [orders, setOrders] = useState<ExecOrder[]>([]);
+  const [exec, setExec] = useState<ExecStatus | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     apiGet<ScanRow[]>("/api/v1/technical/scan").then(setScan).catch(() => {});
+    apiGet<ExecOrder[]>("/api/v1/execution/orders").then(setOrders).catch(() => {});
+    apiGet<ExecStatus>("/api/v1/execution/status").then(setExec).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -250,6 +268,42 @@ export function TradingPage() {
       {/* scan table */}
       <SectionCard title="Universe scan" className="rise rise-2">
         <DataTable columns={scanCols} rows={scan} rowKey={(r) => r.symbol} />
+      </SectionCard>
+
+      {/* Part 30 — execution blotter */}
+      <SectionCard title={`Order blotter — ${exec?.execution_broker ?? "paper"} lane`} className="rise"
+        action={
+          <div className="flex items-center gap-2">
+            {exec?.kill_switch && <StatusBadge tone="neg">KILL SWITCH ON</StatusBadge>}
+            {!exec?.execution_enabled && <StatusBadge tone="info">live disabled</StatusBadge>}
+            <span className="text-[10px] text-faint">{exec?.fsm_version}</span>
+          </div>
+        }>
+        {orders.length === 0 ? (
+          <EmptyState title="No orders" hint="Approved order tickets submit through the paper lane; live trading stays disabled until configured." />
+        ) : (
+          <DataTable
+            columns={[
+              { key: "s", header: "Symbol", render: (r: ExecOrder) => <span className="font-semibold text-accent">{r.symbol}</span> },
+              { key: "sd", header: "Side", render: (r) => <StatusBadge tone={r.side === "buy" ? "pos" : "neg"}>{r.side}</StatusBadge> },
+              { key: "q", header: "Qty", align: "right", render: (r) => <span className="num">{r.qty}</span> },
+              { key: "st", header: "Status", render: (r) => <StatusBadge tone={r.status === "filled" ? "pos" : r.status === "rejected" ? "neg" : "info"}>{r.status}</StatusBadge> },
+              { key: "f", header: "Fill", align: "right", render: (r) => <span className="num">{r.avg_fill ? `$${fmtNum(r.avg_fill, 2)}` : "—"}</span> },
+              { key: "c", header: "Comm.", align: "right", render: (r) => <span className="num">{r.commission != null ? `$${r.commission}` : "—"}</span> },
+              { key: "l", header: "Latency", align: "right", render: (r) => <span className="num text-faint">{r.submit_latency_ms ?? "—"}ms</span> },
+              { key: "id", header: "Idem", render: (r) => <span className="text-[10px] text-faint">{r.idempotency}</span> },
+              { key: "t", header: "Time", align: "right", render: (r) => <span className="num text-faint text-[11px]">{fmtTime(r.created_at)}</span> },
+            ]}
+            rows={orders} rowKey={(r) => r.id}
+          />
+        )}
+        {exec && (
+          <div className="mt-2 flex gap-4 text-[10px] text-faint">
+            {Object.entries(exec.adapters).map(([k, a]) => (
+              <span key={k}>{k}: {a.operational ? <span className="text-pos">{a.mode}</span> : <span title={a.reason}>not configured</span>}</span>
+            ))}
+          </div>
+        )}
       </SectionCard>
     </div>
   );

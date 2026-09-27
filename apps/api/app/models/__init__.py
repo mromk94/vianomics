@@ -8,6 +8,7 @@ from app.models.dossier import (
     EvidenceItem,
 )
 from app.models.fundamentals import FundamentalObservation, FinancialStatement
+from app.models.execution import BrokerOrderRec, ExecutionEvent, KillSwitch
 from app.models.governance import (
     Approval, DecisionRecord, ExitSignal, OrderTicket, RiskAssessment,
 )
