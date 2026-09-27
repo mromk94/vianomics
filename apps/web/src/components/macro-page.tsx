@@ -91,7 +91,7 @@ export function MacroPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader info='Economic regime (expansion/slowdown/recession) and market risk appetite from FRED, VIX and Fear & Greed. Regime feeds sizing and sector rotation.'
         title="Macro Regime"
         subtitle={`rules ${r?.rules_version ?? "—"} · overlays are portfolio inputs, not signals`}
         actions={

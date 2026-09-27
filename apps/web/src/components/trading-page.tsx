@@ -156,7 +156,7 @@ export function TradingPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Trading Desk" subtitle={`Branch A mean reversion · Branch B trend following — ${sig?.params_version ?? ""}`}
+      <PageHeader title="Trading Desk" info='Chart + order blotter. Orders come only from approved decisions; kill switch and size caps apply. Live trading stays off unless explicitly configured.' subtitle={`Branch A mean reversion · Branch B trend following — ${sig?.params_version ?? ""}`}
         meta={sig ? `${sig.bars} bars · last ${sig.last_bar_time?.slice(0, 10)} · ${delayed ? "delayed EOD (yahoo)" : ""}` : undefined}
         actions={<SearchInput value={symbol} onChange={(v) => setSymbol(v.toUpperCase())} className="w-32" />} />
       {sig?.freshness_note && <div className="glass border-warn/40 p-3 text-[12px] text-warn">{sig.freshness_note}</div>}

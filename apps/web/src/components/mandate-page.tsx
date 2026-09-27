@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+ import { useEffect, useState } from "react";
 
 import { apiGet, apiPost, ApiError, getToken, setToken } from "@/lib/api";
 import { fmtTime } from "@/lib/format";
@@ -40,6 +40,85 @@ interface Mandate {
 interface Me {
   email: string;
   permissions: string[];
+}
+
+interface EnvKey {
+  label: string; var: string; set: boolean; where: string;
+  unlocks: string;
+}
+interface EnvStatus {
+  env: EnvKey[];
+  models: { area: string; current: string; notes: string }[];
+  execution_enabled: boolean;
+  execution_broker: string;
+  demo_fixtures: boolean;
+}
+
+/** API keys, data sources, models — shows what IS configured without
+ * ever exposing values. Keys live in the server's .env — see /docs. */
+function EnvSettings() {
+  const [cfg, setCfg] = useState<EnvStatus | null>(null);
+  useEffect(() => {
+    apiGet<EnvStatus>("/api/v1/settings/env").then(setCfg).catch(() => {});
+  }, []);
+  if (!cfg) return null;
+  return (
+    <>
+      <SectionCard title="API keys & data sources" className="rise"
+        action={
+          <a href="/docs#keys" className="text-accent text-[11px] hover:underline">
+            setup guide →
+          </a>
+        }>
+        <p className="mb-3 text-[11px] text-dim">
+          Keys live in the server&apos;s <code className="text-accent">apps/api/.env</code> file — never
+          typed into the browser, never shown back. Add a line like{" "}
+          <code className="text-accent">TIINGO_API_KEY=your-key</code>, restart
+          the API, and this list flips to ✓.
+        </p>
+        <ul className="space-y-1.5">
+          {cfg.env.map((k) => (
+            <li key={k.var} className="glass-tile flex items-start justify-between gap-3 px-3 py-2">
+              <div>
+                <div className="flex items-center gap-2 text-[12px]">
+                  <span className="font-medium">{k.label}</span>
+                  <code className="text-[10px] text-faint">{k.var}</code>
+                  <StatusBadge tone={k.set ? "pos" : "warn"}>
+                    {k.set ? "set" : "not set"}
+                  </StatusBadge>
+                </div>
+                <div className="mt-0.5 text-[11px] text-dim">
+                  {k.unlocks} · <span className="text-faint">{k.where}</span>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </SectionCard>
+
+      <SectionCard title="Models & engines" className="rise">
+        <ul className="space-y-1.5">
+          {cfg.models.map((m) => (
+            <li key={m.area} className="glass-tile px-3 py-2">
+              <div className="flex items-center gap-2 text-[12px]">
+                <span className="font-medium">{m.area}</span>
+                <StatusBadge tone="info">{m.current}</StatusBadge>
+              </div>
+              <div className="mt-0.5 text-[11px] text-dim">{m.notes}</div>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-3 text-[11px] text-dim">
+          Execution: broker <b className="text-text">{cfg.execution_broker}</b> ·
+          live trading <b className={cfg.execution_enabled ? "text-neg" : "text-pos"}>
+            {cfg.execution_enabled ? "ENABLED" : "disabled"}</b> ·
+          demo fixtures {cfg.demo_fixtures ? "on" : "off"}.
+          Turning on live trading requires IBKR configured + human approval —
+          see <a href="/docs#execution" className="text-accent hover:underline">docs → execution</a>.
+        </p>
+      </SectionCard>
+    </>
+  );
 }
 
 const FIELDS: { key: keyof Mandate; label: string; suffix?: string }[] = [
@@ -141,6 +220,7 @@ export function MandatePage() {
       <PageHeader
         title="Settings & Investment Mandate"
         subtitle="Constitutional constraints — versioned, audited, effective-dated"
+        info="Configure the investment mandate, your account, API keys and models. Policy shapes analysis — it never auto-trades."
       />
       {notice && <div className="glass border-warn/40 p-3 text-[13px] text-warn">{notice}</div>}
       {error && <ErrorState title="Cannot reach the VAIIP API" detail={error} onRetry={load} />}
@@ -301,6 +381,8 @@ export function MandatePage() {
           </ul>
         )}
       </SectionCard>
+
+      <EnvSettings />
     </div>
   );
 }

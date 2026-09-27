@@ -27,7 +27,7 @@ export function MarketPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Market Overview"
+      <PageHeader title="Market Overview" info='Latest daily price for every tracked instrument. Prices are end-of-day from your market-data provider — not a live tape.'
         subtitle="latest daily bars per instrument — delayed EOD data, not a live tape"
         meta={rows ? `${rows.length} instruments` : ""} />
       {error && <ErrorState title="API error" detail={error} />}

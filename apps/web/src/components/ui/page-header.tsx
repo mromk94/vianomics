@@ -1,3 +1,5 @@
+import { InfoTip } from "./info-tip";
+
 export function PageHeader({
   title,
   subtitle,
@@ -5,6 +7,7 @@ export function PageHeader({
   meta,
   actions,
   demo = false,
+  info,
 }: {
   title: string;
   subtitle?: string;
@@ -12,6 +15,8 @@ export function PageHeader({
   meta?: React.ReactNode;
   actions?: React.ReactNode;
   demo?: boolean;
+  /** Plain-language explanation shown behind the ⓘ icon. */
+  info?: string;
 }) {
   const sub = subtitle ?? description;
   return (
@@ -19,6 +24,7 @@ export function PageHeader({
       <div>
         <h1 className="flex items-center gap-2.5 text-lg font-semibold tracking-tight">
           {title}
+          {info && <InfoTip text={info} />}
           {demo && (
             <span className="rounded-full border border-warn/40 bg-warn-bg px-2 py-px text-[10px] font-bold tracking-wider text-warn">
               DEMO

@@ -95,7 +95,7 @@ export function QuantPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader info='Statistical factors — momentum, volatility, beta, correlations — computed from price history. Numbers only; no AI opinion.'
         title="Quantitative Intelligence"
         subtitle="Factor analytics — simple daily returns · 252d annualization · rf 4% · SPY benchmark (delayed EOD)"
       />

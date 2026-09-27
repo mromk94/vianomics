@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+ import { useEffect, useMemo, useState } from "react";
 import { Search, ShieldCheck, X } from "lucide-react";
 
 import { apiGet, apiPost, ApiError, getToken } from "@/lib/api";
@@ -178,6 +178,7 @@ export function UniversePage() {
       <PageHeader
         title="Investment Universe"
         subtitle="Security master — Global → Eligible → Approved → Securities"
+        info="The set of stocks the system may evaluate — mandate filters (sector, market cap, exclusions) apply here first."
       />
       {notice && (
         <div className="glass border-warn/40 p-3 text-[13px] text-warn">{notice}</div>

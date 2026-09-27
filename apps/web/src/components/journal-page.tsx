@@ -60,7 +60,7 @@ export function JournalPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Decision Journal"
+      <PageHeader title="Decision Journal" info='Immutable audit trail — every decision, gate result, agent score, approval and order is recorded and replayable.'
         subtitle="immutable decision ledger — replay reconstructs from stored snapshots only" />
       {error && <ErrorState title="API error" detail={error} />}
       {loading && <SkeletonRows />}

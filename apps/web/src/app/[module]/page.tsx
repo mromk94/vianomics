@@ -14,6 +14,7 @@ import { findModule } from "@/lib/modules";
 
 import { AllocationPage } from "@/components/allocation-page";
 import { DataOpsPage } from "@/components/dataops-page";
+import { DocsPage } from "@/components/docs-page";
 import { MarketPage } from "@/components/market-page";
 import { PortfolioPage } from "@/components/portfolio-page";
 import { TechnicalPage } from "@/components/technical-page";
@@ -40,6 +41,7 @@ const REAL_PAGES: Record<string, React.ComponentType> = {
   portfolio: PortfolioPage,
   allocation: AllocationPage,
   "data-ops": DataOpsPage,
+  docs: DocsPage,
   settings: MandatePage,
 };
 

@@ -228,6 +228,15 @@ export const NAV: NavGroup[] = [
           "Provider health, ingestion jobs, freshness and provenance.",
       },
       {
+        slug: "docs",
+        label: "Docs & Help",
+        icon: BookOpen,
+        parts: [],
+        milestone: "—",
+        description:
+          "How every feature works, where data comes from, and how to operate the platform.",
+      },
+      {
         slug: "settings",
         label: "Settings & Mandate",
         icon: Settings,
