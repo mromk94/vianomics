@@ -202,7 +202,7 @@
 - **Modules:** `agents/risk_manager` — hybrid: deterministic limit checks + LLM risk narrative. Backend gate cannot be bypassed by CIO.
 - **Acceptance:** Blocks an otherwise-perfect candidate on limit violation; veto visible in decision tree output.
 - **Tests:** Veto enforcement; PASS checklist (12 pre-approval checks from PDF Part 16).
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — risk agent gated by check_order; missing RM response → NO_TRADE (never pass); BLOCK = absolute veto; veto reason surfaced in CIO output
 
 ### D1.17 | Part 17 — Portfolio Manager Agent
 - **Required:** "Best use of capital now?" — construction, allocation, opportunity cost vs marginal holding, rebalancing, sector exposure, Sharpe, correlations, F&G awareness, pyramid capacity.
@@ -210,7 +210,7 @@
 - **Modules:** `agents/portfolio_manager` + `engines/portfolio/`.
 - **Acceptance:** Allocation/reduce/watchlist recommendation vs current portfolio.
 - **Tests:** Opportunity-cost comparison logic.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — PM agent evaluates allocation lens (MOS proxy vs marginal holding, sector fit, gate constraints); score never overrides gate
 
 ### D1.18 | Part 18 — Capital Allocation Engine
 - **Required:** Candidate vs marginal holding on expected risk-adjusted return → Portfolio or Watchlist.
@@ -218,7 +218,7 @@
 - **Modules:** `engines/portfolio/capital_allocation` — deterministic comparator.
 - **Acceptance:** Correct accept/relegate decision with comparison record.
 - **Tests:** Comparator math; tie handling.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — candidate-vs-portfolio via check_order + expected-return proxy (MOS); allocation ≠ investment quality
 
 ### D1.19 | Part 19 — CIO Agent
 - **Required:** Synthesizes all agent outputs → Recommendation, Rating (Strong Buy→Sell), Confidence, Expected Return, Downside, MOS, R/R, Horizon, Catalysts, Thesis, Risks, Invalidation + Kill Conditions.
@@ -226,7 +226,7 @@
 - **Modules:** `agents/cio` — structured-output LLM synthesis over Part-28 inputs.
 - **Acceptance:** Coherent structured recommendation under conflicting inputs; cannot emit EXECUTE.
 - **Tests:** Schema validation; veto propagation; contradiction handling.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — cio_synthesize: weighted score (fund/val/r1/quant/macro/tech/pm), verdict ladder approve_pending_human→watchlist→reject, invalidation conditions + sizing + portfolio fit; cannot emit EXECUTE
 
 ### D1.20 | Part 20 — CIO Confidence Model
 - **Required:** Confidence = f(agent agreement, evidence quality, data freshness, model uncertainty, valuation sensitivity, contradictions, risk) — **not** probability of return.
@@ -234,7 +234,7 @@
 - **Modules:** `engines/governance/confidence` — deterministic scoring function.
 - **Acceptance:** High contradiction/stale data → measurably lower confidence.
 - **Tests:** Monotonicity on each factor.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — confidence = 0.35 + 0.25×agreement + 0.20×data_quality − 0.05×contradictions − 0.03×gaps, clamped 0–1; output labeled NOT a probability of returns
 
 ### D1.21 | Part 21 — Agent Conflict Resolution Protocol
 - **Required:** Formal rules: Risk BLOCK → NO TRADE regardless of other votes; thesis-vs-eligibility distinction preserved in output text.
@@ -242,7 +242,7 @@
 - **Modules:** `engines/governance/conflict_resolver`.
 - **Acceptance:** The documented 7-agent example resolves to NO TRADE with correct explanation.
 - **Tests:** Truth table of agent combinations.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — resolve_conflict: missing RM → no_trade; BLOCK → no_trade; any rec split → recorded disagreement (not averaged)
 
 ### D1.22 | Part 22 — Master Investment Decision Tree
 - **Required:** Single orchestrating gate: Universe→GreenZone→Research→Rule#1→MOS→Quant→Macro→Technical→ATR/Risk→PortfolioFit→CIO→Human→Execution. Each gate emits REJECT/WATCHLIST/WAIT/REVIEW/BLOCK semantics per spec.
