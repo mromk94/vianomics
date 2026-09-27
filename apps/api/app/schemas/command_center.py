@@ -33,6 +33,7 @@ class RegimeSnapshot(BaseModel):
     market_regime: str | None = None     # Risk-on/Neutral/Risk-off
     fear_greed: int | None = None
     vix: float | None = None
+    macro_indicators: dict[str, str] = Field(default_factory=dict)
 
 
 class RiskUtilization(BaseModel):
@@ -42,6 +43,9 @@ class RiskUtilization(BaseModel):
     sector_limit_pct: float = 25.0
     max_position_pct: float | None = None
     position_limit_pct: float = 10.0
+    var_95: float | None = None
+    stress_10pct: float | None = None
+    avg_correlation: float | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -85,6 +89,42 @@ class ProviderHealth(BaseModel):
     detail: str | None = None
 
 
+class CioBlock(BaseModel):
+    rating: str | None = None            # STRONG BUY|BUY|HOLD|SELL
+    confidence: int | None = None        # 0-100, Part-20 model (not P&L prob)
+    expected_return_pct: float | None = None
+    mos_pct: float | None = None
+    risk_veto: str | None = None         # None|reason — veto is absolute
+    kill_conditions: list[str] = Field(default_factory=list)
+    conflict_note: str | None = None
+
+
+class AgentVote(BaseModel):
+    agent: str
+    recommendation: str                  # BUY|SELL|NEUTRAL|BLOCK…
+    score: int | None = None
+
+
+class SectorPerf(BaseModel):
+    sector: str
+    weight_pct: float | None = None
+    day_pct: float | None = None
+    week_pct: float | None = None
+    momentum: float | None = None        # 0-100 bar
+
+
+class CalendarEvent(BaseModel):
+    title: str
+    at: str
+    detail: str | None = None
+
+
+class TradeSignal(BaseModel):
+    kind: str                            # entry|exit|pyramid|risk
+    message: str
+    danger: bool = False
+
+
 class Section(BaseModel):
     """A command-center section. `demo=True` means fixture data — the UI
     must label it. Empty/null collections with demo=False are real empty
@@ -99,6 +139,11 @@ class CommandCenterResponse(BaseModel):
     split: PortfolioSplit
     regime: RegimeSnapshot
     risk: RiskUtilization
+    cio: CioBlock = Field(default_factory=CioBlock)
+    agents: list[AgentVote] = Field(default_factory=list)
+    sectors: list[SectorPerf] = Field(default_factory=list)
+    calendar: list[CalendarEvent] = Field(default_factory=list)
+    signals: list[TradeSignal] = Field(default_factory=list)
     watchlist: list[WatchlistItem] = Field(default_factory=list)
     approvals: list[ApprovalItem] = Field(default_factory=list)
     alerts: list[AlertItem] = Field(default_factory=list)

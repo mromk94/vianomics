@@ -17,41 +17,34 @@ export function Sidebar({
 
   const body = (
     <>
-      <div className="mb-4 flex items-center justify-between px-2">
-        <Link
-          href="/"
-          className="flex items-center gap-2"
-          onClick={onClose}
-          aria-label="VAIIP home"
-        >
-          <span className="flex size-7 items-center justify-center rounded bg-brand text-[13px] font-bold text-black">
-            V
-          </span>
-          <span className="leading-tight">
-            <span className="block text-sm font-semibold tracking-wide">
-              VIANOMICS
-            </span>
-            <span className="block text-[10px] tracking-wider text-faint uppercase">
-              VAIIP · Trader OS
-            </span>
-          </span>
-        </Link>
-        <button
-          onClick={onClose}
-          aria-label="Close navigation"
-          className="rounded p-1 text-dim hover:text-text lg:hidden"
-        >
-          <X className="size-4" />
-        </button>
-      </div>
+      {/* User profile pill — mockup style */}
+      <Link
+        href="/settings"
+        onClick={onClose}
+        className="mb-4 flex items-center gap-3 rounded-full border border-border-strong bg-surface-2 px-2.5 py-2 transition-colors hover:border-accent/40"
+      >
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand to-[#f5a623] text-[13px] font-bold text-[#0b0f1a]">
+          DU
+        </span>
+        <span className="flex flex-col leading-tight">
+          <span className="text-sm font-semibold">Dere Ukere</span>
+          <span className="text-[11px] text-dim">CTO &amp; Co-Founder</span>
+        </span>
+      </Link>
 
-      <nav aria-label="Primary" className="flex-1 space-y-4 overflow-y-auto">
+      <nav aria-label="Primary" className="flex-1 space-y-3 overflow-y-auto">
         {NAV.map((group) => (
           <div key={group.label}>
-            <div className="px-3 pb-1 text-[10px] font-semibold tracking-widest text-faint uppercase">
-              {group.label}
-            </div>
-            <ul className="space-y-0.5">
+            {(() => {
+              const GroupIcon = group.modules[0].icon;
+              return (
+                <div className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-bold tracking-widest text-dim uppercase">
+                  <GroupIcon className="size-3.5 text-accent" aria-hidden />
+                  {group.label}
+                </div>
+              );
+            })()}
+            <ul className="mt-0.5 space-y-px pl-3">
               {group.modules.map((m) => {
                 const href = `/${m.slug}`;
                 const active =
@@ -62,13 +55,18 @@ export function Sidebar({
                       href={href}
                       onClick={onClose}
                       aria-current={active ? "page" : undefined}
-                      className={`flex items-center gap-2.5 rounded px-3 py-1.5 text-[13px] transition-colors ${
+                      className={`flex items-center gap-2.5 border-l-2 py-1.5 pl-3 text-[13px] transition-all duration-200 ${
                         active
-                          ? "bg-surface-3 font-medium text-text"
-                          : "text-dim hover:bg-surface-2 hover:text-text"
+                          ? "border-accent font-semibold text-accent"
+                          : "border-transparent text-dim hover:border-accent/60 hover:text-text"
                       }`}
                     >
-                      <m.icon className="size-4 shrink-0" aria-hidden />
+                      <m.icon
+                        className={`size-3.5 shrink-0 transition-colors ${
+                          active ? "text-accent" : "text-faint"
+                        }`}
+                        aria-hidden
+                      />
                       {m.label}
                     </Link>
                   </li>
@@ -79,7 +77,7 @@ export function Sidebar({
         ))}
       </nav>
 
-      <div className="mt-4 border-t border-border px-3 pt-3 text-[10px] tracking-wider text-faint uppercase">
+      <div className="mt-4 border-t border-border pt-3 text-center text-[11px] tracking-wider text-faint uppercase">
         VAIIP v0.1 · Internal
       </div>
     </>
@@ -87,19 +85,31 @@ export function Sidebar({
 
   return (
     <>
-      {/* Desktop / tablet rail */}
-      <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-border bg-surface px-2 py-4 lg:flex">
+      <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-border bg-[rgba(15,22,36,0.85)] px-2.5 py-5 backdrop-blur-xl lg:flex">
+        <button
+          onClick={onClose}
+          aria-label="Close navigation"
+          className="hidden"
+        >
+          <X className="size-4" />
+        </button>
         {body}
       </aside>
-      {/* Mobile drawer */}
       {mobileOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">
           <div
-            className="absolute inset-0 bg-black/60"
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
             onClick={onClose}
             aria-hidden
           />
-          <aside className="absolute top-0 left-0 flex h-full w-64 flex-col border-r border-border bg-surface px-2 py-4">
+          <aside className="absolute top-0 left-0 flex h-full w-64 flex-col border-r border-border bg-surface-solid px-2.5 py-5">
+            <button
+              onClick={onClose}
+              aria-label="Close navigation"
+              className="mb-2 self-end rounded p-1 text-dim hover:text-text"
+            >
+              <X className="size-4" />
+            </button>
             {body}
           </aside>
         </div>

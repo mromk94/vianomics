@@ -43,6 +43,7 @@ export interface CommandCenter {
     market_regime: string | null;
     fear_greed: number | null;
     vix: number | null;
+    macro_indicators: Record<string, string>;
   };
   risk: {
     drawdown_pct: number | null;
@@ -51,8 +52,30 @@ export interface CommandCenter {
     sector_limit_pct: number;
     max_position_pct: number | null;
     position_limit_pct: number;
+    var_95: number | null;
+    stress_10pct: number | null;
+    avg_correlation: number | null;
     warnings: string[];
   };
+  cio: {
+    rating: string | null;
+    confidence: number | null;
+    expected_return_pct: number | null;
+    mos_pct: number | null;
+    risk_veto: string | null;
+    kill_conditions: string[];
+    conflict_note: string | null;
+  };
+  agents: { agent: string; recommendation: string; score: number | null }[];
+  sectors: {
+    sector: string;
+    weight_pct: number | null;
+    day_pct: number | null;
+    week_pct: number | null;
+    momentum: number | null;
+  }[];
+  calendar: { title: string; at: string; detail: string | null }[];
+  signals: { kind: string; message: string; danger: boolean }[];
   watchlist: {
     ticker: string;
     name: string | null;
