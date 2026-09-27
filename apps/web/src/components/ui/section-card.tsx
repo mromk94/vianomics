@@ -1,47 +1,36 @@
+import { ReactNode } from "react";
+
 export function SectionCard({
   title,
-  badge,
-  actions,
-  children,
-  padded = true,
+  action,
+  demo = false,
   className = "",
+  children,
 }: {
   title?: string;
-  badge?: React.ReactNode;
-  actions?: React.ReactNode;
-  children: React.ReactNode;
-  padded?: boolean;
+  action?: ReactNode;
+  demo?: boolean;
   className?: string;
+  children: ReactNode;
 }) {
   return (
-    <section
-      className={`overflow-hidden rounded-md border border-border bg-surface ${className}`}
-    >
-      {(title || badge || actions) && (
-        <header className="flex items-center justify-between gap-2 border-b border-border px-4 py-2.5">
-          <div className="flex items-center gap-2">
-            {title && (
-              <h2 className="text-[13px] font-semibold tracking-wide text-dim uppercase">
-                {title}
-              </h2>
+    <section className={`glass p-5 ${className}`}>
+      {(title || action) && (
+        <header className="mb-4 flex items-center justify-between gap-3">
+          <h2 className="text-[13px] font-semibold tracking-wider text-dim uppercase">
+            {title}
+            {demo && (
+              <span className="ml-2 rounded-full border border-warn/40 bg-warn-bg px-2 py-px align-middle text-[10px] font-bold tracking-wider text-warn">
+                DEMO
+              </span>
             )}
-            {badge}
-          </div>
-          {actions}
+          </h2>
+          {action && (
+            <span className="text-[12px] text-dim">{action}</span>
+          )}
         </header>
       )}
-      <div className={padded ? "p-4" : ""}>{children}</div>
+      {children}
     </section>
-  );
-}
-
-export function DemoBadge() {
-  return (
-    <span
-      title="Demonstration fixture — not live brokerage data"
-      className="rounded border border-warn/40 bg-warn-bg px-1.5 py-0.5 text-[10px] font-semibold tracking-wider text-warn uppercase"
-    >
-      Demo
-    </span>
   );
 }

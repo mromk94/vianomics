@@ -90,14 +90,20 @@ async def command_center(db: AsyncSession = Depends(get_db)) -> CommandCenterRes
             split=demo.DEMO_SPLIT,
             regime=demo.DEMO_REGIME,
             risk=demo.DEMO_RISK,
+            cio=demo.DEMO_CIO,
+            agents=demo.DEMO_AGENTS,
+            sectors=demo.DEMO_SECTORS,
+            calendar=demo.DEMO_CALENDAR,
+            signals=demo.DEMO_SIGNALS,
             watchlist=demo.DEMO_WATCHLIST,
             approvals=demo.DEMO_APPROVALS,
             alerts=demo.DEMO_ALERTS,
             decisions=demo.DEMO_DECISIONS,
             providers=providers,
             demo_sections=[
-                "portfolio", "split", "regime",
-                "risk", "watchlist", "approvals", "alerts", "decisions",
+                "portfolio", "split", "regime", "risk", "cio",
+                "agents", "sectors", "calendar", "signals",
+                "watchlist", "approvals", "alerts", "decisions",
             ],
         )
 

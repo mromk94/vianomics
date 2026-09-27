@@ -1,56 +1,61 @@
 @import "tailwindcss";
 
-/* ── Design tokens — VAIIP dark-first terminal theme ─────────────────── */
+/* ── VAIIP glass terminal theme ───────────────────────────────────────── */
 
 :root {
-  --bg: #0b0f1a;
-  --surface: #0f1624;
-  --surface-2: #16202f;
+  --bg: #070b14;
+  --surface: rgba(17, 24, 39, 0.66);       /* glass card */
+  --surface-solid: #111827;
+  --surface-2: rgba(26, 34, 54, 0.72);     /* nested tile */
   --surface-3: #1a2236;
-  --border: #1e2a3a;
-  --border-strong: #2a3a52;
+  --border: rgba(148, 163, 184, 0.12);
+  --border-strong: rgba(148, 163, 184, 0.22);
   --text: #e6edf3;
-  --text-dim: #8b98ab;
-  --text-faint: #5b6a80;
-  --accent: #4f7cff;
-  --accent-dim: #2b4a9e;
+  --text-dim: #8899bb;
+  --text-faint: #4a5a7a;
+  --accent: #f0b90b;                       /* brand gold — primary accent */
+  --accent-soft: rgba(240, 185, 11, 0.14);
+  --accent-dim: #8a6d1a;
   --brand: #f0b90b;
-  --pos: #10b981;
-  --pos-bg: rgba(16, 185, 129, 0.12);
-  --neg: #ef4444;
-  --neg-bg: rgba(239, 68, 68, 0.12);
-  --warn: #f59e0b;
-  --warn-bg: rgba(245, 158, 11, 0.12);
-  --info: #64748b;
-  --info-bg: rgba(100, 116, 139, 0.14);
+  --pos: #00c853;
+  --pos-bg: rgba(0, 200, 83, 0.12);
+  --neg: #ff1744;
+  --neg-bg: rgba(255, 23, 68, 0.12);
+  --warn: #ffa726;
+  --warn-bg: rgba(255, 167, 38, 0.12);
+  --info: #64a0ff;
+  --info-bg: rgba(100, 160, 255, 0.12);
 }
 
 [data-theme="light"] {
-  --bg: #f4f6fa;
-  --surface: #ffffff;
-  --surface-2: #eef1f6;
+  --bg: #eef1f7;
+  --surface: rgba(255, 255, 255, 0.78);
+  --surface-solid: #ffffff;
+  --surface-2: rgba(238, 241, 246, 0.9);
   --surface-3: #e4e9f1;
-  --border: #d8dfe9;
-  --border-strong: #b9c4d4;
+  --border: rgba(30, 42, 58, 0.12);
+  --border-strong: rgba(30, 42, 58, 0.24);
   --text: #131a26;
   --text-dim: #4a5a70;
   --text-faint: #7a8aa0;
-  --accent: #2f5fe0;
-  --accent-dim: #c9d6f7;
+  --accent: #b8860b;
+  --accent-soft: rgba(184, 134, 11, 0.12);
+  --accent-dim: #e8d9ae;
   --brand: #b8860b;
   --pos: #0a8a62;
   --pos-bg: rgba(10, 138, 98, 0.1);
-  --neg: #c92a2a;
-  --neg-bg: rgba(201, 42, 42, 0.1);
+  --neg: #d81b3f;
+  --neg-bg: rgba(216, 27, 63, 0.1);
   --warn: #b7791f;
   --warn-bg: rgba(183, 121, 31, 0.12);
-  --info: #64748b;
-  --info-bg: rgba(100, 116, 139, 0.12);
+  --info: #2f5fe0;
+  --info-bg: rgba(47, 95, 224, 0.1);
 }
 
 @theme inline {
   --color-bg: var(--bg);
   --color-surface: var(--surface);
+  --color-surface-solid: var(--surface-solid);
   --color-surface-2: var(--surface-2);
   --color-surface-3: var(--surface-3);
   --color-border: var(--border);
@@ -59,6 +64,7 @@
   --color-dim: var(--text-dim);
   --color-faint: var(--text-faint);
   --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
   --color-accent-dim: var(--accent-dim);
   --color-brand: var(--brand);
   --color-pos: var(--pos);
@@ -73,15 +79,26 @@
   --font-mono: "SF Mono", "Cascadia Code", Consolas, monospace;
 }
 
-html,
-body {
+html {
   background: var(--bg);
+}
+
+body {
   color: var(--text);
   font-family: var(--font-sans);
   font-size: 14px;
+  /* subtle depth: dual radial glows over deep midnight */
+  background:
+    radial-gradient(1000px 500px at 15% -10%, rgba(240, 185, 11, 0.05), transparent 60%),
+    radial-gradient(1200px 600px at 85% -10%, rgba(79, 124, 255, 0.06), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
 }
 
-/* All financial figures use tabular numerals. */
+[data-theme="light"] body {
+  background: var(--bg);
+}
+
 .num,
 [data-num] {
   font-variant-numeric: tabular-nums;
@@ -95,15 +112,85 @@ body {
 }
 
 ::selection {
-  background: var(--accent-dim);
+  background: rgba(240, 185, 11, 0.25);
 }
 
-/* Thin scrollbars, terminal-style */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--border-strong);
-  border-radius: 3px;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ── Glass card ── */
+.glass {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
+  transition: border-color 0.25s, transform 0.25s, box-shadow 0.25s;
+}
+.glass:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
+}
+
+.glass-tile {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* ── Entrance animations ── */
+@keyframes vaiip-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.rise { animation: vaiip-rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.rise-1 { animation-delay: 0.04s; }
+.rise-2 { animation-delay: 0.08s; }
+.rise-3 { animation-delay: 0.12s; }
+.rise-4 { animation-delay: 0.16s; }
+.rise-5 { animation-delay: 0.20s; }
+.rise-6 { animation-delay: 0.24s; }
+
+@keyframes vaiip-bar {
+  from { width: 0; }
+}
+.bar-anim { animation: vaiip-bar 0.9s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+@keyframes vaiip-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.pulse-dot { animation: vaiip-pulse 1.8s ease-in-out infinite; }
+
+@keyframes vaiip-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.confidence-fill {
+  background: linear-gradient(90deg, var(--accent), var(--pos));
+  position: relative;
+}
+.confidence-fill::after {
+  content: "";
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.25), transparent);
+  background-size: 200% 100%;
+  animation: vaiip-shimmer 3s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rise, .bar-anim, .pulse-dot, .confidence-fill::after { animation: none; }
 }
