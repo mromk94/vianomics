@@ -113,7 +113,7 @@
 - **Modules:** `engines/valuation/rule_one` (deterministic) + Rule #1 Agent (interpretation).
 - **Acceptance:** Sticker Price & Buy Price computed with visible assumptions; MOS formula `(IV − Price)/IV`.
 - **Tests:** Formula correctness against known examples; missing-growth-data handling.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — `valuation_engine.py` (pure Decimal: sticker/buy w/ configurable MOS & required return, Gordon-growth DCF w/ EV→equity bridge, reverse-DCF implied growth via bisection, sensitivity grids, Five Numbers); `valuation_runs` versioned (inputs+outputs+methodology `rule1-dcf/v1.0` → reproducible); `GET/POST /valuation-engine/*`; `/valuation` Lab UI (anchors auto-load, bear/base/bull, editable assumptions, sensitivity heatmap, Five Numbers table, history, versions). Live NVDA: sticker $301.76 / buy $211.23 / DCF $207.32 / MOS 13.2% / implied-growth 18.1%.
 
 ---
 

@@ -5,12 +5,14 @@ import { ModulePlaceholder } from "@/components/module-placeholder";
 import { ResearchPage } from "@/components/research-page";
 import { ScreenerPage } from "@/components/screener-page";
 import { UniversePage } from "@/components/universe-page";
+import { ValuationPage } from "@/components/valuation-page";
 import { findModule } from "@/lib/modules";
 
 const REAL_PAGES: Record<string, React.ComponentType> = {
   universe: UniversePage,
   screener: ScreenerPage,
   research: ResearchPage,
+  valuation: ValuationPage,
   settings: MandatePage,
 };
 
