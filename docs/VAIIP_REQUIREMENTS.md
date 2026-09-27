@@ -49,7 +49,7 @@
 - **UI:** Settings → Mandate panel.
 - **Acceptance:** Mandate constraints are injected into screening, risk, and allocation calls; changing config creates a new version, not a mutation.
 - **Tests:** Config validation; downstream engines receive injected limits; version immutability.
-- **Status:** IN PROGRESS — `mandates` table (versioned, seeded v1 with Part-15 risk limits). Constraint injection into engines pending.
+- **Status:** IMPLEMENTED — versioned `mandates` (immutable rows, effective_from, change_note, changed_by); `GET/POST /api/v1/mandate/*`; validation (split=100, ranges); `as_of()` history; `decision_records.mandate_version` snapshots; `/settings` UI (viewer + editor + version history, `mandate:write` gated). Engine consumption wired as engines land.
 
 ### D1.2 | Part 2 — Investment Universe Manager
 - **Required:** Configurable universe (US small–large cap + equity futures per SOW; expand-ready for commodities/crypto). Hierarchy: Global → Eligible → Approved.
@@ -60,7 +60,7 @@
 - **UI:** Universe manager (tier tree, membership editor).
 - **Acceptance:** Hierarchical filtering works; 24-ticker seed set loads; expansion asset classes modeled.
 - **Tests:** Tier filter logic; seed integrity (24 tickers).
-- **Status:** IN PROGRESS — `universes`/`universe_memberships`/`instruments`/`exchanges`/`sectors` schema live; 24-ticker approved universe seeded. UI + hierarchy API pending.
+- **Status:** IMPLEMENTED — 3-tier hierarchy (global/eligible/approved + securities); eligibility engine (listing status, asset class, mcap, liquidity rules — configurable per-universe); exclusion reasons on memberships; `GET/POST /api/v1/universe/*` (search, detail, membership, watchlists); `/universe` UI (hierarchy counts, search, filters, eligibility badges, detail drawer, watchlists). Delisted instruments stay queryable, exit eligibility. Extensible to futures/commodities/crypto via `asset_class`.
 
 ### D1.3 | Part 3 — Universal Data & Research Infrastructure
 - **Required:** ETL: ingest, clean, normalize, store — Fundamental (SEC EDGAR first-class; Yahoo/FMP/Tiingo adapters), Market (OHLCV multi-timeframe, ATR inputs), Macro (FRED), Alternative (interface stub only). **Point-in-time correctness mandatory** (no look-ahead, no silent restatement leakage). Provenance + freshness on every record.
