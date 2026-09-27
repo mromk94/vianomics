@@ -40,5 +40,6 @@ from app.models.universe import (
     Watchlist,
     WatchlistItem,
 )
+from app.models.valuation import ValuationRun
 
 __all__ = [n for n in dir() if not n.startswith("_")]
