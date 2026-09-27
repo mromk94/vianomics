@@ -145,7 +145,7 @@
 - **Modules:** `engines/technical/` — indicator library (RSI, CMI, %R, Aroon, ADX, MACD, Ichimoku, ATR) then signal rules.
 - **Acceptance:** Deterministic Entry/Wait output naming every triggered indicator.
 - **Tests:** Indicator correctness vs reference implementations; rule truth tables.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — `technical.py` (Wilder RSI/ADX/ATR, CMI(21), %R(13/52), Aroon(25), MACD, Ichimoku, S/R, reversal patterns, volume confirm) + `technical_engine.py` (`technical/v1.0` params: MR = RSI(10)<30 trigger + CMI/%R/reversal/volume confirmations; TF = Aroon>99 → MACD→ADX>25→Ichimoku-above-cloud→breakout→volume sequence halting at first failed gate); multi-TF aggregation (2d/3d/1w/1mo) w/ provisional-last-bucket exclusion; freshness gate (bar age ≤7d, else not-live). `/technical/{signal,bars,scan}` + `/trading-desk` UI (lightweight-charts candlesticks + SMA overlays + volume + S/R lines, TF switcher, branch panels, trade-setup preview, universe scan).
 
 ### D1.11 | Part 11 — Market Timing Overlay
 - **Required:** Fear & Greed bands (0–25 accumulate … 80–100 aggressive reduction) + VIX bands (<15 normal … >30 risk-off). Overlays only — never standalone signals.
