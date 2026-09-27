@@ -30,6 +30,7 @@ from app.models.ops import Alert, Job, JobRun, QuarantinedRecord, SyncStatus
 from app.models.portfolio import LedgerEntry, Portfolio, Position, Trade
 from app.models.providers import DataProvider, ProviderCredentialMeta
 from app.models.research import AnalysisRun
+from app.models.risk import PyramidTradeRec, RiskCheck
 from app.models.screening import (
     ScreeningPolicy,
     ScreeningResult,
