@@ -13,6 +13,7 @@ import { ValuationPage } from "@/components/valuation-page";
 import { findModule } from "@/lib/modules";
 
 import { CommitteePage } from "@/components/committee-page";
+import { BacktestPage } from "@/components/backtest-page";
 import { JournalPage } from "@/components/journal-page";
 import { MonitoringPage } from "@/components/monitoring-page";
 
@@ -28,6 +29,7 @@ const REAL_PAGES: Record<string, React.ComponentType> = {
   committee: CommitteePage,
   journal: JournalPage,
   monitoring: MonitoringPage,
+  backtesting: BacktestPage,
   settings: MandatePage,
 };
 
