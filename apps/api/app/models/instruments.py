@@ -1,6 +1,8 @@
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import Date, ForeignKey, Numeric, String, UniqueConstraint
+from sqlalchemy import (
+    Date, DateTime, ForeignKey, Numeric, String, UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, IdMixin, TimestampMixin
@@ -45,6 +47,15 @@ class Instrument(Base, IdMixin, TimestampMixin):
     industry_id: Mapped[str | None] = mapped_column(ForeignKey("industries.id"))
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     is_active: Mapped[bool] = mapped_column(default=True)
+    # Listing state: active|suspended|delisted — delisted securities stay
+    # queryable (history/decisions) but drop out of eligibility.
+    listing_status: Mapped[str] = mapped_column(default="active", index=True)
+    delisted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    # Eligibility inputs — populated by market-data ingestion
+    market_cap: Mapped[float | None] = mapped_column(Numeric(24, 2))
+    avg_dollar_volume_30d: Mapped[float | None] = mapped_column(Numeric(24, 2))
     identifiers: Mapped[list["InstrumentIdentifier"]] = relationship(
         back_populates="instrument", lazy="selectin"
     )

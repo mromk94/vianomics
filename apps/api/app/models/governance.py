@@ -70,3 +70,6 @@ class DecisionRecord(Base, IdMixin, TenantMixin, TimestampMixin):
     cio_confidence: Mapped[float | None]
     # Approval link lives on approvals.decision_id — avoids a circular FK.
     supersedes_id: Mapped[str | None]
+    # Snapshot: the mandate version in force when this decision was made —
+    # later mandate edits must never retroactively rewrite history.
+    mandate_version: Mapped[int | None]

@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, UniqueConstraint
+from sqlalchemy import JSON, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, IdMixin, TenantMixin, TimestampMixin
@@ -6,7 +6,7 @@ from app.db.base import Base, IdMixin, TenantMixin, TimestampMixin
 
 class Universe(Base, IdMixin, TenantMixin, TimestampMixin):
     """Hierarchical universe tiers (Part 2):
-    global → eligible → approved → expansion."""
+    global → eligible → approved → securities."""
 
     __tablename__ = "universes"
     __table_args__ = (UniqueConstraint("tenant_id", "name"),)
@@ -14,6 +14,10 @@ class Universe(Base, IdMixin, TenantMixin, TimestampMixin):
     name: Mapped[str]  # global|eligible|approved|expansion:<label>
     tier: Mapped[str]  # global|eligible|approved
     description: Mapped[str | None]
+    # Eligibility gate configuration for this tier, e.g.:
+    # {"min_market_cap": 300e6, "min_avg_dollar_volume": 5e6,
+    #  "asset_classes": ["equity"], "exchanges": ["NASDAQ","NYSE"]}
+    rules: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class UniverseMembership(Base, IdMixin, TimestampMixin):
@@ -26,7 +30,9 @@ class UniverseMembership(Base, IdMixin, TimestampMixin):
     instrument_id: Mapped[str] = mapped_column(
         ForeignKey("instruments.id", ondelete="CASCADE"), index=True
     )
-    status: Mapped[str] = mapped_column(default="active")  # active|suspended
+    # active|suspended|excluded — excluded retains `reason` for audit
+    status: Mapped[str] = mapped_column(default="active")
+    reason: Mapped[str | None]
 
 
 class Watchlist(Base, IdMixin, TenantMixin, TimestampMixin):

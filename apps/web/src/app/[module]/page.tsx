@@ -1,7 +1,14 @@
 import { notFound } from "next/navigation";
 
+import { MandatePage } from "@/components/mandate-page";
 import { ModulePlaceholder } from "@/components/module-placeholder";
+import { UniversePage } from "@/components/universe-page";
 import { findModule } from "@/lib/modules";
+
+const REAL_PAGES: Record<string, React.ComponentType> = {
+  universe: UniversePage,
+  settings: MandatePage,
+};
 
 export default async function ModulePage({
   params,
@@ -11,7 +18,8 @@ export default async function ModulePage({
   const { module: slug } = await params;
   const mod = findModule(slug);
   if (!mod || mod.slug === "") notFound();
-  return <ModulePlaceholder slug={slug} />;
+  const Page = REAL_PAGES[slug];
+  return Page ? <Page /> : <ModulePlaceholder slug={slug} />;
 }
 
 export async function generateStaticParams() {

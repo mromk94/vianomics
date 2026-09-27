@@ -57,13 +57,13 @@ async def seed() -> None:
         trader_role, _ = await get_or_create(
             db, Role, {"tenant_id": "default", "name": "trader"},
             {"permissions": [
-                "universe:read", "universe:write", "research:*",
-                "approve:trade", "data:read",
+                "universe:read", "universe:write", "mandate:read",
+                "research:*", "approve:trade", "data:read",
             ]},
         )
         await get_or_create(
             db, Role, {"tenant_id": "default", "name": "viewer"},
-            {"permissions": ["data:read", "universe:read"]},
+            {"permissions": ["data:read", "universe:read", "mandate:read"]},
         )
 
         # ── Admin user (dev password — override via ADMIN_PASSWORD) ──
@@ -99,7 +99,23 @@ async def seed() -> None:
             s, _ = await get_or_create(db, Sector, {"name": name})
             sectors[name] = s
 
-        # ── Instruments (approved 24-ticker universe, framework PDF) ──
+        # ── Universe hierarchy: global → eligible → approved ──
+        global_u, _ = await get_or_create(
+            db, Universe,
+            {"tenant_id": "default", "name": "global"},
+            {"tier": "global", "description": "All known US-listed securities"},
+        )
+        eligible_u, _ = await get_or_create(
+            db, Universe,
+            {"tenant_id": "default", "name": "eligible"},
+            {"tier": "eligible", "description": "Passes liquidity/mcap/asset-class gates",
+             "rules": {
+                 "asset_classes": ["equity"],
+                 "listing_status": ["active"],
+                 "min_market_cap": 300_000_000,
+                 "min_avg_dollar_volume": 5_000_000,
+             }},
+        )
         approved, _ = await get_or_create(
             db, Universe,
             {"tenant_id": "default", "name": "approved"},
@@ -118,10 +134,11 @@ async def seed() -> None:
                 {"scheme": "ticker", "value": sym},
                 {"instrument_id": inst.id, "is_primary": True},
             )
-            await get_or_create(
-                db, UniverseMembership,
-                {"universe_id": approved.id, "instrument_id": inst.id},
-            )
+            for u in (global_u, eligible_u, approved):
+                await get_or_create(
+                    db, UniverseMembership,
+                    {"universe_id": u.id, "instrument_id": inst.id},
+                )
 
         # ── Mandate v1 (framework Part 1 + Part 15 limits, C9 ported) ──
         existing = (
@@ -136,6 +153,7 @@ async def seed() -> None:
                 Mandate(
                     version=1,
                     is_active=True,
+                    change_note="Initial mandate — framework Part 1 defaults",
                     extra={
                         "philosophy": [
                             "fundamentals-first", "high-quality compounders",

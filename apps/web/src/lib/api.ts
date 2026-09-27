@@ -10,13 +10,60 @@ export class ApiError extends Error {
   }
 }
 
+function authHeaders(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  const t = window.localStorage.getItem("vaiip-token");
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+export function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem("vaiip-token");
+}
+
+export function setToken(t: string | null) {
+  if (t) window.localStorage.setItem("vaiip-token", t);
+  else window.localStorage.removeItem("vaiip-token");
+}
+
 export async function apiGet<T>(path: string, timeoutMs = 8000): Promise<T> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(`${API_URL}${path}`, { signal: ctrl.signal });
+    const res = await fetch(`${API_URL}${path}`, {
+      signal: ctrl.signal,
+      headers: authHeaders(),
+    });
     if (!res.ok) {
       throw new ApiError(res.status, `API ${res.status} on ${path}`);
+    }
+    return (await res.json()) as T;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function apiPost<T>(
+  path: string,
+  body: unknown,
+  timeoutMs = 8000,
+): Promise<T> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_URL}${path}`, {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: { "content-type": "application/json", ...authHeaders() },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => null);
+      const msg =
+        typeof detail?.detail === "string"
+          ? detail.detail
+          : `API ${res.status} on ${path}`;
+      throw new ApiError(res.status, msg);
     }
     return (await res.json()) as T;
   } finally {

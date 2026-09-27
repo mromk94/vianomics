@@ -44,6 +44,8 @@
 - **Live-verified:** real SEC EDGAR ingest — NVDA XBRL, 980 records in / 980 valid / 730 persisted; provider health now DB-driven in Command Center.
 
 ## Session log
+- **2026-09-27** — UI redesign to glass-terminal mockup look (`e615eef`); app on :3000 (newsend freed port).
+- **2026-09-27** — Parts 1+2 implemented: versioned mandates (immutable, effective-dated, change_note, as_of, decision mandate_version snapshot) + universe eligibility engine (3-tier hierarchy, rule gates, exclusion reasons, watchlists) + `/universe` and `/settings` UI + auth. 43 pytest green. Next: M3 Green Zone engine (Prompt 05).
 - **2026-09-27** — Initial audit + documentation scaffold. Repo audited (empty), 3 docs created, spec conflicts catalogued.
 - **2026-09-27** — M0 + app shell implemented per shell prompt. Backend verified live (healthz ok, command-center returns demo-flagged payload + real infra health). Committed + pushed `13149bd`.
 - **2026-09-27** — M1 data layer implemented per core-data prompt. 28 pytest tests green; Postgres migration + seed verified on docker; live EDGAR ingestion proven. Next: scheduled-ingestion daemon + mandate/universe APIs + market-data provider key (Tiingo/FMP — needs owner).
