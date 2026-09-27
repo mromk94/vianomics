@@ -8,7 +8,9 @@ from app.models.dossier import (
     EvidenceItem,
 )
 from app.models.fundamentals import FundamentalObservation, FinancialStatement
-from app.models.governance import Approval, DecisionRecord, RiskAssessment
+from app.models.governance import (
+    Approval, DecisionRecord, ExitSignal, OrderTicket, RiskAssessment,
+)
 from app.models.identity import AuditEvent, Role, Session, User, user_roles
 from app.models.macro import RegimeRun
 from app.models.instruments import (

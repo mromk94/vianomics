@@ -28,6 +28,15 @@ interface Decision {
   verdict: string;
   symbol: string;
   price: number | null;
+  tree?: {
+    tree_version: string; overall: string;
+    gates: { key: string; name: string; result: string; reason: string;
+             rules_version: string; evaluated_at: string }[];
+  };
+  entry_protocol?: {
+    eligible: boolean;
+    checks: { key: string; ok: boolean; label: string }[];
+  };
   cio: {
     score: number; confidence: number; confidence_note: string;
     margin_of_safety: number | null; intrinsic_value: number | null;
@@ -164,6 +173,38 @@ export function CommitteePage() {
               </button>
             </div>
           </SectionCard>
+
+          {/* Part 22 — gate ladder */}
+          {decision.tree && (
+            <SectionCard title={`Decision tree — ${decision.tree.overall.replace(/_/g, " ")}`}
+              action={decision.tree.tree_version} className="rise">
+              <div className="grid gap-1.5 sm:grid-cols-2 xl:grid-cols-4">
+                {decision.tree.gates.map((g, i) => (
+                  <div key={g.key} className="glass-tile flex items-center justify-between px-3 py-2">
+                    <span className="text-[12px]">
+                      <span className="mr-1.5 text-faint">{i + 1}.</span>{g.name}
+                    </span>
+                    <StatusBadge tone={
+                      g.result === "pass" || g.result === "approved" ? "pos" :
+                      g.result === "pending" ? "info" :
+                      g.result === "wait" || g.result === "review" ? "warn" : "neg"
+                    }>{g.result.replace(/_/g, " ")}</StatusBadge>
+                  </div>
+                ))}
+              </div>
+              {decision.entry_protocol && (
+                <div className="mt-3 flex flex-wrap gap-1.5 border-t border-border/40 pt-3">
+                  <span className="text-[11px] text-dim">Entry protocol:</span>
+                  {decision.entry_protocol.checks.map((c) => (
+                    <span key={c.key} title={c.label}
+                      className={`rounded-md px-1.5 py-0.5 text-[10px] ${c.ok ? "bg-pos/10 text-pos" : "bg-neg/10 text-neg"}`}>
+                      {c.key.replace(/_/g, " ")}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </SectionCard>
+          )}
 
           {/* agent cards */}
           <div className="rise rise-1 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

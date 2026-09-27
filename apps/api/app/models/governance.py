@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, IdMixin, TenantMixin, TimestampMixin, utcnow
@@ -46,6 +46,63 @@ class Approval(Base, IdMixin, TimestampMixin):
     decided_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+
+
+class OrderTicket(Base, IdMixin, TimestampMixin):
+    """Part 23 — proposed order pending/approved by a human.
+    params_hash binds approval to exact parameters — any material
+    change (qty, price band, stop) or changed risk conditions
+    invalidates the approval."""
+
+    __tablename__ = "order_tickets"
+
+    decision_id: Mapped[str] = mapped_column(
+        ForeignKey("decision_records.id"), index=True)
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instruments.id"))
+    portfolio_id: Mapped[str | None] = mapped_column(
+        ForeignKey("portfolios.id"))
+    side: Mapped[str]
+    order_type: Mapped[str] = mapped_column(default="market")
+    quantity: Mapped[float]
+    limit_price: Mapped[float | None]
+    est_notional: Mapped[float | None]
+    est_fees: Mapped[float | None]
+    stop: Mapped[float | None]
+    target1: Mapped[float | None]
+    target2: Mapped[float | None]
+    reward_risk: Mapped[float | None]
+    status: Mapped[str] = mapped_column(default="proposed")
+    # proposed|approved|rejected|expired|submitted|filled|cancelled
+    params_hash: Mapped[str] = mapped_column(String(64))
+    risk_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    exposure_before: Mapped[dict] = mapped_column(JSON, default=dict)
+    exposure_after: Mapped[dict] = mapped_column(JSON, default=dict)
+    cio_report: Mapped[dict] = mapped_column(JSON, default=dict)
+    data_freshness: Mapped[dict] = mapped_column(JSON, default=dict)
+    risk_policy_version: Mapped[str] = mapped_column(String(64))
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True))
+
+
+class ExitSignal(Base, IdMixin, TimestampMixin):
+    """Part 24 — exit lifecycle record. A signal is not a fill."""
+
+    __tablename__ = "exit_signals"
+
+    instrument_id: Mapped[str] = mapped_column(ForeignKey("instruments.id"))
+    position_id: Mapped[str | None] = mapped_column(
+        ForeignKey("positions.id"))
+    cls: Mapped[str]              # fundamental|valuation|technical|risk|market|thesis
+    stage: Mapped[str]            # signal|triggered|proposed_order|submitted|filled|closed
+    action: Mapped[str]
+    reason: Mapped[str | None]
+    order_ticket_id: Mapped[str | None] = mapped_column(
+        ForeignKey("order_tickets.id"))
+    fill_price: Mapped[float | None]
+    filled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True))
 
 
 class DecisionRecord(Base, IdMixin, TenantMixin, TimestampMixin):

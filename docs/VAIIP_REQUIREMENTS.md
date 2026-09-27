@@ -251,7 +251,7 @@
 - **DB:** `decision_runs`, `gate_results`.
 - **Acceptance:** Candidate cannot reach execution with any gate failed; full audit trail.
 - **Tests:** End-to-end candidate journeys for each gate outcome.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — evaluate_tree: 12 gates each emitting pass/fail/wait/review/blocked/insufficient_data/not_applicable w/ inputs+rules_version+timestamp; fail halts downstream as not_applicable, blocked propagates blocked; overall=blocked|rejected|conditional|awaiting_human|approved; stored in DecisionRecord.gate_results
 
 ### D1.23 | Part 23 — Entry Protocol
 - **Required:** TRADE-ELIGIBLE only when all 12 conditions pass (Green Zone, MOS, Rule#1, technical, market, ATR risk, margin, net/gross exposure, pyramid params, portfolio limits, CIO positive, human approval).
@@ -259,7 +259,7 @@
 - **Modules:** `engines/governance/entry_protocol` — checklist evaluation over gate results.
 - **Acceptance:** All 12 enforced; status displayed.
 - **Tests:** Missing-condition cases.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — entry_protocol: 12 checks (universe, price, ATR, MOS, margin≤30%, gross≤1.5×, net, pyramid params, name/sector/cash limits, gate); eligible≠approved. OrderTicket w/ params_hash binds approval; approve() re-runs risk gate — changed params or new blocks force renewed approval; orders only from approve_pending_human verdicts
 
 ### D1.24 | Part 24 — Exit Engine
 - **Required:** 6 exit classes (fundamental, valuation, technical, risk, market, thesis) + pyramid exit (stop→EXIT ALL; T1→DOUBLE; T2→TRAIL/50%).
@@ -267,7 +267,7 @@
 - **Modules:** `engines/exits/` — signal evaluators per class.
 - **Acceptance:** Per-position exit signals with class + reason.
 - **Tests:** Each class trigger; pyramid exit rules.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — exit_engine: 6 classes (fundamental/valuation/technical/risk/market/thesis) + pyramid exits (stop→exit-all, T1→double, T2→policy); lifecycle signal→triggered→proposed_order→submitted→filled→closed — signal ≠ fill; /decisions/{id}/replay reconstructs full decision from stored snapshots
 
 ### D1.25 | Part 25 — Monitoring Engine
 - **Required:** Continuous monitoring: company, valuation, macro, trading (margin, pyramid state, ATR, stop, R/R), portfolio (weight, corr, sector, DD, exposure, cash, P&L, VaR, stress), technical, pyramid metrics. Threshold alerts.

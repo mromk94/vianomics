@@ -28,6 +28,7 @@ from app.services import valuation_service as vs
 from app.services.macro_regime import classify as macro_classify
 from app.models.market import OhlcvBar
 from app.models.screening import ScreeningResult
+from app.models.universe import Universe, UniverseMembership
 
 AGENT_ORDER = ["fundamental", "valuation", "rule_one", "quant",
                "macro", "technical", "risk", "pm"]
@@ -84,6 +85,17 @@ async def gather_ctx(db: AsyncSession, inst: Instrument,
         {"score": float(gz.score) if gz.score else None,
          "status": gz.verdict, "run_id": gz.run_id} if gz else None)
 
+    # active universe membership → gate 1
+    in_univ = bool((
+        await db.execute(
+            select(UniverseMembership)
+            .join(Universe, UniverseMembership.universe_id == Universe.id)
+            .where(UniverseMembership.instrument_id == inst.id,
+                   UniverseMembership.status == "active",
+                   Universe.tier == "approved")
+            .limit(1))
+    ).scalar_one_or_none())
+
     return {
         "symbol": inst.symbol, "sector": sec.name if sec else None,
         "price": price, "as_of": as_of,
@@ -94,6 +106,7 @@ async def gather_ctx(db: AsyncSession, inst: Instrument,
         "technical": await te.evaluate(db, inst, as_of),
         "risk_gate": gate,
         "green_zone": green_zone,
+        "in_universe": in_univ,
     }
 
 
@@ -232,6 +245,12 @@ async def run_committee(
     conflict = resolve_conflict(reports)
     cio = cio_synthesize(reports, ctx, conflict)
 
+    # Part 22 — decision tree over the same ctx + CIO verdict
+    from app.services.decision_tree import evaluate_tree, entry_protocol
+    ctx["cio_verdict"] = cio["verdict"]
+    tree = evaluate_tree(ctx)
+    entry = entry_protocol(ctx)
+
     # CIO run record
     cio_run = AgentRun(agent_key="cio", instrument_id=inst.id,
                        model=AGENTS["cio"]["prompt_version"],
@@ -250,6 +269,8 @@ async def run_committee(
         instrument_id=inst.id, at=utcnow(), stage="researched",
         verdict=cio["verdict"],
         gate_results={"conflict": conflict,
+                      "tree": tree,
+                      "entry_protocol": entry,
                       "risk_gate": ctx["risk_gate"]["breaches"]},
         agent_scores={k: r.score for k, r in reports.items() if r},
         numbers={"price": ctx["price"],
@@ -271,6 +292,8 @@ async def run_committee(
         "symbol": inst.symbol,
         "price": ctx["price"],
         "cio": cio,
+        "tree": tree,
+        "entry_protocol": entry,
         "agents": raw,
         "missing_agents": [k for k, r in reports.items() if r is None],
         "engine_refs": {
