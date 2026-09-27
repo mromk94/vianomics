@@ -7,6 +7,7 @@ from app.routers import (
     execution, feedback, health, mandate, market, monitoring, portfolio,
     research, risk, screener, technical, universe, valuation,
 )
+from app.routers import settings as settings_router
 
 settings = get_settings()
 
@@ -39,3 +40,4 @@ app.include_router(feedback.router, prefix="/api/v1")
 app.include_router(market.router, prefix="/api/v1")
 app.include_router(portfolio.router, prefix="/api/v1")
 app.include_router(dataops.router, prefix="/api/v1")
+app.include_router(settings_router.router, prefix="/api/v1")

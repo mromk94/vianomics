@@ -147,7 +147,7 @@ export function ScreenerPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader
+      <PageHeader info='Green Zone screen: 20 criteria scored 0–20. A passing score means a candidate is worth deeper research — not that it should be bought.'
         title="Green Zone Screener"
         subtitle="20-criteria fundamental screen — deterministic, evidence-backed"
         actions={

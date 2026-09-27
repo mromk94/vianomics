@@ -95,7 +95,7 @@ export function RiskPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Risk Center" subtitle={`${c?.engine ?? ""} — hard limits enforced at the gate; AI cannot override`}
+      <PageHeader title="Risk Center" info='Portfolio risk health — drawdown, sector and position concentration, correlation, VaR and stress tests. Breaching a limit blocks the order — risk vetoes are absolute.' subtitle={`${c?.engine ?? ""} — hard limits enforced at the gate; AI cannot override`}
         meta={c ? `NAV $${fmtNum(c.nav, 0)} · ${c.open_pyramid_trades} open pyramid trades` : undefined} />
       {notice && <div className="glass border-warn/40 p-3 text-[13px] text-warn">{notice}</div>}
       {error && <ErrorState title="API error" detail={error} onRetry={load} />}

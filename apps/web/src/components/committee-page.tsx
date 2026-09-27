@@ -116,7 +116,7 @@ export function CommitteePage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="AI Investment Committee"
+      <PageHeader title="AI Investment Committee" info='Specialist analysts (fundamental, valuation, quant, macro, technical, risk, portfolio) each vote; the CIO synthesizes a verdict. CIO approval is NOT trading permission — a human must still approve every order.'
         subtitle="9 bounded agents → conflict resolution → CIO synthesis → human gate"
         meta={decision ? `${decision.symbol} @ $${fmtNum(decision.price ?? 0, 2)}` : undefined}
         actions={

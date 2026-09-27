@@ -102,7 +102,7 @@ export function BacktestPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Backtesting & Research Sandbox"
+      <PageHeader title="Backtesting & Research Sandbox" info="Simulates a strategy over past data with realistic costs — signals decide at one day's close and fill at the next open, so results can't peek into the future. Results are simulated, never live performance."
         subtitle="event-driven, point-in-time — signals close(t) → fills open(t+1); simulated results are never live performance" />
 
       {notice && <div className="glass border-pos/40 p-3 text-[13px] text-pos">{notice}</div>}

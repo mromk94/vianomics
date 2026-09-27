@@ -40,7 +40,7 @@ export function PortfolioPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Portfolio" subtitle="ledger positions — fills book automatically; broker reconciliation is separate" />
+      <PageHeader title="Portfolio" info='Shows what the system currently owns (positions), how much each holding is worth, and its weight in the account. Fills from approved orders land here automatically — this is the book, not a broker statement.' subtitle="ledger positions — fills book automatically; broker reconciliation is separate" />
       {error && <ErrorState title="API error" detail={error} />}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <MetricCard label="NAV" value={pos?.nav ? `$${fmtNum(pos.nav)}` : "—"} />

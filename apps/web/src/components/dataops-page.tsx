@@ -39,7 +39,7 @@ export function DataOpsPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Data Operations"
+      <PageHeader title="Data Operations" info='Health of every data feed: what ran, when it last succeeded, and records that failed validation. Quarantined data is kept for review — never silently dropped.'
         subtitle="ingestion jobs, provider sync freshness, quarantine — failures surface as alerts, not silence" />
       {error && <ErrorState title="API error" detail={error} />}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">

@@ -109,7 +109,7 @@ export function ValuationPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Valuation Lab" subtitle="Rule #1 Sticker · DCF · Reverse DCF — deterministic, versioned" />
+      <PageHeader title="Valuation Lab" info="Rule #1 Sticker and DCF intrinsic-value estimates with margin of safety. 'Undervalued' labels value vs price — it's research input, not a buy order." subtitle="Rule #1 Sticker · DCF · Reverse DCF — deterministic, versioned" />
       {notice && <div className="glass border-warn/40 p-3 text-[13px] text-warn">{notice}</div>}
 
       <SectionCard title="Security" className="rise">

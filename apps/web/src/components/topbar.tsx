@@ -5,6 +5,30 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { apiGet } from "@/lib/api";
+
+function UserChip() {
+  const [me, setMe] = useState<{ email: string; display_name?: string | null } | null>(null);
+  useEffect(() => {
+    apiGet<{ email: string; display_name?: string | null }>("/api/v1/auth/me")
+      .then(setMe).catch(() => setMe(null));
+  }, []);
+  const initials = me ? (me.display_name ?? me.email)
+    .split(/[\s@.]+/).filter(Boolean).slice(0, 2)
+    .map((w) => w[0]!.toUpperCase()).join("") : "?";
+  return (
+    <Link href="/settings" title={me ? me.email : "Sign in"}
+      className="flex items-center gap-2 rounded-full border border-border-strong bg-surface-2 py-1 pr-3 pl-1 transition-colors hover:border-accent/40">
+      <span className="flex size-7 items-center justify-center rounded-full bg-gradient-to-br from-brand to-[#f5a623] text-[11px] font-bold text-[#0b0f1a]">
+        {initials}
+      </span>
+      <span className="hidden max-w-40 truncate text-[13px] md:block">
+        {me ? me.display_name ?? me.email : "Sign in"}
+      </span>
+    </Link>
+  );
+}
+
 const QUICK_LINKS = [
   { href: "/", label: "Watchlist", slug: "universe" },
   { href: "/portfolio", label: "Portfolio" },
@@ -86,16 +110,11 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
           {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
         </button>
 
-        <span className="relative rounded-full p-1.5 text-dim" title="Alerts">
+        <Link href="/monitoring" className="relative rounded-full p-1.5 text-dim hover:text-accent" title="Alerts">
           <Bell className="size-4" />
-        </span>
+        </Link>
 
-        <div className="flex items-center gap-2 rounded-full border border-border-strong bg-surface-2 py-1 pr-3 pl-1">
-          <span className="flex size-7 items-center justify-center rounded-full bg-gradient-to-br from-brand to-[#f5a623] text-[11px] font-bold text-[#0b0f1a]">
-            DU
-          </span>
-          <span className="hidden text-[13px] md:block">Dere</span>
-        </div>
+        <UserChip />
       </div>
     </header>
   );

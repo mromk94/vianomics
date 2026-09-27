@@ -35,7 +35,7 @@ export function TechnicalPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Technical Engine"
+      <PageHeader title="Technical Engine" info='Timing signals per ticker — RSI mean-reversion dips and Aroon trend strength. Entry signals are candidates, not trades; they still pass through risk and approval.'
         subtitle="per-symbol regime + MR/TF signals — chart view on Trading Desk"
         meta={rows ? `${signals.length} entry signals` : ""} />
       {error && <ErrorState title="API error" detail={error} />}

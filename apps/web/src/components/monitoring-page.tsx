@@ -76,7 +76,7 @@ export function MonitoringPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Monitoring & Alerts"
+      <PageHeader title="Monitoring & Alerts" info='Continuous checks on the portfolio, market regime, orders and data feeds. Problems become alerts with a severity, the observed value and a recommended action — nothing is silently ignored.'
         subtitle="thesis, market, portfolio, order and data-quality monitors — deduped, never faked"
         meta={`${active.length} active · ${crits.length} critical`}
         actions={
