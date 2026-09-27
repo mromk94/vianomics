@@ -273,9 +273,22 @@ async def run_committee(
                       "entry_protocol": entry,
                       "risk_gate": ctx["risk_gate"]["breaches"]},
         agent_scores={k: r.score for k, r in reports.items() if r},
-        numbers={"price": ctx["price"],
-                 "iv": cio["intrinsic_value"],
-                 "mos": cio["margin_of_safety"]},
+        numbers={**{
+            "price": ctx["price"],
+            "iv": cio["intrinsic_value"],
+            "mos": cio["margin_of_safety"],
+            # Part 33 completeness — execution-relevant numbers
+            "atr_14": (ctx.get("technical", {}).get("indicators", {})
+                       or {}).get("atr_14"),
+            "sticker": ((ctx.get("valuation_outputs") or {})
+                        .get("rule1") or {}).get("sticker_price"),
+            "buy_price": ((ctx.get("valuation_outputs") or {})
+                          .get("rule1") or {}).get("buy_price"),
+            "risk_gate_allowed": ctx["risk_gate"]["allowed"],
+            "pm_score": reports.get("pm") and reports["pm"].score,
+            "rm_verdict": (reports.get("risk") and
+                           reports["risk"].recommendation),
+        }},
         cio_confidence=cio["confidence"],
         mandate_version=ctx["mandate_version"],
     )

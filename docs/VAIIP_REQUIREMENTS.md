@@ -276,7 +276,7 @@
 - **UI:** Monitoring dashboard + alerts feed (per HTML mockup).
 - **Acceptance:** Metrics refresh on schedule; threshold breach → alert with context.
 - **Tests:** Alert rule evaluation; freshness-driven warnings.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — monitoring.py: macro (F&G≥80 crit, VIX≥30, risk_off, missing-regime), trading (stop breaches on open pyramid states, stuck/uncertain orders >1h), portfolio (risk-denial storm), valuation (price≥IV on held positions), data-quality (failed jobs → alert w/ job key). emit_alert dedupes (source+dedup_key+24h cooldown); resolved alerts re-arm; context carries observed/required/action/freshness. /monitoring API + UI w/ severity/ack/resolve.
 
 ---
 
@@ -354,7 +354,7 @@
 - **DB:** `investment_records` (append-only), `audit_events`.
 - **Acceptance:** Complete auditable record per decision (NVDA-style example).
 - **Tests:** Immutability (no UPDATE path); completeness validator.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — DecisionRecord numbers now carry price/IV/MOS/ATR14/sticker/buy/rm_verdict/pm_score/risk_gate_allowed; gate_results embeds full 12-gate tree + entry protocol + risk breaches; agent_runs/outputs link each report; approvals + order_tickets join on decision_id; replay endpoint reconstructs purely from stored snapshots.
 
 ### D1.34 | Part 34 — Ten Investment Questions
 - **Required:** Validation module proving the system answers all 10 questions; generates "Ten Questions Report" per candidate.
