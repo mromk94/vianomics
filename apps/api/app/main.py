@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.routers import command_center, health
+from app.routers import auth, command_center, health
 
 settings = get_settings()
 
@@ -17,4 +17,5 @@ app.add_middleware(
 )
 
 app.include_router(health.router, tags=["system"])
+app.include_router(auth.router, prefix="/api/v1")
 app.include_router(command_center.router, prefix="/api/v1", tags=["command-center"])

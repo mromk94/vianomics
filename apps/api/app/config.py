@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql://vianomics:vianomics@localhost:5432/vianomics"
     redis_url: str = "redis://localhost:6379/0"
-    cors_origins: str = "http://localhost:3000"
+    cors_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002"
 
     # Serve explicitly-labeled demo fixtures for unpopulated sections.
     # Must be false in any environment connected to a real account.

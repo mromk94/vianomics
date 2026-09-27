@@ -8,13 +8,20 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "alembic>=1.14",
     "asyncpg>=0.30",
+    "argon2-cffi>=23.1",
+    "email-validator>=2.2",
+    "httpx>=0.28",
     "redis>=5.2",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "aiosqlite>=0.20",
     "httpx>=0.28",
     "ruff>=0.8",
     "mypy>=1.13",
@@ -29,6 +36,7 @@ packages = ["app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
