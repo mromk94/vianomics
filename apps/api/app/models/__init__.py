@@ -1,6 +1,12 @@
 # Import every model so Alembic autogenerate and create_all see the
 # complete metadata graph.
 from app.models.agents import AgentDef, AgentOutput, AgentRun, EvidenceRef
+from app.models.dossier import (
+    Dossier,
+    DossierReview,
+    DossierSection,
+    EvidenceItem,
+)
 from app.models.fundamentals import FundamentalObservation, FinancialStatement
 from app.models.governance import Approval, DecisionRecord, RiskAssessment
 from app.models.identity import AuditEvent, Role, Session, User, user_roles
