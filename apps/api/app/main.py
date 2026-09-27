@@ -3,9 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers import (
-    auth, backtest, command_center, committee, engines, execution,
-    feedback, health, mandate, monitoring, research, risk, screener,
-    technical, universe, valuation,
+    auth, backtest, command_center, committee, dataops, engines,
+    execution, feedback, health, mandate, market, monitoring, portfolio,
+    research, risk, screener, technical, universe, valuation,
 )
 
 settings = get_settings()
@@ -36,3 +36,6 @@ app.include_router(monitoring.router, prefix="/api/v1")
 app.include_router(execution.router, prefix="/api/v1")
 app.include_router(backtest.router, prefix="/api/v1")
 app.include_router(feedback.router, prefix="/api/v1")
+app.include_router(market.router, prefix="/api/v1")
+app.include_router(portfolio.router, prefix="/api/v1")
+app.include_router(dataops.router, prefix="/api/v1")

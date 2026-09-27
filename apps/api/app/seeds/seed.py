@@ -86,13 +86,14 @@ async def seed() -> None:
         )
 
         # ── Admin user (dev password — override via ADMIN_PASSWORD) ──
-        pw = os.environ.get("ADMIN_PASSWORD", "vianomics-dev")
+        pw = os.environ["ADMIN_PASSWORD"]
+        email = os.environ.get("ADMIN_EMAIL", "admin@vianomics.com")
         admin = (
-            await db.execute(select(User).where(User.email == "admin@vianomics.io"))
+            await db.execute(select(User).where(User.email == email))
         ).scalar_one_or_none()
         if admin is None:
             admin = User(
-                email="admin@vianomics.io",
+                email=email,
                 display_name="VAIIP Admin",
                 password_hash=hash_password(pw),
             )
