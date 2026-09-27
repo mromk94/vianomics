@@ -59,6 +59,8 @@ PROVIDERS = [
     ("edgar", "SEC EDGAR", "fundamentals", {"requires_credentials": False}),
     ("fred", "FRED", "macro", {"requires_credentials": True}),
     ("tiingo", "Tiingo", "market", {"requires_credentials": True}),
+    ("yahoo", "Yahoo Finance (delayed EOD)", "market",
+     {"requires_credentials": False, "delayed": True}),
     ("paper_broker", "Paper Broker (simulated)", "broker", {"simulated": True}),
     ("ibkr", "Interactive Brokers", "broker", {"requires_gateway": True}),
 ]

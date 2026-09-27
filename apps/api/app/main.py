@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers import (
-    auth, command_center, health, mandate, research, screener,
+    auth, command_center, engines, health, mandate, research, screener,
     universe, valuation,
 )
 
@@ -27,3 +27,4 @@ app.include_router(universe.router, prefix="/api/v1")
 app.include_router(screener.router, prefix="/api/v1")
 app.include_router(research.router, prefix="/api/v1")
 app.include_router(valuation.router, prefix="/api/v1")
+app.include_router(engines.router, prefix="/api/v1")

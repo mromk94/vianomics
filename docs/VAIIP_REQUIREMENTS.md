@@ -127,6 +127,9 @@
 - **Tests:** Factor math vs reference calcs; MC determinism with seeded RNG.
 - **Status:** NOT STARTED
 
+### D1.8 | Part 8 — Quantitative Intelligence
+- **Status:** IMPLEMENTED — `quant.py` (returns/vol/sharpe/sortino/mdd/beta/corr/12-1 momentum/event studies/factor scoring, pairwise-skip missing, documented conventions), `quant_service.py` (fundamentals+OHLCV factors, portfolio exposure, corr matrix), `/api/v1/quant/*`, `/quant` dashboard. Real data via Yahoo EOD adapter.
+
 ### D1.9 | Part 9 — Macro Regime Engine
 - **Required:** Ingest FRED macro (GDP, PMI, employment, CPI, PPI, confidence, yield curve, rates, credit, dollar, commodities, liquidity) → classify Economic Regime (Recovery/Expansion/Slowdown/Recession) + Market Regime (Risk-on/Neutral/Risk-off) → sector rotation output. Constraints: ≤25% sector, ≥5 sectors, quarterly reassessment.
 - **Dependencies:** D1.3 macro pipeline.
@@ -134,7 +137,7 @@
 - **DB:** `macro_regimes` (asof, classification, inputs snapshot).
 - **Acceptance:** Current regime classified; rotation table feeds PM agent.
 - **Tests:** Regime classification on known historical periods.
-- **Status:** NOT STARTED — also the **trial project** deliverable (see D0)
+- **Status:** IMPLEMENTED — `macro_regime.py` (versioned `regime-rules/v1.0`: feature set + rule hits persisted per `RegimeRun`; PIT by `observed_at ≤ as_of`; per-series staleness windows; `insufficient_data` when core inputs missing); 14 FRED series via keyless fredgraph (latest-vintage, limitation disclosed); sector-rotation map w/ mandate constraints surfaced via `/macro/sector-rotation`; `/macro` dashboard (regime track, rule chips, staleness badges, F&G/VIX overlays, run history).
 
 ### D1.10 | Part 10 — Technical Timing Engine
 - **Required:** Branch A mean reversion (RSI(10) multi-timeframe <30; CMI(21)<0; Williams %R(13)/(52) <−80; S/R; reversal; volume — RSI must align with CMI+%R). Branch B trend following (Aroon(25) >99 daily/weekly/monthly — see C5; ADX, MACD, Ichimoku, pattern, volume — see C6).
@@ -150,7 +153,7 @@
 - **Modules:** `engines/macro/timing_overlay`; consumed by PM + Risk.
 - **Acceptance:** Overlay modifies sizing/aggressiveness; cannot independently generate trades.
 - **Tests:** Band boundaries; non-signal enforcement.
-- **Status:** NOT STARTED — also part of trial (D0)
+- **Status:** IMPLEMENTED — `fear_greed_overlay()` + `vix_band()` with documented lower-bound-inclusive thresholds; F&G is a transparent proxy composite (vix_inverse, spy_vs_sma200, breadth, hy_inverse — CNN index not available); overlays embedded in RegimeRun, consumed as inputs only. Boundary tests cover all edges.
 
 ---
 
