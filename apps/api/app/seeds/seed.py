@@ -32,6 +32,23 @@ SEED_TICKERS = [
     "ORCL", "PLTR", "TSM", "TSLA", "VRT", "ZS",
 ]
 
+# GICS-style sector assignment for the seed universe
+TICKER_SECTOR = {
+    "NVDA": "Information Technology", "MSFT": "Information Technology",
+    "AVGO": "Information Technology", "ASML": "Information Technology",
+    "TSM": "Information Technology", "MU": "Information Technology",
+    "AMD": "Information Technology", "MRVL": "Information Technology",
+    "ANET": "Information Technology", "VRT": "Information Technology",
+    "ORCL": "Information Technology", "PLTR": "Information Technology",
+    "MDB": "Information Technology", "CRWD": "Information Technology",
+    "DDOG": "Information Technology", "ZS": "Information Technology",
+    "GOOGL": "Communication Services", "META": "Communication Services",
+    "ECHO": "Communication Services",
+    "AMZN": "Consumer Discretionary", "TSLA": "Consumer Discretionary",
+    "BE": "Industrials", "EOSE": "Industrials",
+    "CEG": "Utilities",
+}
+
 GICS_SECTORS = [
     "Information Technology", "Health Care", "Financials",
     "Consumer Discretionary", "Communication Services", "Industrials",
@@ -129,6 +146,9 @@ async def seed() -> None:
                 {"exchange_id": exchange.id, "symbol": sym},
                 {"name": sym, "asset_class": "equity"},
             )
+            sec_name = TICKER_SECTOR.get(sym)
+            if sec_name and inst.sector_id is None:
+                inst.sector_id = sectors[sec_name].id
             await get_or_create(
                 db, InstrumentIdentifier,
                 {"scheme": "ticker", "value": sym},

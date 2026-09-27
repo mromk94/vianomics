@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 
 import { MandatePage } from "@/components/mandate-page";
 import { ModulePlaceholder } from "@/components/module-placeholder";
+import { ResearchPage } from "@/components/research-page";
 import { ScreenerPage } from "@/components/screener-page";
 import { UniversePage } from "@/components/universe-page";
 import { findModule } from "@/lib/modules";
@@ -9,6 +10,7 @@ import { findModule } from "@/lib/modules";
 const REAL_PAGES: Record<string, React.ComponentType> = {
   universe: UniversePage,
   screener: ScreenerPage,
+  research: ResearchPage,
   settings: MandatePage,
 };
 

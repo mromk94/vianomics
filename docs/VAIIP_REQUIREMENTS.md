@@ -94,7 +94,7 @@
 - **API:** folded into valuation service responses.
 - **Acceptance:** Correct metric per sector; flags inappropriate metric usage.
 - **Tests:** Sector→metric mapping matrix.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — `valuation.py` archetypes (financial→P/B+ROE+BVPS-quality, real_estate→NAV/FFO honest-missing, commodity→normalized EPS + cycle, growth→P/E+EV/EBITDA+P/FCF); `check_metric()` blocks inappropriate metrics without explicit override+reason; `GET /research/valuation/{ticker}` (NVDA live: P/E 36.5, EV/EBITDA 33.0, P/FCF 42.7).
 
 ### D1.6 | Part 6 — Institutional Research Dossier Engine
 - **Required:** 18-section dossier (6.1 Exec Summary → 6.18 Final Scorecard incl. Management Quality, Industry/Competitive Position, peer comparison on 10 axes).
@@ -105,7 +105,7 @@
 - **UI:** Research workbench — sectioned dossier view, peer table.
 - **Acceptance:** Structured dossier for e.g. NVDA matching the 18-section format; every quantitative field sourced.
 - **Tests:** Schema validation; section completeness; scorecard arithmetic.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — `research_orchestrator.py` (plan→gather→build→validate→persist); `dossiers` versioned (group_id+version) + `dossier_sections` (18 claims-typed blocks: verified_fact|ai_inference|analyst_assumption|management_statement) + `evidence_items` registry (every verified claim → XBRL observation) + `dossier_reviews` (approve/request_changes/attest); peer comparison vs same-sector instruments (rev growth/margin/ROE ranks); validator flags verified claims lacking evidence; missing evidence disclosed. `POST /research/dossier/{t}`, `GET .../versions`, `POST .../review`; `/research` workbench UI (search, accordion w/ provenance chips, missing-evidence register, versions, review actions). Live: NVDA v2 — 13 verified/27 AI/4 assumptions/5 insufficient, peers ranked (65.5% growth >9/9).
 
 ### D1.7 | Part 7 — Rule #1 Engine
 - **Required:** Four Ms (Meaning/Moat/Management/MOS) + Five Numbers (Revenue, EPS, Equity, FCF growth >10%; ROIC >15%). Outputs Sticker Price → MOS → Buy Price.
