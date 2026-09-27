@@ -2,9 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 
+import { apiGet } from "@/lib/api";
 import { NAV } from "@/lib/modules";
+
+interface Me { email: string; display_name?: string | null;
+  roles?: { name: string }[] }
 
 export function Sidebar({
   mobileOpen,
@@ -14,21 +19,30 @@ export function Sidebar({
   onClose: () => void;
 }) {
   const pathname = usePathname();
+  const [me, setMe] = useState<Me | null>(null);
+  useEffect(() => {
+    apiGet<Me>("/api/v1/auth/me").then(setMe).catch(() => setMe(null));
+  }, []);
+  const name = me?.display_name || me?.email || "Sign in";
+  const initials = me ? (me.display_name ?? me.email)
+    .split(/[\s@.]+/).filter(Boolean).slice(0, 2)
+    .map((w) => w[0].toUpperCase()).join("") : "?";
 
   const body = (
     <>
-      {/* User profile pill — mockup style */}
       <Link
         href="/settings"
         onClick={onClose}
         className="mb-4 flex items-center gap-3 rounded-full border border-border-strong bg-surface-2 px-2.5 py-2 transition-colors hover:border-accent/40"
       >
         <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-brand to-[#f5a623] text-[13px] font-bold text-[#0b0f1a]">
-          DU
+          {initials}
         </span>
         <span className="flex flex-col leading-tight">
-          <span className="text-sm font-semibold">Dere Ukere</span>
-          <span className="text-[11px] text-dim">CTO &amp; Co-Founder</span>
+          <span className="text-sm font-semibold">{name}</span>
+          <span className="text-[11px] text-dim">
+            {me ? me.roles?.[0]?.name ?? "member" : "sign in for actions"}
+          </span>
         </span>
       </Link>
 

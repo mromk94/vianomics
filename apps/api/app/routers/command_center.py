@@ -10,6 +10,7 @@ from app.models.ops import SyncStatus
 from app.models.providers import DataProvider
 from app.routers.health import _check_postgres, _check_redis
 from app.schemas.command_center import (
+    AgentVote,
     AlertItem,
     ApprovalItem,
     CioBlock,
@@ -20,6 +21,7 @@ from app.schemas.command_center import (
     ProviderHealth,
     RegimeSnapshot,
     RiskUtilization,
+    SectorPerf,
     TradeSignal,
     WatchlistItem,
 )
@@ -254,13 +256,50 @@ async def command_center(db: AsyncSession = Depends(get_db)) -> CommandCenterRes
             conflict_note=None,
         )
 
+    # split — mandate targets are real policy (not portfolio marks)
+    from app.models.mandate import Mandate
+    m = (
+        await db.execute(
+            select(Mandate).order_by(Mandate.version.desc()).limit(1))
+    ).scalars().first()
+    split = PortfolioSplit(
+        investment_pct=m.investment_split_pct if m else 70,
+        trading_pct=m.trading_split_pct if m else 30)
+
+    # agents — latest output per agent (agent_runs → outputs join)
+    agents: list[AgentVote] = []
+    outs = (
+        await db.execute(
+            select(AgentOutput, AgentRun.agent_key)
+            .join(AgentRun, AgentOutput.run_id == AgentRun.id)
+            .order_by(AgentOutput.created_at.desc()).limit(40))
+    ).all()
+    seen_agents: set[str] = set()
+    for o, key in outs:
+        if key in seen_agents:
+            continue
+        seen_agents.add(key)
+        agents.append(AgentVote(
+            agent=key, recommendation=o.recommendation or "?",
+            score=int(o.score) if o.score is not None else None))
+
+    # sectors — real rotation prefs from the latest regime run
+    # ('favored'/'neutral'/'avoid' → momentum score for display)
+    pref_score = {"favored": 80.0, "neutral": 50.0, "avoid": 20.0}
+    sectors = [SectorPerf(sector=s,
+                          momentum=pref_score.get(str(w), 50.0))
+               for s, w in (rg.sector_preferences.items() if rg
+                            else [])] if rg else []
+
     resp = CommandCenterResponse(
         generated_at=datetime.now(UTC).isoformat(),
         portfolio=portfolio,
-        split=PortfolioSplit(),
+        split=split,
         regime=regime,
         risk=risk,
         cio=cio,
+        agents=agents,
+        sectors=sectors,
         alerts=alerts,
         approvals=approvals,
         decisions=decisions,
@@ -280,22 +319,20 @@ async def command_center(db: AsyncSession = Depends(get_db)) -> CommandCenterRes
         fill = {
             "portfolio": (resp.portfolio.total_value is None,
                           demo.DEMO_PORTFOLIO),
-            "split": (resp.split.investment_pct is None,
-                      demo.DEMO_SPLIT),
             "regime": (resp.regime.economic_regime is None,
                        demo.DEMO_REGIME),
             "risk": (resp.risk.max_sector_pct is None,
                      demo.DEMO_RISK),
             "cio": (resp.cio.rating is None, demo.DEMO_CIO),
-            "agents": (not resp.agents, demo.DEMO_AGENTS),
-            "sectors": (not resp.sectors, demo.DEMO_SECTORS),
-            "calendar": (not resp.calendar, demo.DEMO_CALENDAR),
             "signals": (not resp.signals, demo.DEMO_SIGNALS),
             "watchlist": (not resp.watchlist, demo.DEMO_WATCHLIST),
             "approvals": (not resp.approvals, demo.DEMO_APPROVALS),
             "alerts": (not resp.alerts, demo.DEMO_ALERTS),
             "decisions": (not resp.decisions, demo.DEMO_DECISIONS),
         }
+        # split/agents/sectors are always real now (mandate, agent runs,
+        # regime rotation prefs); calendar is intentionally absent — no
+        # provider exists yet, so no fixture fills it.
         for name, (empty, fixture) in fill.items():
             if empty:
                 setattr(resp, name, fixture)

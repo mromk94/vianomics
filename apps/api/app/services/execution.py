@@ -141,9 +141,10 @@ async def submit_ticket(
         if adapter_key == "paper":
             from app.providers.broker import PAPER
             PAPER.register(bo)
-        # mark ticket
+        # mark ticket + book the fill into the ledger
         if bo.status == "filled":
             ticket.status = "filled"
+            await _book_fill(db, ticket, rec)
         elif bo.status == "rejected":
             ticket.status = "proposed"   # back for re-approval
     except (ConnectionError, TimeoutError) as e:
@@ -159,6 +160,40 @@ async def submit_ticket(
             "avg_fill": rec.avg_fill_price,
             "commission": rec.commission,
             "deduped": False}
+
+
+async def _book_fill(db: AsyncSession, ticket, rec: BrokerOrderRec):
+    """Fills land in the Position ledger — broker order and book
+    state are linked, not parallel realities."""
+    from app.models.portfolio import Portfolio, Position
+    pf = (await db.execute(select(Portfolio).limit(1))
+          ).scalar_one_or_none()
+    if pf is None:
+        await _event(db, rec.id, "ledger_skip",
+                     {"reason": "no portfolio row"})
+        return
+    pos = (await db.execute(select(Position).where(
+        Position.portfolio_id == pf.id,
+        Position.instrument_id == ticket.instrument_id))
+    ).scalar_one_or_none()
+    qty = float(rec.filled_qty or 0)
+    px = float(rec.avg_fill_price or 0)
+    if qty <= 0:
+        return
+    if pos is None:
+        pos = Position(portfolio_id=pf.id,
+                       instrument_id=ticket.instrument_id,
+                       quantity=0, avg_cost=0)
+        db.add(pos)
+    if rec.side == "buy":
+        new_q = float(pos.quantity) + qty
+        pos.avg_cost = ((float(pos.quantity) * float(pos.avg_cost or 0)
+                         + qty * px) / new_q) if new_q else px
+        pos.quantity = new_q
+    else:  # sell reduces; realized P&L is attribution's job
+        pos.quantity = max(0.0, float(pos.quantity) - qty)
+    await _event(db, rec.id, "ledger_booked",
+                 {"qty": qty, "px": px, "position": pos.quantity})
 
 
 async def reconcile(db: AsyncSession, rec: BrokerOrderRec,

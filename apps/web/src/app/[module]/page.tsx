@@ -12,6 +12,11 @@ import { UniversePage } from "@/components/universe-page";
 import { ValuationPage } from "@/components/valuation-page";
 import { findModule } from "@/lib/modules";
 
+import { AllocationPage } from "@/components/allocation-page";
+import { DataOpsPage } from "@/components/dataops-page";
+import { MarketPage } from "@/components/market-page";
+import { PortfolioPage } from "@/components/portfolio-page";
+import { TechnicalPage } from "@/components/technical-page";
 import { CommitteePage } from "@/components/committee-page";
 import { BacktestPage } from "@/components/backtest-page";
 import { JournalPage } from "@/components/journal-page";
@@ -30,6 +35,11 @@ const REAL_PAGES: Record<string, React.ComponentType> = {
   journal: JournalPage,
   monitoring: MonitoringPage,
   backtesting: BacktestPage,
+  market: MarketPage,
+  technical: TechnicalPage,
+  portfolio: PortfolioPage,
+  allocation: AllocationPage,
+  "data-ops": DataOpsPage,
   settings: MandatePage,
 };
 
