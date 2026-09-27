@@ -1,0 +1,45 @@
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db.base import Base, IdMixin, TimestampMixin, utcnow
+
+
+class PyramidTradeRec(Base, IdMixin, TimestampMixin):
+    """Persisted pyramid state machine — one row per pyramid trade;
+    events list is append-only JSON log of transitions."""
+
+    __tablename__ = "pyramid_trades"
+    __table_args__ = (Index("ix_pyr_instr", "instrument_id"),)
+
+    instrument_id: Mapped[str] = mapped_column(ForeignKey("instruments.id"))
+    portfolio_id: Mapped[str | None] = mapped_column(
+        ForeignKey("portfolios.id"))
+    state: Mapped[str]
+    entry: Mapped[float]
+    atr_initial: Mapped[float]
+    shares: Mapped[int]
+    stop: Mapped[float]
+    target1: Mapped[float]
+    t2_policy: Mapped[str]
+    additions: Mapped[int] = mapped_column(default=0)
+    engine_version: Mapped[str] = mapped_column(default="risk-pyramid/v1.0")
+    events: Mapped[list] = mapped_column(JSON, default=list)
+    params: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class RiskCheck(Base, IdMixin, TimestampMixin):
+    """Every order-gate evaluation — the audit trail that proves no
+    order bypassed limits."""
+
+    __tablename__ = "risk_checks"
+
+    symbol: Mapped[str]
+    side: Mapped[str]
+    notional: Mapped[float]
+    allowed: Mapped[bool]
+    breaches: Mapped[list] = mapped_column(JSON)
+    limits_snapshot: Mapped[dict] = mapped_column(JSON)
+    engine_version: Mapped[str]
+    checked_at: Mapped[object] = mapped_column(DateTime(timezone=True),
+                                               default=utcnow)
+    checked_by: Mapped[str | None]

@@ -166,7 +166,7 @@
 - **DB:** `trades`, `pyramid_states`, `pyramid_events`.
 - **Acceptance:** All 5 stages computed; no-profit-at-T1 enforced; state transitions auditable.
 - **Tests:** State machine transitions; numeric examples; invalid-transition rejection.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — `risk_engine.py` (`risk-pyramid/v1.0`): S1 sizing ($Risk→1.5×ATR, cash/lot/liquidity clamps + binding-report), S2 T1=+3×ATR doubles w/ **no profit-taking** + risk-check gate, S3 ATR_cur=price×ATR_12w%, S4 ratchet stop (price−1×ATR, never loosens), S5 trailing(0.75×ATR)|profit_50 explicit versioned policy — no silent mixing. PyramidTradeRec persists state+event log; gap-through-stop fills at observed price; rejected additions supported. API: POST /risk/pyramid, /pyramid/{id}/advance.
 
 ### D1.13 | Part 13 — Investment Risk Management Engine (Investment portfolio, 70%)
 - **Required:** 5-test monitor: Fundamental deterioration → exit/review; price ≥ IV → reduce/exit; thesis invalidation → exit; oversized position → reduce/hold; normal volatility → hold.
@@ -174,7 +174,7 @@
 - **Modules:** `engines/risk/investment_monitor`.
 - **Acceptance:** Per-position HOLD/REDUCE/EXIT signals with reason codes.
 - **Tests:** Each test's trigger conditions; precedence rules.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — `holding_tests()` outputs review actions (exit_or_review/reduce_or_exit/exit/review_reduce/no_action), explicitly *no* mechanical trading stops on investment positions.
 
 ### D1.14 | Part 14 — Risk Management Engine (core calculations)
 - **Required:** 7 risk dimensions computed deterministically (fundamental/valuation, position/concentration, factor/correlation, leverage/margin, liquidity/financing, volatility/market-structure, feedback/path). **Calculation ≠ decision** — engine outputs metrics, Risk Manager Agent decides. Port PDF trading-risk table (see C9).
@@ -182,7 +182,7 @@
 - **Modules:** `engines/risk/core` — pure functions, fully tested.
 - **Acceptance:** Structured risk metrics for any proposed/existing position.
 - **Tests:** Numeric correctness incl. stress scenarios (position −10/20/30/40%).
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — `risk_dimensions()` computes all 7 dimensions; stress ladder −10/−20/−30/−40% + correlated-ρ1 shock + margin × gross + vol shock; empty data → explicit `unknown`/`degraded`, never fabricated.
 
 ### D1.15 | Part 15 — Portfolio Risk Limits
 - **Required:** Configurable hard limits: DD ≤15%, sector ≤25%, single stock ≤10%, ≥5 sectors, correlation ≤30% (C9), cash floor, pyramid controls (vol-spike sizing cut, VIX reduction, F&G new-position restrictions).
@@ -190,7 +190,7 @@
 - **Modules:** `engines/risk/limits` — config + enforcement middleware used by Risk Manager.
 - **Acceptance:** Limits configurable; violations alert AND block.
 - **Tests:** Each limit boundary; combined violation handling.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — `check_order()` gate w/ `Limits` (defaults: DD 15%, sector 25%, name 10%, ≥5 sectors, corr 0.70, cash 5%, gross ≤1.0×, VIX≥30 reduce, F&G≥80 block-new, vol≥60% halve); every breach carries rule+observed+required+remediation; RiskCheck audit row per evaluation; sells never blocked; only path to order — `research:run`/`trading:execute` gated. `/risk` Risk Center UI (7 dims, stress table, active blocks, dry-run gate, history, limits strip).
 
 ---
 
