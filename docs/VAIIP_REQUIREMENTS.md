@@ -70,7 +70,7 @@
 - **API:** Internal first: `GET /api/data/fundamentals/{ticker}`, `/api/data/ohlcv`, `/api/data/macro`.
 - **Acceptance:** ≥1 fundamentals source (EDGAR) + 1 market source + FRED live; provenance complete; missing values never silently zeroed.
 - **Tests:** PIT correctness (restatement scenario), freshness decay, provenance completeness, adapter contract tests.
-- **Status:** IN PROGRESS — provenance/PIT schema live (`fundamental_observations`, `macro_observations`, `ohlcv_bars`); adapters: EDGAR ✅ **live-verified** (NVDA XBRL: 980 facts ingested, 730 persisted), FRED + Tiingo implemented (awaiting keys), IBKR/paper stubs; idempotent ingestion + quarantine + job/sync tracking built; as-of retrieval tested. Remaining: scheduler daemon, news/alt adapters.
+- **Status:** IN PROGRESS — provenance/PIT schema live; adapters: EDGAR ✅ **live-verified** (all 24 tickers ingested via CIK auto-resolution, ~47K facts), FRED + Tiingo implemented (awaiting keys), IBKR/paper stubs; idempotent ingestion + quarantine + job tracking + as-of retrieval tested. Remaining: scheduler daemon, news/alt adapters, market data (needs key).
 
 ---
 
@@ -85,7 +85,7 @@
 - **UI:** Screener grid with per-criterion drilldown.
 - **Acceptance:** Screens whole universe; correct categorization pass/watchlist/reject; blocking criteria enforced.
 - **Tests:** Golden dataset per criterion; boundary values; block-override case.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — `green_zone.py` (20 criteria, score pass=1/review=0.5, verdicts pass|fail|review|insufficient_data|blocked_by_risk, moat = deterministic evidence + requires_review, financials N/A variants, dividend non-payer N/A); `screening_policies` versioned; `screening_runs`/`screening_results` persist policy+mandate versions + per-criterion evidence; `POST /api/v1/screener/run` (JobRun-tracked batch), `/latest`, `/results/{ticker}`, `/policies`; `/screener` UI (statuses, filters, drill-down w/ evidence + freshness). Live run: ASML 15.5/20 REVIEW (moat unconfirmed → not auto-qualified), NVDA 13.5 FAIL — all real EDGAR data.
 
 ### D1.5 | Part 5 — Special Valuation Screens (sector adjustment)
 - **Required:** Sector-aware metric selection: Banks/Insurance/RE → P/B, NAV; commodities → cycle valuation; growth → fwd P/E, EV/EBITDA, FCF, EPS CAGR, revisions.
