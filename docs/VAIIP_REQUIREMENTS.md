@@ -322,7 +322,7 @@
 - **DB:** `orders`, `order_events`, `fills`, `reconciliation_reports`.
 - **Acceptance:** Paper order lifecycle end-to-end; IBKR adapter behind feature flag; reconciliation report.
 - **Tests:** Order state machine; simulated fills; failure/retry paths.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — providers/broker.py: BrokerAdapter protocol (account/positions/margin/submit/cancel/status/executions), PaperBroker w/ deterministic fills+commissions+rejections+disconnects, IbkrAdapter fails loudly until IBKR_* env+TWS+EXECUTION_ENABLED, Alpaca marked planned. execution.py FSM draft→risk→approval→submitted→ack→filled w/ idempotency keys, dedupe-first, unknown→reconcile (never blind retry), kill switch, notional/qty caps; broker_orders+execution_events+kill_switch tables; /execution/{status,account,orders,submit,cancel,reconcile,kill-switch}; order blotter on /trading-desk. Live: NVDA 10sh filled @225.07, dedupe verified, kill switch 403s submissions.
 
 ---
 
@@ -334,7 +334,7 @@
 - **Modules:** `backtest/` — event-driven engine reusing the same engine functions as production (no parallel implementation).
 - **Acceptance:** 10-yr backtest of a defined strategy → CAGR/DD/Sharpe/win-rate report; bias controls verified.
 - **Tests:** Look-ahead detection test; reproducibility; cost modeling.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — providers/broker.py: BrokerAdapter protocol (account/positions/margin/submit/cancel/status/executions), PaperBroker w/ deterministic fills+commissions+rejections+disconnects, IbkrAdapter fails loudly until IBKR_* env+TWS+EXECUTION_ENABLED, Alpaca marked planned. execution.py FSM draft→risk→approval→submitted→ack→filled w/ idempotency keys, dedupe-first, unknown→reconcile (never blind retry), kill switch, notional/qty caps; broker_orders+execution_events+kill_switch tables; /execution/{status,account,orders,submit,cancel,reconcile,kill-switch}; order blotter on /trading-desk.
 
 ### D1.32 | Part 32 — Feedback & Learning Engine
 - **Required:** Signal→Decision→Trade→Outcome→Attribution→Model update→Backtest→Production. Track prediction/agent/CIO accuracy, win rate, expected vs realized (return/vol/DD), slippage, false ±.

@@ -58,15 +58,15 @@ async def test_adapter_5xx_is_retryable_provider_error():
 
 
 def test_paper_broker_is_honest():
-    from app.providers.broker import PaperBrokerAdapter
+    from app.providers.broker import PaperBroker
 
-    caps = PaperBrokerAdapter().capabilities()
+    caps = PaperBroker().capabilities()
     assert caps["mode"] == "simulated"
-    assert caps["orders"] is False
+    assert caps["orders"] is True      # paper lane only
 
 
 async def test_ibkr_refuses_until_configured():
     from app.providers.broker import IbkrAdapter
 
     with pytest.raises(ProviderConfigError):
-        await IbkrAdapter().positions()
+        IbkrAdapter()
