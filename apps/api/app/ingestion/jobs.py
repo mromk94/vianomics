@@ -83,10 +83,16 @@ async def ingest_edgar_facts(
         )
         return run
 
-    cik = next(
-        (i.value for i in getattr(inst, "identifiers", []) if i.scheme == "cik"),
-        None,
-    )
+    from app.models.instruments import InstrumentIdentifier
+    cik_row = (
+        await session.execute(
+            select(InstrumentIdentifier).where(
+                InstrumentIdentifier.instrument_id == inst.id,
+                InstrumentIdentifier.scheme == "cik",
+            )
+        )
+    ).scalar_one_or_none()
+    cik = cik_row.value if cik_row else None
     if cik is None:
         run.status, run.error, run.finished_at = (
             "failed",

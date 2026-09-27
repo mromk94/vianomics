@@ -177,6 +177,26 @@ async def seed() -> None:
                 )
             )
 
+        # ── Screening policy v1 (Green Zone thresholds) ──
+        from app.models.screening import ScreeningPolicy
+        from app.services.green_zone import POLICY_DEFAULTS
+        sp = (
+            await db.execute(
+                select(ScreeningPolicy).where(
+                    ScreeningPolicy.tenant_id == "default",
+                    ScreeningPolicy.version == 1,
+                )
+            )
+        ).scalar_one_or_none()
+        if sp is None:
+            db.add(
+                ScreeningPolicy(
+                    version=1, is_active=True,
+                    change_note="Default Green Zone thresholds (Part 5)",
+                    params=POLICY_DEFAULTS,
+                )
+            )
+
         # ── Provider registry (status 'unconfigured' until a real
         # integration test proves connectivity — per spec, never claimed) ──
         for key, name, kind, caps in PROVIDERS:
