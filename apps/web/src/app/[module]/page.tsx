@@ -6,6 +6,7 @@ import { ModulePlaceholder } from "@/components/module-placeholder";
 import { QuantPage } from "@/components/quant-page";
 import { ResearchPage } from "@/components/research-page";
 import { ScreenerPage } from "@/components/screener-page";
+import { TradingPage } from "@/components/trading-page";
 import { UniversePage } from "@/components/universe-page";
 import { ValuationPage } from "@/components/valuation-page";
 import { findModule } from "@/lib/modules";
@@ -17,6 +18,7 @@ const REAL_PAGES: Record<string, React.ComponentType> = {
   valuation: ValuationPage,
   quant: QuantPage,
   macro: MacroPage,
+  "trading-desk": TradingPage,
   settings: MandatePage,
 };
 
