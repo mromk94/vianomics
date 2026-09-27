@@ -67,3 +67,25 @@ class FredAdapter(HttpAdapter):
         if "observations" not in data:
             raise ProviderError(f"fred: bad response for {code}")
         return data["observations"]
+
+    async def observations_csv(self, code: str) -> list[dict]:
+        """Public fredgraph CSV fallback — no key needed. Returns
+        latest-vintage values (FRED revisions not tracked without
+        ALFRED; caller must treat published_at as fetch time and note
+        the limitation in provenance)."""
+        import csv as csvmod
+        import io
+
+        resp = await self._get(
+            "https://fred.stlouisfed.org/graph/fredgraph.csv",
+            params={"id": code},
+        )
+        text = resp.text
+        if "Error" in text[:200] or "observation" not in text:
+            raise ProviderError(f"fred: fredgraph error for {code}")
+        rows = list(csvmod.DictReader(io.StringIO(text)))
+        return [
+            {"date": r["observation_date"], "value": r.get(code, ".")}
+            for r in rows
+            if r.get(code) not in (None, ".")
+        ]

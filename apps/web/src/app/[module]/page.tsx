@@ -1,7 +1,9 @@
 import { notFound } from "next/navigation";
 
+import { MacroPage } from "@/components/macro-page";
 import { MandatePage } from "@/components/mandate-page";
 import { ModulePlaceholder } from "@/components/module-placeholder";
+import { QuantPage } from "@/components/quant-page";
 import { ResearchPage } from "@/components/research-page";
 import { ScreenerPage } from "@/components/screener-page";
 import { UniversePage } from "@/components/universe-page";
@@ -13,6 +15,8 @@ const REAL_PAGES: Record<string, React.ComponentType> = {
   screener: ScreenerPage,
   research: ResearchPage,
   valuation: ValuationPage,
+  quant: QuantPage,
+  macro: MacroPage,
   settings: MandatePage,
 };
 
