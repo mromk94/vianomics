@@ -13,6 +13,7 @@ import { ValuationPage } from "@/components/valuation-page";
 import { findModule } from "@/lib/modules";
 
 import { CommitteePage } from "@/components/committee-page";
+import { JournalPage } from "@/components/journal-page";
 
 const REAL_PAGES: Record<string, React.ComponentType> = {
   universe: UniversePage,
@@ -24,6 +25,7 @@ const REAL_PAGES: Record<string, React.ComponentType> = {
   "trading-desk": TradingPage,
   risk: RiskPage,
   committee: CommitteePage,
+  journal: JournalPage,
   settings: MandatePage,
 };
 

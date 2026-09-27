@@ -221,6 +221,7 @@ async def evaluate(
                 "explanation": f"only {len(daily)} bars (<60)"}
     mr = evaluate_mean_reversion(daily)
     tf = evaluate_trend_following(daily)
+    base["indicators"] = {"atr_14": ti.atr(daily)}
     if not fresh:
         mr["decision"] = "invalid_data" if mr["decision"] != "invalid_data" else mr["decision"]
         tf["decision"] = "invalid_data" if tf["decision"] != "invalid_data" else tf["decision"]
