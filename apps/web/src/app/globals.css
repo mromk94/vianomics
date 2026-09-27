@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+/* ── Design tokens — VAIIP dark-first terminal theme ─────────────────── */
+
+:root {
+  --bg: #0b0f1a;
+  --surface: #0f1624;
+  --surface-2: #16202f;
+  --surface-3: #1a2236;
+  --border: #1e2a3a;
+  --border-strong: #2a3a52;
+  --text: #e6edf3;
+  --text-dim: #8b98ab;
+  --text-faint: #5b6a80;
+  --accent: #4f7cff;
+  --accent-dim: #2b4a9e;
+  --brand: #f0b90b;
+  --pos: #10b981;
+  --pos-bg: rgba(16, 185, 129, 0.12);
+  --neg: #ef4444;
+  --neg-bg: rgba(239, 68, 68, 0.12);
+  --warn: #f59e0b;
+  --warn-bg: rgba(245, 158, 11, 0.12);
+  --info: #64748b;
+  --info-bg: rgba(100, 116, 139, 0.14);
+}
+
+[data-theme="light"] {
+  --bg: #f4f6fa;
+  --surface: #ffffff;
+  --surface-2: #eef1f6;
+  --surface-3: #e4e9f1;
+  --border: #d8dfe9;
+  --border-strong: #b9c4d4;
+  --text: #131a26;
+  --text-dim: #4a5a70;
+  --text-faint: #7a8aa0;
+  --accent: #2f5fe0;
+  --accent-dim: #c9d6f7;
+  --brand: #b8860b;
+  --pos: #0a8a62;
+  --pos-bg: rgba(10, 138, 98, 0.1);
+  --neg: #c92a2a;
+  --neg-bg: rgba(201, 42, 42, 0.1);
+  --warn: #b7791f;
+  --warn-bg: rgba(183, 121, 31, 0.12);
+  --info: #64748b;
+  --info-bg: rgba(100, 116, 139, 0.12);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-dim: var(--text-dim);
+  --color-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-accent-dim: var(--accent-dim);
+  --color-brand: var(--brand);
+  --color-pos: var(--pos);
+  --color-pos-bg: var(--pos-bg);
+  --color-neg: var(--neg);
+  --color-neg-bg: var(--neg-bg);
+  --color-warn: var(--warn);
+  --color-warn-bg: var(--warn-bg);
+  --color-info: var(--info);
+  --color-info-bg: var(--info-bg);
+  --font-sans: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", Consolas, monospace;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+}
+
+/* All financial figures use tabular numerals. */
+.num,
+[data-num] {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: var(--accent-dim);
+}
+
+/* Thin scrollbars, terminal-style */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}

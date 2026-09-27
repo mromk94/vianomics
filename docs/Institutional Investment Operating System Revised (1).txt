@@ -1,0 +1,1745 @@
+The source already defines the core philosophy as **Research → Valuation → Timing → Risk → Allocation → Execution → Monitoring → Learning**, and explicitly treats the system as one investment-decision pipeline. 
+
+# Recommended Master Architecture
+
+## CHOREDATA / VIANOMICS
+
+### Institutional Investment Operating System
+
+**VAIIP — Vianomics AI Investment Intelligence Platform**
+
+```text
+                    ┌──────────────────────────┐
+                    │   INVESTMENT MANDATE     │
+                    │ Objectives & Constraints │
+                    └────────────┬─────────────┘
+                                 │
+                                 ▼
+                    ┌──────────────────────────┐
+                    │     MARKET UNIVERSE      │
+                    │ US Stocks / Expanded      │
+                    │ Investment Universe      │
+                    └────────────┬─────────────┘
+                                 │
+                                 ▼
+                    ┌──────────────────────────┐
+                    │     DATA FOUNDATION      │
+                    │ Fundamental / Market     │
+                    │ Macro / Alt / Broker   │
+                    └────────────┬─────────────┘
+                                 │
+                                 ▼
+                 ╔══════════════════════════════════╗
+                 ║       STAGE 1 — DISCOVERY       ║
+                 ║     QUANTITATIVE SCREENING      ║
+                 ╚════════════════╤═════════════════╝
+                                  │
+                                  ▼
+                         GREEN ZONE ≥15/20
+                                  │
+                                  ▼
+                 ╔══════════════════════════════════╗
+                 ║       STAGE 2 — RESEARCH        ║
+                 ║ Fundamental + Rule #1 + Moat    ║
+                 ╚════════════════╤═════════════════╝
+                                  │
+                                  ▼
+                 ╔══════════════════════════════════╗
+                 ║       STAGE 3 — VALUATION       ║
+                 ║ DCF / Reverse DCF / Relative    ║
+                 ║ / Rule #1 / Margin of Safety    ║
+                 ╚════════════════╤═════════════════╝
+                                  │
+                                  ▼
+                 ╔══════════════════════════════════╗
+                 ║       STAGE 4 — QUANT            ║
+                 ║ Statistics / Factors / Backtest ║
+                 ╚════════════════╤═════════════════╝
+                                  │
+                                  ▼
+                 ╔══════════════════════════════════╗
+                 ║       STAGE 5 — MACRO            ║
+                 ║ Economic & Market Regime         ║
+                 ╚════════════════╤═════════════════╝
+                                  │
+                                  ▼
+                 ╔══════════════════════════════════╗
+                 ║       STAGE 6 — TECHNICAL        ║
+                 ║ Entry / Timing / Confirmation    ║
+                 ╚════════════════╤═════════════════╝
+                                  │
+                                  ▼
+                 ╔══════════════════════════════════╗
+                 ║       STAGE 7 — TRADE DESIGN     ║
+                 ║ ATR / Position Size / Pyramid    ║
+                 ╚════════════════╤═════════════════╝
+                                  │
+                                  ▼
+                       ┌────────────────────┐
+                       │   RISK MANAGER     │
+                       │ Independent Veto   │
+                       └─────────┬──────────┘
+                                 │
+                         PASS ───┴─── BLOCK
+                                 │
+                                 ▼
+                       ┌────────────────────┐
+                       │ PORTFOLIO MANAGER  │
+                       │ Capital Allocation │
+                       └─────────┬──────────┘
+                                 │
+                                 ▼
+                       ┌────────────────────┐
+                       │       CIO          │
+                       │ Final Synthesis    │
+                       └─────────┬──────────┘
+                                 │
+                                 ▼
+                       ┌────────────────────┐
+                       │ HUMAN APPROVAL     │
+                       └─────────┬──────────┘
+                                 │
+                                 ▼
+                       ┌────────────────────┐
+                       │ EXECUTION          │
+                       │ Phase 2            │
+                       └─────────┬──────────┘
+                                 │
+                                 ▼
+                       ┌────────────────────┐
+                       │    MONITORING      │
+                       └─────────┬──────────┘
+                                 │
+                                 ▼
+                       ┌────────────────────┐
+                       │ FEEDBACK & LEARNING│
+                       └─────────┬──────────┘
+                                 │
+                                 └──────► BACKTEST
+                                             │
+                                             ▼
+                                        MODEL UPDATE
+```
+
+This preserves the source's central concept while making the workflow much easier to implement.
+
+---
+
+# The New 8-Layer Hierarchy
+
+I would reorganize the entire document into **eight major layers**, containing the existing 35 Parts.
+
+| Layer                                              | Purpose                             | Parts |
+| -------------------------------------------------- | ----------------------------------- | ----- |
+| **I. Foundation**                                  | Mandate, universe, data             | 1–3   |
+| **II. Investment Research**                        | Screening and fundamental research  | 4–7   |
+| **III. Market Intelligence**                       | Quant, macro, technical, timing     | 8–11  |
+| **IV. Trade & Risk Engine**                        | ATR, pyramiding, options, risk      | 12–15 |
+| **V. Decision Governance**                         | Risk, portfolio, CIO                | 16–24 |
+| **VI. AI Operating Architecture**                  | Agents and governance               | 26–30 |
+| **VII. Research Validation & Learning**            | Backtesting and feedback            | 31–32 |
+| **VIII. Institutional Records & Master Framework** | Auditability and operating doctrine | 33–35 |
+
+This is substantially cleaner than treating every Part as an equivalent level of importance.
+
+---
+
+# LAYER I — INVESTMENT FOUNDATION
+
+## Part 1 — Investment Mandate & Objectives 
+
+This should be the **constitutional layer** of the system.
+
+### 1.1 Investment Philosophy
+
+The framework establishes:
+
+* Fundamentals-first
+* High-quality compounders
+* Margin of safety
+* Technical confirmation
+* Mean reversion
+* Trend following
+* Strict risk management
+
+The portfolio is divided into:
+
+**Investment Portfolio**
+
+* 70% of capital
+* 10–15 stocks
+* 3–5 year horizon
+
+**Trading Portfolio**
+
+* 30%
+* Maximum 5 stocks
+* Days-to-weeks horizon
+
+The stated objectives are 15–20% annual return, <15% maximum drawdown, Sharpe >1.5, trading win rate >60%, and minimum trading R/R of 1.5:1. These are correctly identified as targets rather than guarantees. 
+
+
+Portfolio construction considers:
+
+* expected return
+* risk
+* correlation
+* sector
+* liquidity
+* macro regime
+* opportunity cost
+
+---
+
+## Part 2 — Investment Universe
+
+US-listed small-to-large cap equities, all sectors.The system should be capable of expanding beyond equities to commodities and Crypto assets.
+
+
+### Recommended hierarchy
+
+```text
+Global Market
+      ↓
+Eligible Markets
+      ↓
+Approved Universe
+      ↓
+US-listed small-to-large cap equities
+      ↓
+Future Expansion Universe
+```
+
+---
+
+## Part 3 — Data & Research Infrastructure
+
+Create one **Data Layer** rather than treating data categories as independent sections.
+
+### Data Stack
+
+1. Fundamental
+2. Market
+3. Alternative
+4. Macro
+
+The source specifies the underlying variables for each category. 
+
+
+### Fundamental Data
+Income statement · Balance sheet · Cash-flow statement · Segment data · EPS · Revenue · FCF · Debt ·Shares outstanding · Dividends · Insider ownership
+
+* Yahoo Finance
+* TIKR
+* Macrotrends
+* GuruScreener
+* SEC EDGAR
+* Spreadsheets
+* Ruleoneinvesting
+
+
+### Market Data
+OHLCV · Daily prices · Weekly prices · 3-day prices · Monthly prices · Volume · ATR · Volatility
+
+
+* Interactive Brokers
+* Alpaca
+* Tradingview
+* FRED
+* Tradier
+* Alpha Vantage
+* Financial Modeling Prep
+* Tiingo 
+
+
+
+### Alternative data
+Future implementation:
+
+* Bloomberg
+* Reuters
+* Benzinga
+* Sentiment
+* Social data
+* Satellite data
+* Blockchain/on-chain data
+
+
+### Macro Data
+
+* PMI (Services)
+* PMI (Manufacturing)
+* Consumer confidence (UMCSI)
+* Building permits
+* GDP 
+* CPI 
+* PPI 
+* Employment
+* Interest rates
+* Credit spreads 
+* Yield curve 
+* Dollar 
+* Commodities
+* Liquidity
+
+---
+
+# LAYER II — INVESTMENT RESEARCH
+
+This layer answers:
+
+> **"Is this a fundamentally attractive company?"**
+
+
+## Part 4 — Institutional Green Zone Screen            
+
+This is the **first hard quantitative gate**.
+
+The 20 criteria remain unchanged:
+
+* Revenue growth
+* Net income growth
+* Operating CF growth
+* Margin expansion
+* ROE
+* ROIC
+* Revenue/receivables
+* Cash conversion
+* Share count
+* FCF/share
+* P/FCF
+* BV/share
+* Dividend growth
+* Economic moat
+* Current ratio
+* Debt/EBITDA
+* Interest coverage
+* DSCR
+* Intrinsic value discount
+* Technical setup
+
+The principal rule remains:
+
+> **≥15/20**
+
+but critical risk-control failures can still block a stock. 
+
+### Gate
+
+```text
+Green Zone <18/20
+       ↓
+       REJECT / WATCHLIST
+
+Green Zone ≥15/20
+       ↓
+       DEEP RESEARCH
+```
+
+---
+
+## Part 5 — Special Valuation Screens 
+
+This becomes a **sector-adjustment layer**, rather than a standalone research stage.
+
+Examples:
+
+* Banks → P/B
+* Insurance → P/B
+* Real Estate → P/B / NAV
+* Commodities → cycle-appropriate valuation
+* Growth companies → forward P/E / EV/EBITDA / FCF
+* Growth expectations → EPS CAGR / revenue estimates / revisions
+
+The source explicitly warns against blindly applying growth-stock multiples across sectors. 
+
+---
+
+## Part 6 — Institutional Equity Research 
+
+This should be the main **fundamental research dossier**.
+
+### 6.1 Executive Summary
+
+### 6.2 Business Quality
+
+### 6.3 Financial Quality
+
+### 6.4 Profitability
+
+### 6.5 Return on Capital
+
+### 6.6 Balance Sheet
+
+### 6.7 Accounting Quality
+
+### 6.8 Per-Share Value Creation
+
+### 6.9 Economic Moat
+
+### 6.10 Growth Drivers
+
+### 6.11 Valuation
+
+### 6.12 Technical Context       MISSING FROM ARCHITECTURE
+
+### 6.13 Risk Analysis
+
+### 6.14 Scenario Analysis
+
+### 6.15 — Management Quality  (Evaluate: * Capital allocation* ROIC discipline* Shareholder alignment* Insider ownership* Compensation* Strategic execution* Acquisition discipline* Communication* Governance
+This feeds directly into the **Management / M** component of the Rule #1 framework).
+
+### 6.16 — Industry & Competitive Position - (Compare the company with peers on: * Revenue growth* Margins* ROIC* Valuation* Balance sheet* Market share* Innovation* Pricing power* Customer retention* Competitive intensity).
+
+### 6.17 Investment Thesis
+
+### 6.18 Final Scorecard
+
+This keeps the detailed institutional research structure intact and prevents the system from evaluating a company in isolation.
+
+---
+
+## Part 7 — Rule #1 Engine 
+
+This should remain **parallel to institutional research**, rather than being buried inside it.
+
+### Four Ms
+
+**Meaning → Moat → Management → Margin of Safety**
+
+### Five Numbers
+
+**Revenue → EPS → Equity → FCF → ROIC**
+
+The Rule #1 engine then produces:
+
+```text
+Sticker Price
+      ↓
+Margin of Safety
+      ↓
+Buy Price
+```
+
+The source explicitly defines Rule #1 as a parallel analytical framework rather than a replacement for institutional research. 
+
+---
+
+# LAYER III — MARKET INTELLIGENCE
+
+This layer answers:
+
+> **"Does the evidence and current environment support the investment?"**
+
+
+## Part 8 — Quantitative Intelligence  
+
+The Quant layer examines:
+
+* Momentum
+* Value
+* Quality
+* Growth
+* Volatility
+* Size
+* Earnings revisions
+* FCF yield
+* ROIC
+* Factor exposure
+* Beta
+* Correlation
+* Sharpe
+* Sortino
+* Drawdown
+
+plus:
+
+* Event studies
+* Earnings analysis
+* Macro-event analysis
+* Backtesting
+* Walk-forward testing
+* Monte Carlo
+
+
+
+---
+
+## Part 9 — Macro Regime Engine    
+
+
+Monitor:
+
+* GDP
+* PMI
+* Employment
+* CPI
+* PPI
+* Consumer confidence
+* Yield curve
+* Interest rates
+* Credit conditions
+* Dollar
+* Commodities
+* Liquidity
+
+
+### Economic Regime
+
+Recovery → Expansion → Slowdown → Recession
+
+### Market Regime
+
+Risk-on → Neutral → Risk-off
+
+
+### Sector Rotation
+
+# Early Expansion
+Technology
+Consumer Discretionary
+Industrials
+
+# Mid Expansion
+Financials
+Materials
+Energy
+
+# Late Expansion
+Energy
+Materials
+Industrials
+
+# Recession
+Consumer Staples
+Utilities
+Healthcare
+
+Constraints
+* Maximum 25% sector exposure
+* Minimum 5 sectors
+* Quarterly reassessment
+
+
+Map the current regime to sector preferences.
+
+This should feed directly into both the **CIO** and **Portfolio Manager** rather than simply appearing as research commentary. 
+
+---
+
+## Part 10 — Technical Timing Engine 
+
+Technical analysis has one clearly defined role:
+
+> **Determine when, where and with what risk to enter.**
+
+
+### Branch A — Mean Reversion
+
+Primary triggers:
+1-Day RSI(10) · 2-Day RSI(10) · 3-Day RSI(10) < 30 · Weekly RSI(10) < 30 · Monthly RSI(10) < 30
+
+Confirmations:
+CMI(21) < 0 · Williams %R(13) < −80 · Williams %R(52) < −80 · Major support/resistance · Bullishreversal · Candlestick pattern · Volume
+
+Rule:
+RSI must align with CMI + Williams %R
+
+RSI → CMI → Williams %R → Support → Reversal → Volume
+
+
+
+### Branch B — Trend Following
+
+Primary triggers:
+Daily Aroon(25) > 99 · Weekly Aroon(25) > 99 · · Monthly Aroon(25) > 99Trendline breakout
+
+Confirmations:
+ADX · MACD · Ichimoku · Chart pattern · Volume
+
+Aroon → MACD → ADX → Ichimoku → Breakout → Volume
+
+The source explicitly separates technical timing from fundamental quality. 
+
+---
+
+## Part 11 — Market Timing Overlay 
+
+This becomes the **portfolio-level timing filter**.
+
+### Fear & Greed
+
+Index           Action
+0–25            Accumulation
+25–45          Cautious accumulation
+45–65           Neutral
+65–80           Reduce
+80–100         Aggressive risk reduction
+
+Accumulation → Caution → Neutral → Reduce → Risk Reduction
+
+
+
+### VIX
+
+VIX           Action
+<15           Normal
+15–20       Tighten risk
+20–30       Reduce position size
+>30           Risk-off
+
+Normal → Tighten → Reduce → Risk-off
+
+Critically, these remain **overlays rather than standalone trading signals**, as specified in the source. 
+
+---
+
+# LAYER IV — TRADING & INVESTMENT RISK ENGINE
+
+
+## Part 12 — ATR & Pyramid Engine (Trading Portfolio — 30% of capital)
+
+This is where the revised **pyramiding methodology** belongs.
+
+This should be treated as the **Trade Construction Engine**, not merely a technical indicator section.
+
+### Stage 1 — Initial Entry
+
+```text
+Dollar Risk
+     ↓
+1.5 × ATR
+     ↓
+Initial Position Size
+```
+
+### Stage 2 — Initial Target
+
+```text
+Entry + 3 × ATRinitial
+          ↓
+     TARGET 1
+          ↓
+   DOUBLE POSITION
+```
+
+**No profit-taking at Target 1.**
+
+### Stage 3 — Recalculate Volatility
+
+```text
+Current Price
+     ×
+Current 12W ATR%
+     =
+Current ATR $
+```
+
+### Stage 4 — Tighten Stop
+
+```text
+New Stop =
+Current Price − 1.0 × Current ATR
+```
+
+### Stage 5 — Target 2
+
+At the second target:
+
+```text
+0.75 × ATR trailing stop
+            OR
+50% profit-taking
+```
+
+The revised rules and formulas are clearly specified in the source. 
+
+---
+
+# The Pyramid State Machine
+
+This is one of the biggest improvements I would make to the document.
+
+Instead of describing pyramiding in several locations, define it once as a state machine:
+
+```text
+STATE 0
+WATCHLIST
+   │
+   ▼
+STATE 1
+TRADE ELIGIBLE
+   │
+   ▼
+STATE 2
+POSITION 1
+1.5× ATR STOP
+3× ATR TARGET
+   │
+   ├──────── Stop Hit ───────► EXIT
+   │
+   ▼
+STATE 3
+TARGET 1
+   │
+   ▼
+POSITION 2 ADDED
+   │
+   ▼
+1.0× CURRENT ATR STOP
+   │
+   ├──────── Stop Hit ───────► EXIT ALL
+   │
+   ▼
+STATE 4
+TARGET 2
+   │
+   ├──► 0.75× ATR TRAILING STOP
+   │
+   └──► 50% PROFIT + TRAILING
+```
+
+This makes the strategy dramatically easier to code.
+
+---
+
+## Part 13 — Investment Risk Management Engine (Investment Portfolio — 70% of capital)
+
+
+             PORTFOLIO
+                      │
+          ┌───────────┴───────────┐
+          │                       │
+       IBKR                     Bamboo
+          │                       │
+          └───────────┬───────────┘
+                      │
+              INVESTMENT PORTFOLIO
+                      │
+              UNIQUE COMPANIES
+                      │
+          ┌───────────┼────────────────┐
+          │           │           │              │                │                          │
+     Fundamental   Valuation    Thesis      Position Size   Normal volatility
+        Test                 Test            Test              Test                   Test                
+          │           │           │             │                  │                        │
+          │           │           │             │                  │                        │
+          └───────────┼────────────────┘
+                      │
+              HOLD / REDUCE / EXIT
+
+
+
+Test | Question | Action
+
+1. Fundamental | Is the Business (Green Zone) deteriorating materially? | Exit/Review
+
+2. Valuation | Is price at or materially above intrinsic value? | Reduce/Exit
+
+3. Thesis invalidation | Is the original reason for ownership still valid? | Exit if broken
+
+4. Position Size | Has appreciation made the position excessively large? | Reduce/HOLD unless valuation/fundamentals/thesis dictate otherwise
+
+5. Normal volatility | Is price merely fluctuating? | Do nothing
+
+---
+
+## Part 14 — Risk Management Engine    
+
+Separate this from the Risk Manager **Agent**.
+
+The distinction should be:
+
+### Risk Engine
+
+**Calculates risk.**
+
+### Risk Manager Agent
+
+**Decides whether the calculated risk is acceptable.**
+
+That distinction is important for VAIIP architecture.
+
+---
+
+## Part 15 — Portfolio Risk Limits
+
+Hard limits:
+
+* Maximum drawdown: 15%
+* Sector concentration: ≤25%
+* Single stock: ≤10%
+* Minimum sectors: 5
+* Correlation limits
+* Cash requirements
+
+The source also adds pyramid-specific controls such as reduced sizing during volatility spikes, VIX-based reduction and restrictions on new positions at high Fear & Greed readings. 
+
+---
+
+# LAYER V — DECISION GOVERNANCE
+
+## Part 16 — Risk Manager Agent
+
+This is the **independent control function**.
+
+It receives the outputs of all preceding analytical stages and asks:
+
+> **"Can we safely take this risk?"**
+
+It has **veto authority**.
+
+The source explicitly establishes this hierarchy. 
+
+
+## Portfolio Feedback Risk Engine.
+
+This is exactly why your AI investment system should not simply calculate:
+
+"Intrinsic value = $X."
+
+It also needs to calculate:
+"What happens if the market moves against us?"
+
+
+## 1. Fundamental & Valuation Risk
+
+* What is the company actually worth?
+* Is the investment thesis deteriorating?
+* Has the security become too expensive?
+* What happens if the thesis reverses?
+
+## 2. Position & Concentration Risk
+
+* How much capital is exposed to the position?
+* What happens if the position falls 10%, 20%, 30%, or 40%?
+* How much of the portfolio depends on the same thesis?
+* Are apparently different positions actually the same macro trade?
+
+## 3. Factor & Correlation Risk
+
+* What macro, industry, or factor exposure drives the position?
+* What other positions move with it?
+* What happens if correlated positions fall simultaneously?
+
+## 4. Leverage & Margin Risk
+
+* How much borrowed capital supports the position?
+* How much will leverage magnify losses?
+* At what point do margin requirements or lenders force action?
+* What happens if the broker increases margin requirements during a crisis?
+
+## 5. Liquidity & Financing Risk
+
+* How quickly can we exit without materially affecting the price?
+* Can the portfolio survive a severe drawdown without forced liquidation?
+* Can we continue financing the position long enough for the thesis to play out?
+
+## 6. Volatility & Market-Structure Risk
+
+* What happens when volatility doubles?
+* How rapidly is risk increasing?
+* Could options, dealer hedging, or crowded positioning amplify the move?
+* How many other investors are positioned similarly?
+
+## 7. Feedback & Path-Dependency Risk
+
+* Could our own selling contribute to the decline?
+* Could falling prices trigger further selling or liquidation?
+* What happens if the asset eventually recovers, but we are forced out before the recovery?
+
+### Simplified Risk Framework
+
+**1. Fundamental Risk** — Is the thesis and valuation still valid?
+**2. Position Risk** — How much can this individual position hurt us?
+**3. Concentration Risk** — How much of the portfolio depends on the same outcome?
+**4. Leverage Risk** — How much can borrowing magnify the loss?
+**5. Liquidity Risk** — Can we exit or survive the drawdown?
+**6. Market-Structure Risk** — Could volatility, crowding, or derivatives amplify the move?
+**7. Path Risk** — Can we survive the journey until the thesis plays out?
+
+---
+
+## Part 17 – Portfolio Manager Agent 
+     
+"Even if this is a good investment, is it the best use of our capital right now?"
+
+Responsibilities:
+
+* Portfolio construction
+* Asset allocation
+* Capital allocation
+* Opportunity cost
+* Rebalancing
+* Diversification controls
+* Liquidity management
+* Sector exposure
+* Portfolio optimization
+* Position sizing discipline
+* Volatility monitoring
+* Drawdown management
+* Continuous portfolio reassessment
+* Capacity for pyramiding
+* Sharpe ratio 
+* Correlations
+* Position quality
+* fear & Greed
+
+
+
+---
+
+## Part 18 — Capital Allocation Engine  
+
+Every candidate competes against the **marginal existing holding**.
+
+This is an important concept and deserves its own engine:
+
+```text
+New Candidate
+      │
+      ▼
+Expected Risk-Adjusted Return
+      │
+      ▼
+Compare With Existing Holdings
+      │
+      ▼
+Best Capital Use?
+   YES │ NO
+      │   └──► WATCHLIST
+      ▼
+PORTFOLIO
+```
+
+---
+
+## Part 19 — CIO Agent
+
+The CIO becomes the **executive synthesis layer**.
+
+Inputs:
+
+```text
+Fundamental
+Valuation (All)
+Rule #1 Agent
+Quant
+Macro
+Technical
+Risk
+Execution
+Portfolio
+```
+
+Outputs:
+
+```text
+Recommendation
+Rating
+Confidence score
+Expected Return
+Downside
+MOS
+R/R
+Horizon
+Catalysts
+Thesis
+Risks
+Invalidation conditions
+Kill Conditions
+
+
+---
+
+## Part 20 — CIO Confidence Model
+
+Do **not** make confidence equivalent to probability of return.
+
+Confidence should reflect:
+
+* Agent agreement
+* Evidence quality
+* Data freshness
+* Model uncertainty
+* Valuation sensitivity
+* Contradictions
+* Risk assessment
+
+This distinction is already present in the source and should be elevated because it is critical to AI governance. 
+
+---
+
+## Part 21 — Agent Conflict Resolution
+
+This should be a formal governance protocol.
+
+### Example
+
+```text
+Fundamental   BUY
+Valuation       BUY
+Quant         BUY
+Technical     SELL
+Macro         NEUTRAL
+Options       BEARISH
+Risk          BLOCK
+
+```
+
+Result:
+
+> **NO TRADE**
+
+Not because the agents voted against the stock, but because the **Risk Manager vetoed the transaction**.
+
+That principle should become a core VAIIP rule. 
+
+---
+
+## Part 22 — Master Investment Decision Tree
+
+I recommend making this the single master gate:
+
+```text
+UNIVERSE
+   ↓
+GREEN ZONE ≥15/20?
+   │
+ NO ──► WATCHLIST
+   │
+ YES
+   ↓
+FUNDAMENTAL RESEARCH PASS?
+   │
+ NO ──► REJECT
+   │
+ YES
+   ↓
+RULE #1 PASS?
+   │
+ NO ──► REJECT / WATCHLIST
+   │
+ YES
+   ↓
+MARGIN OF SAFETY ≥20–30%?
+   │
+ NO ──► WAIT
+   │
+ YES
+   ↓
+QUANT SUPPORTIVE?
+   │
+ NO ──► REVIEW
+   │
+ YES
+   ↓
+MACRO ACCEPTABLE?
+   │
+ NO ──► WAIT / REDUCE
+   │
+ YES
+   ↓
+TECHNICAL SETUP?
+   │
+ NO ──► WAIT
+   │
+ YES
+   ↓
+ATR / RISK PASS?
+   │
+ NO ──► BLOCK
+   │
+ YES
+   ↓
+PORTFOLIO FIT?
+   │
+ NO ──► WATCHLIST
+   │
+ YES
+   ↓
+CIO APPROVAL
+   ↓
+HUMAN APPROVAL
+   ↓
+EXECUTION
+```
+
+This makes Part 22 the **central operating workflow** rather than leaving it as a placeholder.
+
+---
+
+## Part 23 — Entry Protocol
+
+A stock is **TRADE-ELIGIBLE** only when all required gates pass:
+
+1. Green Zone ≥15/20
+2. Valuation/MOS acceptable
+3. Rule #1 acceptable
+4. Technical setup confirmed
+5. Market conditions acceptable
+6. ATR risk acceptable
+7. Margin Requirement
+8. Net & Gross Exposure
+9. Pyramid parameters validated
+10. Portfolio limits acceptable
+11. CIO positive recommendation
+12. Human approval
+
+
+
+The source establishes essentially this sequence. 
+
+
+### Performance
+
+* CAGR
+* Sharpe
+* Sortino
+* maximum drawdown
+* win rate
+* profit factor
+* expectancy
+* alpha
+* beta
+
+The system feeds realized results back into the research and backtesting engine.
+---
+
+## Part 24 — Exit Engine   
+
+Rather than treating exit rules as one generic list, divide them into six exit classes:
+
+### 1. Fundamental Exit
+
+Business quality deteriorates.
+
+### 2. Valuation Exit
+
+Price reaches/exceeds intrinsic value.
+
+### 3. Technical Exit
+
+Trend/setup invalidates.
+
+### 4. Risk Exit
+
+Stop/risk limits breached.
+
+### 5. Market Exit
+
+Macro/volatility regime becomes unacceptable.
+
+### 6. Thesis Exit
+
+The reason for owning the stock disappears.
+
+Then add:
+
+### Pyramid Exit
+
+```text
+Stop anywhere
+→ EXIT ALL
+
+Target 1
+→ DOUBLE
+
+Target 2
+→ TRAIL / TAKE 50%
+```
+
+This accurately reflects the revised methodology. 
+
+---
+
+## Part 25 — Monitoring Engine   
+
+Monitoring should be **continuous rather than post-trade**.
+
+### Company
+* Earnings
+* Revenue
+* Margins
+* FCF
+* Guidance
+* Debt
+* Management
+* Green Zone score
+
+### Valuation
+* Price
+* Fair value
+* Rule #1 
+* MOS
+
+### Macro
+* Rates
+* Inflation
+* PMI
+* Employment
+* VIX
+* Fear & Greed
+
+### Trading
+* Margin Requirement
+* initial target
+* pyramid status
+* current weekly ATR
+* current stop
+* risk/reward
+
+### Portfolio
+* Weight
+* Correlation
+* Sector
+* Drawdown
+* exposure
+* cash
+* P&L
+* Portfolio VaR
+* position risk
+* volatility
+* stress tests
+
+### Technical
+* Trend
+* RSI
+* Volume
+
+### Pyramid
+
+* ATRcurrent / ATRinitial
+* Target progression
+* Stop status
+
+
+---
+====================================================================
+# LAYER VI — AI OPERATING ARCHITECTURE
+
+This is where I would integrate the material from the **ChoreData Framework Redesign** rather than making it a separate system.
+
+## Part 26 — AI Multi-Agent Architecture
+
+### Research Layer
+
+1. Fundamental Agent
+2. Valuation Agent
+3. Rule #1 Agent
+4. Quant Agent
+5. Macro Agent  
+6. Technical Agent 
+
+### Control Layer
+
+7. Risk Manager
+
+### Capital Layer
+
+8. Portfolio Manager
+
+### Executive Layer
+
+9. CIO
+
+### Execution Layer
+
+10. Execution Agent 
+
+This hierarchy is already defined in the source material. 
+
+---
+
+## Part 27 — Agent Responsibility Matrix
+
+The cleanest version is:
+
+| Agent             | Primary Question                                   |
+| ----------------- | -------------------------------------------------- |
+| Fundamental       | Is this a good business?                           |
+| Valuation           | What is the business worth? |
+| Rule #1           | Is this a wonderful business at a wonderful price? |
+| Quant             | Does statistical evidence support it?              |
+| Macro             | Is the environment supportive?                     |
+| Technical         | When should we enter/exit?                         |
+| Risk              | Can we safely take this risk?                      |
+| Portfolio Manager | Is this the best use of capital?                   |
+| CIO               | What should we ultimately recommend?               |
+| Execution         | How should the approved trade be executed?         |
+
+
+
+---
+
+## Part 28 — Agent Output Standard
+
+Every agent should return the same schema:
+
+```text
+TICKER
+AGENT
+DATE
+DATA QUALITY
+
+RECOMMENDATION
+SCORE
+CONFIDENCE
+
+KEY EVIDENCE
+PASS CRITERIA
+FAIL CRITERIA
+
+KEY RISKS
+CONTRADICTIONS
+ASSUMPTIONS
+
+DATA GAPS
+REQUIRED FOLLOW-UP
+
+FINAL CONCLUSION
+```
+
+This is particularly important if the ultimate objective is to turn VAIIP into actual software. 
+
+---
+
+## Part 29 — Human-in-the-Loop Governance
+
+The authority hierarchy becomes:
+
+```text
+AI RESEARCH
+      ↓
+AI SYNTHESIS
+      ↓
+AI RISK CONTROL
+      ↓
+AI PORTFOLIO RECOMMENDATION
+      ↓
+HUMAN INVESTMENT APPROVAL
+      ↓
+EXECUTION
+```
+
+The AI remains decision-support rather than an autonomous investment manager. Phase 2 may introduce automated execution subject to hard-coded controls. 
+
+
+Its recommended architecture is:
+
+PLAN
+Determine the information and data required.
+↓
+EXECUTE
+The agent performs the workflow.
+↓
+LEARN
+The system incorporates new information and improves.
+↓
+HUMAN REVIEW
+A person evaluates important outputs and decisions.
+
+---
+
+## Part 30 — Phase 2 Execution Architecture
+
+Execution is deliberately separated from intelligence.
+
+```text
+CIO
+ ↓
+Risk
+ ↓
+Portfolio Manager
+ ↓
+Human
+ ↓
+Execution Agent
+ ↓
+Broker(s)
+```
+
+The execution layer handles:
+
+* Broker connectivity
+* Two-broker execution bridge
+* Order creation
+* Order management
+* Routing
+* Status
+* Fills
+* Slippage
+* Partial fills
+* Rejections
+* Execution quality
+* Execution monitoring
+* Reconciliation
+====================================================================
+# LAYER VII — VALIDATION & LEARNING
+
+## Part 31 — Backtesting & Research Sandbox (# PART 34 — Backtesting, Simulation & Research Sandbox)
+
+The research environment should have a formal validation stack:
+
+```text
+Historical Backtest
+       ↓
+Out-of-Sample Test
+       ↓
+Walk-Forward
+       ↓
+Monte Carlo
+       ↓
+Transaction Costs
+       ↓
+Slippage
+       ↓
+Liquidity Constraints
+       ↓
+Regime Analysis
+       ↓
+Stress Testing
+        ↓
+Scenario Analysis
+```
+
+### Bias controls
+
+* no look-ahead bias
+* survivorship-bias control
+* point-in-time data
+* corporate-action adjustment
+
+---
+
+## Part 32 — Feedback & Learning Engine
+
+This should become the system's **closed-loop learning mechanism**:
+
+```text
+SIGNAL
+  ↓
+DECISION
+  ↓
+TRADE
+  ↓
+OUTCOME
+  ↓
+ATTRIBUTION
+  ↓
+WHAT WORKED?
+  ↓
+WHAT FAILED?
+  ↓
+MODEL UPDATE
+  ↓
+BACKTEST
+  ↓
+PRODUCTION
+```
+
+Track:
+
+* Prediction accuracy
+* Agent accuracy
+* CIO accuracy
+* Win rate
+* Expected vs realized return
+* Expected vs realized volatility
+* Expected vs realized drawdown
+* Slippage
+* False positives
+* False negatives
+
+
+
+---
+
+# LAYER VIII — INSTITUTIONAL RECORD & OPERATING DOCTRINE
+
+## Part 33 — Investment Decision Record
+
+This becomes the **official audit record** for every investment.
+
+It should capture:
+
+```text
+TICKER
+DATE
+
+GREEN ZONE
+FUNDAMENTAL SCORE
+VALUATION
+RULE #1
+QUANT
+MACRO
+TECHNICAL
+
+
+INTRINSIC VALUE
+CURRENT PRICE
+MOS
+
+ATR
+ENTRY
+STOP
+TARGET 1
+TARGET 2
+POST-PYRAMID STOP
+R/R
+
+POSITION SIZE
+MARGIN REQUIREMENT
+NET & GROSS EXPOSURE
+POST-PYRAMID SIZE
+
+CIO RATING
+CIO CONFIDENCE
+RISK MANAGER
+PORTFOLIO MANAGER
+HUMAN APPROVAL
+
+AUDIT TRAIL
+```
+
+The source already provides this structure through the NVDA investment-record example. 
+
+---
+====================================================================
+
+# Part 34 — The Ten Investment Questions
+
+This should become the **executive checklist**, not another analytical stage.
+
+### The Ten Questions
+
+1. Is the company financially excellent?
+2. Does it have a durable competitive advantage?
+3. Does it pass Rule #1?
+4. Is valuation attractive?
+5. Does statistical evidence support the thesis?
+6. Is the macro environment supportive?
+7. Is the technical setup favourable?
+8. How much capital should we risk?
+9. Is this the best use of portfolio capital?
+10. Should we actually make the investment?
+
+These questions map almost perfectly onto the new architecture. 
+
+---
+
+# Part 35 — Master Operating Model
+
+This should be the **final synthesis**, not another process step.
+
+## The Complete ChoreData Investment Cycle
+
+```text
+                 ┌───────────────────────┐
+                 │  INVESTMENT MANDATE   │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │       UNIVERSE        │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │     DATA ENGINE       │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │   GREEN ZONE SCREEN   │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │  FUNDAMENTAL RESEARCH │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │   RULE #1 + VALUATION │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │    QUANT + MACRO      │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │ TECHNICAL + TIMING    │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │ ATR + TRADE DESIGN    │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │     RISK MANAGER      │
+                 │       VETO GATE       │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │  PORTFOLIO MANAGER    │
+                 │   CAPITAL ALLOCATION  │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │         CIO           │
+                 │  FINAL SYNTHESIS      │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │   HUMAN APPROVAL      │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │      EXECUTION        │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │     MONITORING        │
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │ FEEDBACK / ATTRIBUTION│
+                 └───────────┬───────────┘
+                             ▼
+                 ┌───────────────────────┐
+                 │ BACKTEST / VALIDATION │
+                 └───────────┬───────────┘
+                             │
+                             └──────────► SYSTEM UPDATE
+```
+
+This retains the source's fundamental conclusion that the system is **not simply a stock screener**, but a complete investment system designed to distinguish:
+
+1. **A good company**
+2. **A good investment**
+3. **A good trade today**
+4. **An appropriately sized trade**
+5. **A good portfolio allocation**
+
+The source explicitly identifies those distinctions as the conceptual foundation of the VAIIP architecture. 
+
+---
+
+# The Most Important Structural Change
+
+I would make one major conceptual change to the document:
+
+### Do not present the AI agents as "Parts" of the investment process.
+
+They are an **orchestration layer across the investment process**.
+
+In other words:
+
+```text
+                                             CHOREDATA INVESTMENT PROCESS
+                                                                        │
+     ┌────────────────────────────────────────────────┐
+     │                        │                        │                               │                          │
+     ▼                      ▼                       ▼                             ▼                         ▼
+ RESEARCH       CONTROL         CAPITAL                  EXECUTIVE      EXECUTION
+     │                        │                        │                               │                           │
+     ▼                      ▼                       ▼                             ▼                          ▼
+Fundamental     Risk Manager    Portfolio Manager           CIO                   Execution Agent 
+Valuation                                                                             
+Rule #1                 
+Quant
+Macro
+Technical
+     │                        │                        │
+     └────────────────────────┼────────────────────────┘
+                                                                                     ▼
+                                                                      HUMAN APPROVAL
+                                                                                     │
+                                                                                     ▼
+                                                                             EXECUTION
+```
+
+This is a much better architecture for **VAIIP** than simply appending "AI Multi-Agent System" to the end.
+
+---
+
+# Final Recommended Document Structure
+
+I would therefore produce the definitive master document in this order:
+
+### SECTION I — STRATEGIC FOUNDATION
+
+**Part 1** Investment Mandate & Objectives
+**Part 2** Investment Universe
+**Part 3** Data & Research Infrastructure
+
+### SECTION II — INVESTMENT INTELLIGENCE
+
+**Part 4** Green Zone Screening
+**Part 5** Special Valuation Screens
+**Part 6** Institutional Equity Research
+**Part 7** Rule #1 Engine
+
+### SECTION III — MARKET & QUANTITATIVE INTELLIGENCE
+
+**Part 8** Quantitative Analysis
+**Part 9** Macro Regime Analysis
+**Part 10** Technical Entry Engine
+**Part 11** Market Timing Overlay
+
+### SECTION IV — TRADE CONSTRUCTION & RISK
+
+**Part 12** ATR & Pyramid Engine
+**Part 13** Investment Risk Management Engine
+**Part 14** Risk Management Engine
+**Part 15** Portfolio Risk Limits
+
+### SECTION V — INVESTMENT GOVERNANCE
+
+**Part 16** Risk Manager Agent
+**Part 17** Portfolio Manager Agent
+**Part 18** Capital Allocation Engine
+**Part 19** CIO Agent
+**Part 20** CIO Confidence Model
+**Part 21** Agent Conflict Resolution
+**Part 22** Master Investment Decision Tree
+**Part 23** Entry Protocol
+**Part 24** Exit Engine
+**Part 25** Monitoring Engine
+
+### SECTION VI — VAIIP AI OPERATING ARCHITECTURE
+
+**Part 26** AI Multi-Agent Architecture
+**Part 27** Agent Responsibility Matrix
+**Part 28** Agent Output Standard
+**Part 29** Human-in-the-Loop Governance
+**Part 30** Phase 2 Execution Architecture
+
+### SECTION VII — VALIDATION & CONTINUOUS LEARNING
+
+**Part 31** Backtesting & Research Sandbox
+**Part 32** Feedback & Learning Engine
+
+### SECTION VIII — INSTITUTIONAL CONTROL & RECORD KEEPING
+
+**Part 33** Investment Decision Record
+**Part 34** Ten Investment Questions
+**Part 35** Master Operating Model
+
+That gives you the **35-part architecture you originally requested**, but with a much stronger hierarchy and workflow.
+
+### One further improvement I strongly recommend
+
+The final production version should have **four separate layers of documentation**:
+
+**Level 1 — Investment Policy:**
+What Vianomics is allowed and required to do.
+
+**Level 2 — Investment Process:**
+How a security moves from universe → research → approval → position → exit.
+
+**Level 3 — AI System Architecture:**
+Which agent performs each analytical/control function.
+
+**Level 4 — Operating Procedures:**
+The actual formulas, thresholds, checklists, data fields, alerts, decision records and execution rules.
+
+That separation will make the framework considerably easier to convert into the actual **VAIIP software specification**, database schema, agent prompts, workflow engine and ultimately automated execution infrastructure.
+
