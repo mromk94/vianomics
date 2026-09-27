@@ -334,7 +334,7 @@
 - **Modules:** `backtest/` — event-driven engine reusing the same engine functions as production (no parallel implementation).
 - **Acceptance:** 10-yr backtest of a defined strategy → CAGR/DD/Sharpe/win-rate report; bias controls verified.
 - **Tests:** Look-ahead detection test; reproducibility; cost modeling.
-- **Status:** IMPLEMENTED — providers/broker.py: BrokerAdapter protocol (account/positions/margin/submit/cancel/status/executions), PaperBroker w/ deterministic fills+commissions+rejections+disconnects, IbkrAdapter fails loudly until IBKR_* env+TWS+EXECUTION_ENABLED, Alpaca marked planned. execution.py FSM draft→risk→approval→submitted→ack→filled w/ idempotency keys, dedupe-first, unknown→reconcile (never blind retry), kill switch, notional/qty caps; broker_orders+execution_events+kill_switch tables; /execution/{status,account,orders,submit,cancel,reconcile,kill-switch}; order blotter on /trading-desk.
+- **Status:** IMPLEMENTED — backtest.py (backtest/v1.0): event-driven, close(t) signal → open(t+1) fill, indicators on bars[:i] only (no lookahead), commission+slippage+liquidity caps explicit, stop gap-through fills at open. backtest_service: stored OHLCV, persisted versioned run (params+engine+data snapshot+limitations — missing history reported, not fabricated). /backtest API + Research Sandbox UI (/backtesting).
 
 ### D1.32 | Part 32 — Feedback & Learning Engine
 - **Required:** Signal→Decision→Trade→Outcome→Attribution→Model update→Backtest→Production. Track prediction/agent/CIO accuracy, win rate, expected vs realized (return/vol/DD), slippage, false ±.
@@ -342,7 +342,7 @@
 - **Modules:** `engines/learning/` — attribution + accuracy scoring; model registry versioning.
 - **Acceptance:** Per-trade attribution; accuracy dashboard; versioned model updates.
 - **Tests:** Attribution math; versioned updates logged.
-- **Status:** NOT STARTED
+- **Status:** IMPLEMENTED — validation stack: walk_forward (fixed params, per-window Sharpe/DD + stability), monte_carlo (bootstrap trade-P&L resample → p5/median/p95/prob_loss, labeled not-a-forecast), stress_overlay (shock at each point → worst max-DD). feedback.py (feedback/v1.0): expected-vs-realized per decision + per-agent direction accuracy + unrealized-fill attribution; policy: never auto-changes limits/mandates/strategies.
 
 ---
 
