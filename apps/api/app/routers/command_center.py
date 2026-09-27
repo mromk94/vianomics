@@ -1,8 +1,13 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.db.session import get_db
+from app.models.ops import SyncStatus
+from app.models.providers import DataProvider
 from app.routers.health import _check_postgres, _check_redis
 from app.schemas.command_center import (
     CommandCenterResponse,
@@ -17,12 +22,37 @@ from app.services import demo_fixtures as demo
 router = APIRouter()
 
 
-async def _system_health() -> list[ProviderHealth]:
-    """Real health of the platform's own infrastructure — never demo data.
+async def _provider_health(db: AsyncSession) -> list[ProviderHealth]:
+    """Registered providers + last successful sync — real DB state."""
+    providers = (await db.execute(select(DataProvider))).scalars().all()
+    latest = dict(
+        (await db.execute(
+            select(
+                SyncStatus.provider_id,
+                func.max(SyncStatus.last_success_at),
+            ).group_by(SyncStatus.provider_id)
+        )).all()
+    )
+    return [
+        ProviderHealth(
+            name=p.name,
+            status=(
+                "up" if p.status == "connected"
+                else "down" if p.status == "down"
+                else "degraded" if p.status == "degraded"
+                else "unconfigured"
+            ),
+            last_sync=(
+                latest[p.id].isoformat() if latest.get(p.id) else None
+            ),
+        )
+        for p in providers
+    ]
 
-    External market-data providers are reported as `unconfigured` until
-    their adapters land in M1.
-    """
+
+async def _system_health(db: AsyncSession | None) -> list[ProviderHealth]:
+    """Real health — infrastructure checks + provider registry rows.
+    External providers only ever say 'up' after a real successful sync."""
     pg = await _check_postgres()
     rd = await _check_redis()
     now = datetime.now(UTC).isoformat()
@@ -39,18 +69,19 @@ async def _system_health() -> list[ProviderHealth]:
             last_sync=now if rd["status"] == "up" else None,
             detail=rd.get("error"),
         ),
-        ProviderHealth(name="SEC EDGAR", status="unconfigured"),
-        ProviderHealth(name="FRED", status="unconfigured"),
-        ProviderHealth(name="Market Data", status="unconfigured"),
-        ProviderHealth(name="IBKR", status="unconfigured"),
     ]
+    if db is not None:
+        try:
+            providers.extend(await _provider_health(db))
+        except Exception:  # noqa: BLE001 — DB must be reachable for this anyway
+            pass
     return providers
 
 
 @router.get("/command-center", response_model=CommandCenterResponse)
-async def command_center() -> CommandCenterResponse:
+async def command_center(db: AsyncSession = Depends(get_db)) -> CommandCenterResponse:
     settings = get_settings()
-    providers = await _system_health()
+    providers = await _system_health(db)
 
     if settings.demo_fixtures:
         return CommandCenterResponse(

@@ -34,6 +34,16 @@
 - `apps/web` — Next.js 15 + TS + Tailwind v4 + lucide: dark-first token theme (+light), sidebar with 19 modules in 6 groups, topbar, ⌘K command palette, theme toggle, error boundary, 404. All 18 non-CC modules route via `[module]` catch-all → honest "engine pending" placeholders (no fabricated data). Command Center renders portfolio/risk/regime/watchlist/approvals/alerts/decisions + REAL provider health; demo sections carry amber DEMO badges. Components: MetricCard, StatusBadge, DataTable, Dialog, Drawer, ConfirmDialog, Toast, SearchInput, FilterSelect, Skeleton, EmptyState, ErrorState, PageHeader, SectionCard. 9 vitest tests green; `next build` clean; `tsc --noEmit` clean.
 - Known npm audit: 4 vulns (3 moderate, 1 high) in dev deps — review before Phase 2.
 
+## Built (M1 — data architecture & persistence)
+- **42-table schema** via Alembic `f866152d25bf` (verified on Postgres + SQLite; upgrade/downgrade clean): identity (users/roles/sessions/audit), mandates (versioned), instruments+identifiers+exchanges+sectors+corporate actions, universes/watchlists, providers+credential-meta (secret refs only), fundamental observations (PIT + supersedes), OHLCV, macro series/observations/releases, portfolios/positions/trades/ledger (Numeric — no float money), analysis runs, agent defs/runs/outputs/evidence, risk assessments/approvals/decision records, alerts/jobs/job runs/sync status/quarantine.
+- **Provenance:** every observation carries source/ref/observed/published/ingested/quality/supersedes; `pit_filter`/`latest_as_of` helpers; restatements = new rows, never overwrites.
+- **Providers:** `ProviderAdapter` protocol; EDGAR + FRED + Tiingo adapters; PaperBroker + IBKR (refuses until configured). Credentials env-only.
+- **Ingestion:** validated→normalized→quarantined pipeline, idempotent upserts, revision chains, retry/backoff, per-provider throttle, JobRun counts, SyncStatus freshness.
+- **Security:** argon2 hashes, revocable server sessions, `/api/v1/auth/{login,logout,me}`, `require()` RBAC (domain wildcards + admin:*), audit events, `tenant_id` on owned tables.
+- **Seed:** 3 roles, admin@vianomics.io (env ADMIN_PASSWORD), NASDAQ/NYSE, 11 GICS sectors, 24-ticker approved universe, mandate v1 (incl. PDF risk limits — C9), 5 providers `unconfigured`.
+- **Live-verified:** real SEC EDGAR ingest — NVDA XBRL, 980 records in / 980 valid / 730 persisted; provider health now DB-driven in Command Center.
+
 ## Session log
 - **2026-09-27** — Initial audit + documentation scaffold. Repo audited (empty), 3 docs created, spec conflicts catalogued.
-- **2026-09-27** — M0 + app shell implemented per shell prompt. Backend verified live (healthz ok, command-center returns demo-flagged payload + real infra health). Nothing committed to git yet — awaiting owner review. Next: M1.1 mandate/universe schema + EDGAR adapter.
+- **2026-09-27** — M0 + app shell implemented per shell prompt. Backend verified live (healthz ok, command-center returns demo-flagged payload + real infra health). Committed + pushed `13149bd`.
+- **2026-09-27** — M1 data layer implemented per core-data prompt. 28 pytest tests green; Postgres migration + seed verified on docker; live EDGAR ingestion proven. Next: scheduled-ingestion daemon + mandate/universe APIs + market-data provider key (Tiingo/FMP — needs owner).

@@ -49,7 +49,7 @@
 - **UI:** Settings → Mandate panel.
 - **Acceptance:** Mandate constraints are injected into screening, risk, and allocation calls; changing config creates a new version, not a mutation.
 - **Tests:** Config validation; downstream engines receive injected limits; version immutability.
-- **Status:** NOT STARTED
+- **Status:** IN PROGRESS — `mandates` table (versioned, seeded v1 with Part-15 risk limits). Constraint injection into engines pending.
 
 ### D1.2 | Part 2 — Investment Universe Manager
 - **Required:** Configurable universe (US small–large cap + equity futures per SOW; expand-ready for commodities/crypto). Hierarchy: Global → Eligible → Approved.
@@ -60,7 +60,7 @@
 - **UI:** Universe manager (tier tree, membership editor).
 - **Acceptance:** Hierarchical filtering works; 24-ticker seed set loads; expansion asset classes modeled.
 - **Tests:** Tier filter logic; seed integrity (24 tickers).
-- **Status:** NOT STARTED
+- **Status:** IN PROGRESS — `universes`/`universe_memberships`/`instruments`/`exchanges`/`sectors` schema live; 24-ticker approved universe seeded. UI + hierarchy API pending.
 
 ### D1.3 | Part 3 — Universal Data & Research Infrastructure
 - **Required:** ETL: ingest, clean, normalize, store — Fundamental (SEC EDGAR first-class; Yahoo/FMP/Tiingo adapters), Market (OHLCV multi-timeframe, ATR inputs), Macro (FRED), Alternative (interface stub only). **Point-in-time correctness mandatory** (no look-ahead, no silent restatement leakage). Provenance + freshness on every record.
@@ -70,7 +70,7 @@
 - **API:** Internal first: `GET /api/data/fundamentals/{ticker}`, `/api/data/ohlcv`, `/api/data/macro`.
 - **Acceptance:** ≥1 fundamentals source (EDGAR) + 1 market source + FRED live; provenance complete; missing values never silently zeroed.
 - **Tests:** PIT correctness (restatement scenario), freshness decay, provenance completeness, adapter contract tests.
-- **Status:** NOT STARTED
+- **Status:** IN PROGRESS — provenance/PIT schema live (`fundamental_observations`, `macro_observations`, `ohlcv_bars`); adapters: EDGAR ✅ **live-verified** (NVDA XBRL: 980 facts ingested, 730 persisted), FRED + Tiingo implemented (awaiting keys), IBKR/paper stubs; idempotent ingestion + quarantine + job/sync tracking built; as-of retrieval tested. Remaining: scheduler daemon, news/alt adapters.
 
 ---
 

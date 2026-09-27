@@ -1,0 +1,33 @@
+# Import every model so Alembic autogenerate and create_all see the
+# complete metadata graph.
+from app.models.agents import AgentDef, AgentOutput, AgentRun, EvidenceRef
+from app.models.fundamentals import FundamentalObservation, FinancialStatement
+from app.models.governance import Approval, DecisionRecord, RiskAssessment
+from app.models.identity import AuditEvent, Role, Session, User, user_roles
+from app.models.instruments import (
+    CorporateAction,
+    Exchange,
+    Industry,
+    Instrument,
+    InstrumentIdentifier,
+    Sector,
+)
+from app.models.mandate import Mandate
+from app.models.market import (
+    EconomicRelease,
+    MacroObservation,
+    MacroSeries,
+    OhlcvBar,
+)
+from app.models.ops import Alert, Job, JobRun, QuarantinedRecord, SyncStatus
+from app.models.portfolio import LedgerEntry, Portfolio, Position, Trade
+from app.models.providers import DataProvider, ProviderCredentialMeta
+from app.models.research import AnalysisRun
+from app.models.universe import (
+    Universe,
+    UniverseMembership,
+    Watchlist,
+    WatchlistItem,
+)
+
+__all__ = [n for n in dir() if not n.startswith("_")]
