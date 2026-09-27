@@ -1,0 +1,29 @@
+# OS
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+*.tsbuildinfo
+.next/
+out/
+coverage/
+
+# Data / runtime
+*.sqlite3
+data/
+logs/
