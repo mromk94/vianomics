@@ -10,8 +10,12 @@ import { apiGet } from "@/lib/api";
 function UserChip() {
   const [me, setMe] = useState<{ email: string; display_name?: string | null } | null>(null);
   useEffect(() => {
-    apiGet<{ email: string; display_name?: string | null }>("/api/v1/auth/me")
-      .then(setMe).catch(() => setMe(null));
+    const fetch = () =>
+      apiGet<{ email: string; display_name?: string | null }>("/api/v1/auth/me")
+        .then(setMe).catch(() => setMe(null));
+    fetch();
+    window.addEventListener("vaiip-auth", fetch);
+    return () => window.removeEventListener("vaiip-auth", fetch);
   }, []);
   const initials = me ? (me.display_name ?? me.email)
     .split(/[\s@.]+/).filter(Boolean).slice(0, 2)

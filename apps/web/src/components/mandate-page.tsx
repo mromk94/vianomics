@@ -165,15 +165,19 @@ export function MandatePage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, []);
 
+  const [signingIn, setSigningIn] = useState(false);
   const doLogin = async () => {
+    setSigningIn(true);
+    setNotice(null);
     try {
       const r = await apiPost<{ token: string }>("/api/v1/auth/login", login);
       setToken(r.token);
       setMe(await apiGet<Me>("/api/v1/auth/me"));
-      setNotice(null);
       load();
     } catch (e) {
       setNotice(e instanceof ApiError ? e.message : "login failed");
+    } finally {
+      setSigningIn(false);
     }
   };
 
@@ -237,10 +241,14 @@ export function MandatePage() {
             </label>
             <button
               onClick={doLogin}
-              className="rounded-full bg-accent px-4 py-1.5 text-[13px] font-semibold text-[#0b0f1a] transition hover:brightness-110"
+              disabled={signingIn}
+              className="rounded-full bg-accent px-4 py-1.5 text-[13px] font-semibold text-[#0b0f1a] transition hover:brightness-110 disabled:opacity-50"
             >
-              Sign in
+              {signingIn ? "Signing in…" : "Sign in"}
             </button>
+            {signingIn && (
+              <span className="self-center text-[11px] text-faint">verifying…</span>
+            )}
           </div>
         </SectionCard>
       )}
