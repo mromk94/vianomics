@@ -167,23 +167,26 @@ async def _backfill_all():
         try:
             from app.providers.fred import FredAdapter
             from app.services.macro_regime import FRED_SERIES
-            fred = FredAdapter()
+            from app.services.secrets import get_secret
+            fred_key = (await get_secret(db, "FRED_API_KEY")
+                        or os.environ.get("FRED_API_KEY"))
+            fred = FredAdapter(api_key=fred_key)
             for code, (name, _cat) in FRED_SERIES.items():
                 try:
-                    await ing.ingest_fred_series(db, fred, code, name)
+                    await ing.ingest_fred_series(
+                        db, fred, code, name, use_csv=True)
                     await db.commit()
                 except Exception:
                     await db.rollback()
         except Exception:
             pass
-        if os.environ.get("EDGAR_USER_AGENT") or os.environ.get(
-                "SEC_EDGAR_EMAIL"):
-            from app.providers.edgar import EdgarAdapter
-            ed = EdgarAdapter()
-            for inst in insts:
-                try:
-                    await ing.ingest_edgar_facts(db, ed, inst.symbol)
-                    await db.commit()
-                except Exception:
-                    await db.rollback()
+        # EDGAR is public — a polite UA is baked into HttpAdapter
+        from app.providers.edgar import EdgarAdapter
+        ed = EdgarAdapter()
+        for inst in insts:
+            try:
+                await ing.ingest_edgar_facts(db, ed, inst.symbol)
+                await db.commit()
+            except Exception:
+                await db.rollback()
         cache.invalidate()
