@@ -67,7 +67,12 @@ async def bars(
 
 @router.get("/scan")
 async def scan(db: AsyncSession = Depends(get_db)) -> list[dict]:
-    """Quick decision scan across instruments with bars."""
+    """Quick decision scan across instruments with bars. Cached 5 min —
+    signals only change when new daily bars land."""
+    from app.services import cache
+    hit = cache.get("technical:scan", 300)
+    if hit is not None:
+        return hit
     insts = (await db.execute(select(Instrument))).scalars().all()
     out = []
     for inst in insts:
@@ -85,4 +90,5 @@ async def scan(db: AsyncSession = Depends(get_db)) -> list[dict]:
             "last_close": r.get("last_close"),
             "bars": r["bars"], "fresh": r["data_fresh"],
         })
+    cache.put("technical:scan", out)
     return out

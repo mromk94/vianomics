@@ -96,7 +96,7 @@ function EnvSettings() {
         </ul>
       </SectionCard>
 
-      <SectionCard title="Models & engines" className="rise">
+      <SectionCard title="Execution & demo state" className="rise">
         <ul className="space-y-1.5">
           {cfg.models.map((m) => (
             <li key={m.area} className="glass-tile px-3 py-2">
@@ -383,6 +383,186 @@ export function MandatePage() {
       </SectionCard>
 
       <EnvSettings />
+      <ModelManager me={me} />
+      <DemoToggle me={me} />
     </div>
+  );
+}
+
+/* ── AI model manager — pick provider, paste key, choose model ── */
+
+interface ModelCfg {
+  id: string; provider: string; label: string; model: string;
+  key_set: boolean; key_masked: string | null; base_url: string | null;
+  enabled: boolean; is_default: boolean;
+}
+interface ModelCatalog {
+  providers: { id: string; label: string; models: string[];
+    where: string; needs_base_url?: boolean }[];
+  configs: ModelCfg[]; note: string;
+}
+
+function ModelManager({ me }: { me: Me | null }) {
+  const [cat, setCat] = useState<ModelCatalog | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [form, setForm] = useState({ provider: "anthropic", model: "",
+    api_key: "", base_url: "", label: "", is_default: false });
+
+  const load = () => apiGet<ModelCatalog>("/api/v1/settings/models")
+    .then(setCat).catch(() => {});
+  useEffect(() => { load(); }, []);
+
+  const prov = cat?.providers.find((p) => p.id === form.provider);
+  const save = async () => {
+    setMsg(null);
+    try {
+      await apiPost("/api/v1/settings/models", {
+        provider: form.provider,
+        model: form.model || prov?.models[0] || "",
+        api_key: form.api_key || null,
+        base_url: form.base_url || null,
+        label: form.label, is_default: form.is_default,
+      });
+      setForm({ ...form, api_key: "", label: "" });
+      setMsg("Saved.");
+      load();
+    } catch (e) {
+      setMsg(e instanceof ApiError && e.status === 403
+        ? "Admin permission required."
+        : e instanceof ApiError && e.status === 401
+        ? "Sign in first." : (e as Error).message);
+    }
+  };
+
+  return (
+    <SectionCard title="AI models" className="rise"
+      action={<a href="/docs#keys" className="text-accent text-[11px] hover:underline">where to get keys →</a>}>
+      <p className="mb-3 text-[11px] text-dim">
+        Today all analysis is deterministic math — no AI calls are made.
+        When you add a provider here, agents can call it for narrative
+        work; <b>they still can&apos;t trade</b>. Keys are stored on the
+        server and shown masked.
+      </p>
+
+      {/* provider picker */}
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {cat?.providers.map((p) => (
+          <button key={p.id}
+            onClick={() => setForm({ ...form, provider: p.id, model: "" })}
+            className={`rounded-full border px-3 py-1 text-[11px] transition ${
+              form.provider === p.id
+                ? "border-accent bg-accent/10 font-semibold text-accent"
+                : "border-border text-dim hover:text-text"}`}>
+            {p.label}
+          </button>
+        ))}
+      </div>
+      {prov && (
+        <p className="mb-2 text-[11px] text-faint">Get a key: {prov.where}</p>
+      )}
+      <div className="grid grid-cols-2 gap-2">
+        <label className="text-[11px] text-dim">Model
+          {prov && prov.models.length > 0 ? (
+            <select value={form.model}
+              onChange={(e) => setForm({ ...form, model: e.target.value })}
+              className="mt-1 block w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text">
+              <option value="">— choose —</option>
+              {prov.models.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          ) : (
+            <input value={form.model} placeholder="model name"
+              onChange={(e) => setForm({ ...form, model: e.target.value })}
+              className="mt-1 block w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text" />
+          )}
+        </label>
+        <label className="text-[11px] text-dim">API key
+          <input type="password" value={form.api_key}
+            placeholder={prov?.id === "ollama" ? "not needed — local" : "sk-…"}
+            autoComplete="new-password"
+            onChange={(e) => setForm({ ...form, api_key: e.target.value })}
+            className="mt-1 block w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text" />
+        </label>
+        {prov?.needs_base_url && (
+          <label className="col-span-2 text-[11px] text-dim">Base URL
+            <input value={form.base_url} placeholder="http://localhost:11434/v1"
+              onChange={(e) => setForm({ ...form, base_url: e.target.value })}
+              className="mt-1 block w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text" />
+          </label>
+        )}
+        <label className="col-span-2 flex items-center gap-2 text-[11px] text-dim">
+          <input type="checkbox" checked={form.is_default}
+            onChange={(e) => setForm({ ...form, is_default: e.target.checked })} />
+          Make this the default model
+        </label>
+      </div>
+      {msg && <p className="mt-2 text-[12px] text-warn">{msg}</p>}
+      <button onClick={save} disabled={!me}
+        className="mt-3 rounded-lg bg-accent px-4 py-1.5 text-[12px] font-semibold text-[#0b0f1a] disabled:opacity-40">
+        Add model config
+      </button>
+
+      {cat && cat.configs.length > 0 && (
+        <ul className="mt-3 space-y-1.5">
+          {cat.configs.map((c) => (
+            <li key={c.id} className="glass-tile flex items-center justify-between px-3 py-2 text-[12px]">
+              <span className="flex items-center gap-2">
+                <span className="font-medium">{c.label}</span>
+                {c.key_masked && <code className="text-[10px] text-faint">{c.key_masked}</code>}
+                {c.is_default && <StatusBadge tone="pos">default</StatusBadge>}
+              </span>
+              <button
+                onClick={async () => { await apiPost(`/api/v1/settings/models/${c.id}/default`, {}); load(); }}
+                className="text-[11px] text-accent hover:underline">set default</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {cat && <p className="mt-2 text-[10px] text-faint">{cat.note}</p>}
+    </SectionCard>
+  );
+}
+
+/* ── demo/live data switch ── */
+
+function DemoToggle({ me }: { me: Me | null }) {
+  const [cfg, setCfg] = useState<{ demo_fixtures: boolean } | null>(null);
+  const [flag, setFlag] = useState<boolean | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  useEffect(() => {
+    apiGet<{ demo_fixtures: boolean }>("/api/v1/settings/env")
+      .then((d) => setCfg(d)).catch(() => {});
+  }, []);
+
+  const current = flag ?? cfg?.demo_fixtures ?? true;
+  const toggle = async () => {
+    try {
+      const r = await apiPost<{ value: boolean }>(
+        `/api/v1/settings/flags/demo_fixtures?value=${!current}`, {});
+      setFlag(r.value);
+      setMsg(r.value ? "Demo mode ON — empty sections show labeled examples."
+                     : "Live mode — empty sections show nothing (honest).");
+    } catch (e) {
+      setMsg(e instanceof ApiError && e.status === 403
+        ? "Admin permission required." : (e as Error).message);
+    }
+  };
+  return (
+    <SectionCard title="Demo / live data" className="rise">
+      <div className="flex items-center justify-between">
+        <p className="max-w-md text-[12px] text-dim">
+          When a section has no real data yet, <b>demo mode</b> fills it
+          with a clearly-labeled example. <b>Live mode</b> shows honest
+          empty states instead. Real sections are real either way.
+        </p>
+        <button onClick={toggle} disabled={!me}
+          className={`relative h-6 w-11 shrink-0 rounded-full transition ${current ? "bg-warn/50" : "bg-pos/50"} ${!me && "opacity-40"}`}
+          aria-label="Toggle demo data">
+          <span className={`absolute top-0.5 size-5 rounded-full bg-white transition-all ${current ? "left-0.5" : "left-[22px]"}`} />
+        </button>
+      </div>
+      <p className="mt-1 text-[11px] text-faint">
+        currently: {current ? "demo fills ON" : "live only"} {msg && `· ${msg}`}
+      </p>
+    </SectionCard>
   );
 }

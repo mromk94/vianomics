@@ -89,6 +89,10 @@ async def _system_health(db: AsyncSession | None) -> list[ProviderHealth]:
 @router.get("/command-center", response_model=CommandCenterResponse)
 async def command_center(db: AsyncSession = Depends(get_db)) -> CommandCenterResponse:
     settings = get_settings()
+    from app.routers.settings import runtime_flag
+    from app.services import cache
+    demo_on = await runtime_flag(db, "demo_fixtures",
+                                 settings.demo_fixtures)
     providers = await _system_health(db)
 
     # ── real state first — each section populates from stored data;
@@ -215,23 +219,32 @@ async def command_center(db: AsyncSession = Depends(get_db)) -> CommandCenterRes
             .order_by(ScreeningResult.score.desc()).limit(12))
     ).all()
     seen_syms: set[str] = set()
+    watch_ids = []
     for sr, sym, nm in best:
         if sym in seen_syms:
             continue
         seen_syms.add(sym)
-        bar = (
-            await db.execute(
-                select(OhlcvBar.close)
-                .where(OhlcvBar.instrument_id == sr.instrument_id,
-                       OhlcvBar.timeframe == "1d")
-                .order_by(OhlcvBar.time.desc()).limit(1))
-        ).scalar_one_or_none()
-        entries.append(WatchlistItem(
-            ticker=sym, name=nm,
-            green_zone_score=int(sr.score) if sr.score else None,
-            last_price=float(bar) if bar else None))
-        if len(entries) >= 8:
+        watch_ids.append((sr, sym, nm))
+        if len(watch_ids) >= 8:
             break
+    # one batched query — latest daily close per watchlist instrument
+    inst_ids = [sr.instrument_id for sr, _, _ in watch_ids]
+    latest_close: dict[str, float] = {}
+    if inst_ids:
+        bars = (
+            await db.execute(
+                select(OhlcvBar.instrument_id, OhlcvBar.close)
+                .where(OhlcvBar.instrument_id.in_(inst_ids),
+                       OhlcvBar.timeframe == "1d")
+                .order_by(OhlcvBar.time.desc()))
+        ).all()
+        for iid, close in bars:
+            latest_close.setdefault(iid, float(close))
+    entries = [WatchlistItem(
+        ticker=sym, name=nm,
+        green_zone_score=int(sr.score) if sr.score else None,
+        last_price=latest_close.get(sr.instrument_id))
+        for sr, sym, nm in watch_ids]
 
     # job health → provider rows
     job_count = (await db.execute(
@@ -315,7 +328,7 @@ async def command_center(db: AsyncSession = Depends(get_db)) -> CommandCenterRes
 
     # demo fill — only sections with no real data get fixtures, and
     # are explicitly labeled in demo_sections
-    if settings.demo_fixtures:
+    if demo_on:
         fill = {
             "portfolio": (resp.portfolio.total_value is None,
                           demo.DEMO_PORTFOLIO),

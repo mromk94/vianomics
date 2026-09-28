@@ -12,16 +12,26 @@ router = APIRouter(prefix="/market", tags=["market"])
 @router.get("/snapshot")
 async def snapshot(db: AsyncSession = Depends(get_db)):
     """Last two closes per instrument → price + day change + range."""
+    from app.services import cache
+    hit = cache.get("market:snapshot", 300)
+    if hit is not None:
+        return hit
     insts = (await db.execute(select(Instrument))).scalars().all()
+    # one query — last 2 bars per instrument
+    all_bars = (
+        await db.execute(
+            select(OhlcvBar)
+            .where(OhlcvBar.timeframe == "1d")
+            .order_by(OhlcvBar.time.desc()))
+    ).scalars().all()
+    by_inst: dict[str, list] = {}
+    for b in all_bars:
+        lst = by_inst.setdefault(b.instrument_id, [])
+        if len(lst) < 2:
+            lst.append(b)
     out = []
     for inst in insts:
-        bars = (
-            await db.execute(
-                select(OhlcvBar)
-                .where(OhlcvBar.instrument_id == inst.id,
-                       OhlcvBar.timeframe == "1d")
-                .order_by(OhlcvBar.time.desc()).limit(2))
-        ).scalars().all()
+        bars = by_inst.get(inst.id) or []
         if not bars:
             continue
         last, prev = bars[0], bars[1] if len(bars) > 1 else None
@@ -36,4 +46,6 @@ async def snapshot(db: AsyncSession = Depends(get_db)):
             "volume": float(last.volume or 0),
             "as_of": last.time.isoformat()[:10],
         })
-    return sorted(out, key=lambda x: x["symbol"])
+    out = sorted(out, key=lambda x: x["symbol"])
+    cache.put("market:snapshot", out)
+    return out
