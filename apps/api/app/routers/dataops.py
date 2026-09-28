@@ -136,69 +136,54 @@ async def _instr(db: AsyncSession, symbol: str):
 
 
 @router.post("/backfill", status_code=202)
-async def backfill(db: AsyncSession = Depends(get_db)):
-    """Pull daily bars for EVERY universe instrument — one shot.
-    Server-side loop so a browser timeout doesn't stop it."""
+async def backfill():
+    """Fire-and-forget: pull yahoo bars + FRED macro + EDGAR
+    fundamentals for the whole universe in a background task —
+    Render kills HTTP requests >~100s, so this must not block."""
+    import asyncio
+    asyncio.create_task(_backfill_all())
+    return {"started": True,
+            "note": "running in background — check "
+                    "/api/v1/dataops/overview for job runs"}
+
+
+async def _backfill_all():
+    import os
+    from app.db.session import SessionFactory
     from app.ingestion import jobs as ing
     from app.models.instruments import Instrument
     from app.providers.yahoo import YahooAdapter
     from app.services import cache
 
-    insts = (await db.execute(select(Instrument))).scalars().all()
-    adapter = YahooAdapter()
-    done, failed = 0, []
-    for inst in insts:
-        try:
-            run = await ing.ingest_stooq_bars(db, adapter, inst.symbol)
-            if run.status == "success":
-                done += 1
-            else:
-                failed.append({"symbol": inst.symbol, "error": run.error})
-            await db.commit()         # each instrument = its own txn
-        except Exception as e:
-            await db.rollback()       # don't poison the session
-            failed.append({"symbol": inst.symbol, "error": str(e)[:120]})
-
-    # macro series — needs FRED_API_KEY
-    macro_ok = macro_fail = 0
-    try:
-        from app.providers.fred import FredAdapter
-        from app.services.macro_regime import FRED_SERIES
-        fred = FredAdapter()
-        for code, (name, _cat) in FRED_SERIES.items():
-            try:
-                await ing.ingest_fred_series(db, fred, code, name)
-                macro_ok += 1
-                await db.commit()
-            except Exception as e:
-                await db.rollback()
-                macro_fail += 1
-                failed.append({"symbol": f"fred:{code}",
-                               "error": str(e)[:120]})
-    except Exception as e:
-        failed.append({"symbol": "fred", "error": str(e)[:120]})
-
-    # fundamentals — EDGAR needs a contact email, no key
-    fund_ok = 0
-    import os
-    if os.environ.get("EDGAR_USER_AGENT") or os.environ.get(
-            "SEC_EDGAR_EMAIL"):
-        from app.providers.edgar import EdgarAdapter
-        ed = EdgarAdapter()
+    async with SessionFactory() as db:
+        insts = (await db.execute(select(Instrument))).scalars().all()
+        ya = YahooAdapter()
         for inst in insts:
             try:
-                r = await ing.ingest_edgar_facts(db, ed, inst.symbol)
-                fund_ok += 1 if r.status == "success" else 0
+                await ing.ingest_stooq_bars(db, ya, inst.symbol)
                 await db.commit()
-            except Exception as e:
+            except Exception:
                 await db.rollback()
-                failed.append({"symbol": f"edgar:{inst.symbol}",
-                               "error": str(e)[:120]})
-    else:
-        failed.append({"symbol": "edgar",
-                       "error": "EDGAR_USER_AGENT not set"})
-
-    cache.invalidate()
-    return {"instruments": len(insts), "bars_ingested": done,
-            "macro_series": macro_ok, "fundamentals": fund_ok,
-            "failed": failed}
+        try:
+            from app.providers.fred import FredAdapter
+            from app.services.macro_regime import FRED_SERIES
+            fred = FredAdapter()
+            for code, (name, _cat) in FRED_SERIES.items():
+                try:
+                    await ing.ingest_fred_series(db, fred, code, name)
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+        except Exception:
+            pass
+        if os.environ.get("EDGAR_USER_AGENT") or os.environ.get(
+                "SEC_EDGAR_EMAIL"):
+            from app.providers.edgar import EdgarAdapter
+            ed = EdgarAdapter()
+            for inst in insts:
+                try:
+                    await ing.ingest_edgar_facts(db, ed, inst.symbol)
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+        cache.invalidate()
