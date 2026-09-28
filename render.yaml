@@ -4,8 +4,8 @@ services:
   - type: web
     name: vaiip-api
     runtime: docker
-    dockerfilePath: apps/api/Dockerfile
-    dockerContext: apps/api
+    dockerfilePath: ./Dockerfile
+    dockerContext: ./apps/api
     region: oregon
     plan: starter
     healthCheckPath: /api/v1/health

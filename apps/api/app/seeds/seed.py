@@ -230,7 +230,7 @@ async def seed() -> None:
             )
 
         await db.commit()
-        print("seed complete: roles=3 admin=admin@vianomics.io "
+        print(f"seed complete: roles=3 admin={email} "
               f"instruments={len(SEED_TICKERS)} sectors={len(GICS_SECTORS)} "
               f"providers={len(PROVIDERS)} mandate=v1")
 
