@@ -23,6 +23,7 @@ int OnInit()
 }
 void OnDeinit(const int r) { EventKillTimer(); }
 void OnTimer() { Push(); }
+void OnTick() { /* timer handles pushes — no tick work */ }
 
 void Push()
 {
