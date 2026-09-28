@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CandlestickSeries, createChart, HistogramSeries, LineSeries } from "lightweight-charts";
 
-import { apiGet } from "@/lib/api";
+import { apiGet, apiPost } from "@/lib/api";
 import { fmtNum, fmtTime } from "@/lib/format";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -77,6 +77,8 @@ export function TradingPage() {
   const [scan, setScan] = useState<ScanRow[]>([]);
   const [delayed, setDelayed] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [unknownSym, setUnknownSym] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
   const [orders, setOrders] = useState<ExecOrder[]>([]);
   const [exec, setExec] = useState<ExecStatus | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
@@ -87,14 +89,30 @@ export function TradingPage() {
     apiGet<ExecStatus>("/api/v1/execution/status").then(setExec).catch(() => {});
   }, []);
 
+  const [reloadTick, setReloadTick] = useState(0);
   useEffect(() => {
-    setError(null);
+    setError(null); setUnknownSym(null);
     Promise.all([
       apiGet<{ bars: Bar[]; delayed: boolean }>(`/api/v1/technical/bars/${symbol}?timeframe=${tf}&limit=400`),
       apiGet<Signal>(`/api/v1/technical/signal/${symbol}`),
     ]).then(([b, s]) => { setBars(b.bars); setDelayed(b.delayed); setSig(s); })
-      .catch((e) => setError(e.message));
-  }, [symbol, tf]);
+      .catch((e) => {
+        if (String(e.message).includes("404")) setUnknownSym(symbol);
+        else setError(e.message);
+      });
+  }, [symbol, tf, reloadTick]);
+
+  async function addSymbol() {
+    if (!unknownSym) return;
+    setAdding(true);
+    try {
+      await apiPost(`/api/v1/universe/instruments/${unknownSym}/add`, {}, 120000);
+      setUnknownSym(null);
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "add failed");
+    } finally { setAdding(false); }
+  }
 
   // chart
   useEffect(() => {
@@ -162,6 +180,20 @@ export function TradingPage() {
         actions={<SearchInput value={symbol} onChange={(v) => setSymbol(v.toUpperCase())} className="w-32" />} />
       {sig?.freshness_note && <div className="glass border-warn/40 p-3 text-[12px] text-warn">{sig.freshness_note}</div>}
       {error && <ErrorState title="API error" detail={error} />}
+      {unknownSym && (
+        <div className="glass border-warn/40 p-3 flex items-center justify-between gap-3">
+          <div>
+            <div className="text-[13px] font-semibold text-warn">
+              {unknownSym} isn&apos;t in the security master</div>
+            <div className="text-[11px] text-dim">
+              Valid ticker? Add it to the universe — pulls 2y of bars automatically.</div>
+          </div>
+          <button onClick={addSymbol} disabled={adding}
+            className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-[#0b0f1a] disabled:opacity-50">
+            {adding ? "Adding…" : "Add ticker"}
+          </button>
+        </div>
+      )}
 
       {/* chart */}
       <SectionCard title={symbol} className="rise"
