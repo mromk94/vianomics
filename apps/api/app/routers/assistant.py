@@ -17,6 +17,7 @@ from app.models.ops import Alert
 from app.models.governance import DecisionRecord
 from app.models.execution import BrokerOrderRec
 from app.models.instruments import Instrument
+from app.db.base import utcnow
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 
@@ -35,9 +36,24 @@ NAV = {
 
 
 async def _context(db: AsyncSession) -> dict:
+    # regime: persisted run else live-compute (never "not available"
+    # while FRED data exists)
     regime = (await db.execute(
         select(RegimeRun).order_by(RegimeRun.as_of.desc()))
     ).scalars().first()
+    live = None
+    try:
+        from app.services import macro_regime as mr
+        live = await mr.classify(db, utcnow())
+    except Exception:
+        pass
+    if live and not regime:
+        regime = live
+    elif regime:
+        regime = {"econ_regime": regime.econ_regime,
+                  "market_regime": regime.market_regime,
+                  "fear_greed": regime.fear_greed,
+                  "vix": regime.vix}
     alerts = (await db.execute(
         select(Alert).where(Alert.status == "active"))).scalars().all()
     decisions = (await db.execute(
@@ -48,11 +64,27 @@ async def _context(db: AsyncSession) -> dict:
         select(func.count(BrokerOrderRec.id))
         .where(BrokerOrderRec.status.not_in(
             ["filled", "rejected", "cancelled"])))).scalar()
+    # portfolio snapshot for the assistant
+    try:
+        from app.routers.risk import _portfolio_ctx
+        pc = await _portfolio_ctx(db)
+        snap = {"cash": pc.get("cash"),
+                "nav": pc.get("nav"),
+                "positions": [{"symbol": p["symbol"],
+                               "qty": p["quantity"],
+                               "market_value": p["market_value"]}
+                              for p in pc.get("positions", [])[:15]]}
+    except Exception:
+        snap = None
+    inst_count = (await db.execute(
+        select(func.count(Instrument.id)))).scalar()
     return {
-        "regime": {"econ": regime.econ_regime,
-                   "market": regime.market_regime,
-                   "fear_greed": regime.fear_greed,
-                   "vix": regime.vix} if regime else None,
+        "portfolio": snap,
+        "instruments": inst_count,
+        "regime": {"econ": regime.get("econ_regime"),
+                   "market": regime.get("market_regime"),
+                   "fear_greed": regime.get("fear_greed"),
+                   "vix": regime.get("vix")} if regime else None,
         "active_alerts": len(alerts),
         "alert_examples": [a.message for a in alerts[:3]],
         "open_orders": open_orders,

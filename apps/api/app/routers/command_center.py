@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,7 +87,11 @@ async def _system_health(db: AsyncSession | None) -> list[ProviderHealth]:
 
 
 @router.get("/command-center", response_model=CommandCenterResponse)
-async def command_center(db: AsyncSession = Depends(get_db)) -> CommandCenterResponse:
+async def command_center(
+    source: str = Query("internal",
+                        pattern="^(internal|mt4|bamboo|all)$"),
+    db: AsyncSession = Depends(get_db),
+) -> CommandCenterResponse:
     settings = get_settings()
     from app.routers.settings import runtime_flag
     from app.services import cache
@@ -141,9 +145,28 @@ async def command_center(db: AsyncSession = Depends(get_db)) -> CommandCenterRes
                   pf.get("breaches", [])] if pf.get("breaches") else [])
     # empty book → null (never present a placeholder as live NAV)
     has_positions = bool(pf.get("positions"))
-    portfolio = PortfolioSummary(
-        total_value=pf.get("nav") if has_positions else None,
-        cash=pf.get("cash") if has_positions else None)
+    nav = pf.get("nav") if has_positions else None
+    cash = pf.get("cash") if has_positions else None
+
+    # external sources (MT4 push, Bamboo sync) — merge per ?source=
+    if source != "internal":
+        from app.models.portfolio import ExternalAccount
+        ext = (await db.execute(
+            select(ExternalAccount)
+            .where(ExternalAccount.connected,
+                   ExternalAccount.source.in_(
+                       ["mt4", "bamboo"] if source == "all"
+                       else [source])))
+        ).scalars().all()
+        ext_nav = sum(float(a.equity or a.balance or 0) for a in ext)
+        ext_cash = sum(float(a.balance or 0) for a in ext)
+        if source == "all":
+            nav = (nav or 0) + ext_nav if (nav or ext_nav) else None
+            cash = (cash or 0) + ext_cash if (cash or ext_cash) else None
+        else:
+            nav, cash = ext_nav or None, ext_cash or None
+            has_positions = bool(ext)
+    portfolio = PortfolioSummary(total_value=nav, cash=cash)
 
     # alerts
     arows = (
