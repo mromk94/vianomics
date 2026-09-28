@@ -55,8 +55,8 @@ async def _send(db, ch: NotificationChannel, text: str):
     elif ch.channel in ("whatsapp", "sms"):
         sid = await _secret(db, "TWILIO_ACCOUNT_SID")
         auth = await _secret(db, "TWILIO_AUTH_TOKEN")
-        from_num = ch.extra.get("from") or os.environ.get(
-            "TWILIO_FROM")
+        from_num = (await _secret(db, "TWILIO_FROM")
+                    or ch.extra.get("from"))
         if not (sid and auth and from_num):
             raise RuntimeError("TWILIO_ACCOUNT_SID/AUTH_TOKEN/FROM not set")
         to = (f"whatsapp:{ch.target}" if ch.channel == "whatsapp"
@@ -69,15 +69,49 @@ async def _send(db, ch: NotificationChannel, text: str):
                 auth=(sid, auth),
                 data={"To": to, "From": frm, "Body": text})
             r.raise_for_status()
-    elif ch.channel == "email":
-        host = os.environ.get("SMTP_HOST", "localhost")
-        port = int(os.environ.get("SMTP_PORT", "25"))
-        frm = ch.extra.get("from") or "vaiip@localhost"
+    elif ch.channel == "email_resend":
+        key = await _secret(db, "RESEND_API_KEY")
+        if not key:
+            raise RuntimeError("RESEND_API_KEY not set")
+        frm = ch.extra.get("from") or "onboarding@resend.dev"
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {key}"},
+                json={"from": frm, "to": [ch.target],
+                      "subject": "VAIIP alert", "text": text})
+            r.raise_for_status()
+    elif ch.channel == "email_smtp":
+        host = (await _secret(db, "SMTP_HOST")
+                or os.environ.get("SMTP_HOST"))
+        port = int(await _secret(db, "SMTP_PORT")
+                   or os.environ.get("SMTP_PORT") or 587)
+        user = await _secret(db, "SMTP_USER")
+        pw = await _secret(db, "SMTP_PASSWORD")
+        frm = (await _secret(db, "SMTP_FROM")
+               or ch.extra.get("from") or user or "vaiip@localhost")
+        if not host:
+            raise RuntimeError("SMTP_HOST not set")
         msg = MIMEText(text)
         msg["Subject"] = "VAIIP alert"
         msg["From"], msg["To"] = frm, ch.target
         s = smtplib.SMTP(host, port, timeout=10)
+        s.starttls()
+        if user and pw:
+            s.login(user, pw)
         s.send_message(msg)
         s.quit()
+    elif ch.channel == "email":
+        # legacy channel id → try resend then smtp
+        if await _secret(db, "RESEND_API_KEY"):
+            c2 = NotificationChannel(
+                channel="email_resend", target=ch.target,
+                extra=ch.extra)
+            await _send(db, c2, text)
+        else:
+            c2 = NotificationChannel(
+                channel="email_smtp", target=ch.target,
+                extra=ch.extra)
+            await _send(db, c2, text)
     else:
         raise RuntimeError(f"unknown channel {ch.channel}")
