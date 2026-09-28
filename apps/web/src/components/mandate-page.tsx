@@ -608,35 +608,51 @@ function KeyRow({ k, onSaved }: { k: EnvKey; onSaved: () => void }) {
   );
 }
 
-/* ── notification channels — email / whatsapp / telegram / sms ── */
+
+/* ── notification channels — detailed per-channel setup ── */
 
 interface NotifCfg {
   id: string; channel: string; target: string; enabled: boolean;
   min_severity: string;
 }
-interface NotifCatalog {
-  channels: NotifCfg[];
-  specs: { id: string; label: string; target_label: string;
-    keys: string; note: string }[];
-  note: string;
-}
+interface NotifField { name: string; label: string; kind: "target" | "extra" | "secret"; default?: string }
+interface NotifSpec { id: string; label: string; group: string;
+  target_label: string; fields: NotifField[]; setup: string[]; note: string }
+interface NotifCatalog { channels: NotifCfg[]; specs: NotifSpec[]; note: string }
 
 function Notifications({ me }: { me: Me | null }) {
   const [cat, setCat] = useState<NotifCatalog | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
-  const [form, setForm] = useState({ channel: "email", target: "",
-    min_severity: "critical" });
+  const [channel, setChannel] = useState("email_resend");
+  const [vals, setVals] = useState<Record<string, string>>({});
+  const [sev, setSev] = useState("critical");
   const load = () => apiGet<NotifCatalog>("/api/v1/settings/notifications")
     .then(setCat).catch(() => {});
   useEffect(() => { load(); }, []);
 
-  const spec = cat?.specs.find((s) => s.id === form.channel);
+  const spec = cat?.specs.find((s) => s.id === channel);
+
   const add = async () => {
     setMsg(null);
     try {
-      await apiPost("/api/v1/settings/notifications", form);
-      setForm({ ...form, target: "" });
-      load();
+      // secrets first — they land in the server-side store
+      for (const f of spec?.fields ?? []) {
+        if (f.kind === "secret" && vals[f.name]) {
+          await apiPost("/api/v1/settings/keys",
+            { key: f.name, value: vals[f.name] });
+        }
+      }
+      const target = spec?.fields.find((f) => f.kind === "target");
+      const extra = Object.fromEntries(
+        (spec?.fields ?? []).filter((f) => f.kind === "extra" && vals[f.name])
+          .map((f) => [f.name, vals[f.name]]));
+      if (vals["from"]) extra["from"] = vals["from"];
+      await apiPost("/api/v1/settings/notifications", {
+        channel, target: target ? vals[target.name] : "",
+        min_severity: sev, extra,
+      });
+      setVals({}); load();
+      setMsg(`✓ ${spec?.label} channel added`);
     } catch (e) {
       setMsg(e instanceof ApiError && e.status === 403
         ? "Admin required" : (e as Error).message);
@@ -647,51 +663,62 @@ function Notifications({ me }: { me: Me | null }) {
     <SectionCard title="Notifications" className="rise"
       action={<a href="/docs#keys" className="text-accent text-[11px] hover:underline">setup →</a>}>
       <p className="mb-3 text-[11px] text-dim">
-        Alerts dispatch here when they meet the severity floor. Channel
-        credentials (Twilio keys, bot token, SMTP) go in the API-keys
-        section above or the server .env.
+        Alerts dispatch to every enabled channel at or above its
+        severity floor. Credentials are stored server-side and masked —
+        each field below saves when you press Add.
       </p>
       <div className="mb-3 flex flex-wrap gap-1.5">
         {cat?.specs.map((s) => (
-          <button key={s.id}
-            onClick={() => setForm({ ...form, channel: s.id })}
+          <button key={s.id} onClick={() => { setChannel(s.id); setVals({}); }}
             className={`rounded-full border px-3 py-1 text-[11px] transition ${
-              form.channel === s.id
+              channel === s.id
                 ? "border-accent bg-accent/10 font-semibold text-accent"
                 : "border-border text-dim hover:text-text"}`}>
             {s.label}
           </button>
         ))}
       </div>
+
       {spec && (
-        <div className="mb-2 text-[11px] text-dim">
-          {spec.note} · credentials: <code className="text-accent text-[10px]">{spec.keys}</code>
+        <div className="glass-tile mb-3 p-3">
+          <ol className="mb-2 list-decimal pl-4 text-[11px] leading-relaxed text-dim">
+            {spec.setup.map((step, i) => <li key={i}>{step}</li>)}
+          </ol>
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+            {spec.fields.map((f) => (
+              <label key={f.name} className="text-[11px] text-dim">
+                {f.label}
+                {f.kind === "secret" && (
+                  <span className="ml-1 text-[9px] text-faint">(stored masked)</span>)}
+                <input
+                  type={f.kind === "secret" && !f.name.includes("HOST") ? "password" : "text"}
+                  value={vals[f.name] ?? f.default ?? ""}
+                  placeholder={f.default}
+                  autoComplete="new-password"
+                  onChange={(e) => setVals({ ...vals, [f.name]: e.target.value })}
+                  className="mt-1 block w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text" />
+              </label>
+            ))}
+            <label className="text-[11px] text-dim">Min severity
+              <select value={sev} onChange={(e) => setSev(e.target.value)}
+                className="mt-1 block w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text">
+                <option value="info">info+</option>
+                <option value="warning">warning+</option>
+                <option value="critical">critical only</option>
+              </select>
+            </label>
+          </div>
+          <button onClick={add} disabled={!me}
+            className="mt-3 rounded-lg bg-accent px-4 py-1.5 text-[12px] font-semibold text-[#0b0f1a] disabled:opacity-40">
+            Add channel
+          </button>
+          <p className="mt-2 text-[10px] text-faint">{spec.note}</p>
         </div>
       )}
-      <div className="flex flex-wrap items-end gap-2">
-        <label className="text-[11px] text-dim">{spec?.target_label ?? "Target"}
-          <input value={form.target} placeholder="you@x.com / +1555… / chat id"
-            onChange={(e) => setForm({ ...form, target: e.target.value })}
-            className="mt-1 block w-64 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text" />
-        </label>
-        <label className="text-[11px] text-dim">Min severity
-          <select value={form.min_severity}
-            onChange={(e) => setForm({ ...form, min_severity: e.target.value })}
-            className="mt-1 block rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text">
-            <option value="info">info+</option>
-            <option value="warning">warning+</option>
-            <option value="critical">critical only</option>
-          </select>
-        </label>
-        <button onClick={add} disabled={!me || !form.target}
-          className="rounded-lg bg-accent px-4 py-1.5 text-[12px] font-semibold text-[#0b0f1a] disabled:opacity-40">
-          Add channel
-        </button>
-      </div>
-      {msg && <p className="mt-2 text-[12px] text-warn">{msg}</p>}
+      {msg && <p className="mb-2 text-[12px] text-warn">{msg}</p>}
 
       {cat && cat.channels.length > 0 && (
-        <ul className="mt-3 space-y-1.5">
+        <ul className="space-y-1.5">
           {cat.channels.map((c) => (
             <li key={c.id} className="glass-tile flex items-center justify-between px-3 py-2 text-[12px]">
               <span className="flex items-center gap-2">
@@ -702,7 +729,8 @@ function Notifications({ me }: { me: Me | null }) {
               </span>
               <span className="flex gap-2">
                 <button onClick={async () => {
-                    const r = await apiPost<{ok: boolean; error?: string}>(`/api/v1/settings/notifications/${c.id}/test`, {});
+                    const r = await apiPost<{ok: boolean; error?: string}>(
+                      `/api/v1/settings/notifications/${c.id}/test`, {});
                     setMsg(r.ok ? `✓ test sent to ${c.channel}` : `✗ ${c.channel}: ${r.error}`);
                   }} className="text-[11px] text-accent hover:underline">test</button>
                 <button onClick={async () => { await apiPost(`/api/v1/settings/notifications/${c.id}/toggle`, {}); load(); }}

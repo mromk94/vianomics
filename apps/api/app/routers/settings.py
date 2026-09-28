@@ -241,8 +241,8 @@ async def set_key(body: KeyIn,
                   user: User = Depends(require("admin:*"))):
     """Store a data-source key server-side. Never logged, never
     returned — only status+masked tail appear anywhere."""
-    allowed = {k["var"] for spec in KEY_SPECS
-               for k in [{"var": v} for v in spec[1].split(" / ")]}
+    allowed = {v for spec in KEY_SPECS
+               for v in spec[1].split(" / ")} | NOTIF_KEY_NAMES
     if body.key not in allowed:
         raise HTTPException(400, f"unknown key {body.key}")
     await set_secret(db, body.key, body.value.strip())
@@ -257,23 +257,87 @@ async def set_key(body: KeyIn,
 from app.models.ops import NotificationChannel
 from app.services.notifications import dispatch_alert
 
+NOTIF_KEY_NAMES = {
+    "RESEND_API_KEY", "SMTP_HOST", "SMTP_PORT", "SMTP_USER",
+    "SMTP_PASSWORD", "SMTP_FROM", "TELEGRAM_BOT_TOKEN",
+    "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM",
+}
+
 CHANNEL_SPECS = [
-    {"id": "email", "label": "Email (SMTP)", "target_label": "Email address",
-     "keys": "SMTP_HOST, SMTP_PORT env", "note": "uses local/host SMTP"},
-    {"id": "telegram", "label": "Telegram", "target_label": "Chat ID",
-     "keys": "TELEGRAM_BOT_TOKEN", "note": "create a bot via @BotFather, get chat id via getUpdates"},
-    {"id": "whatsapp", "label": "WhatsApp (Twilio)", "target_label": "+1555… phone",
-     "keys": "TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM", "note": "Twilio sandbox or approved sender"},
-    {"id": "sms", "label": "SMS (Twilio)", "target_label": "+1555… phone",
-     "keys": "TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM", "note": "Twilio number → SMS"},
+    {"id": "email_resend", "label": "Email via Resend", "group": "email",
+     "target_label": "Recipient email",
+     "fields": [
+         {"name": "to", "label": "Recipient email", "kind": "target"},
+         {"name": "from", "label": "From address (must be a verified sender/domain)",
+          "kind": "extra", "default": "alerts@yourdomain.com"},
+         {"name": "RESEND_API_KEY", "label": "Resend API key",
+          "kind": "secret"}],
+     "setup": ["resend.com → sign up → API Keys → create",
+               "verify your domain (or use onboarding@resend.dev for tests)",
+               "paste the key + from address here"],
+     "note": "simplest email path — HTTPS API, no SMTP setup"},
+    {"id": "email_smtp", "label": "Email via SMTP", "group": "email",
+     "target_label": "Recipient email",
+     "fields": [
+         {"name": "to", "label": "Recipient email", "kind": "target"},
+         {"name": "SMTP_HOST", "label": "SMTP host", "kind": "secret",
+          "default": "smtp.gmail.com"},
+         {"name": "SMTP_PORT", "label": "SMTP port", "kind": "secret",
+          "default": "587"},
+         {"name": "SMTP_USER", "label": "SMTP username (usually your email)",
+          "kind": "secret"},
+         {"name": "SMTP_PASSWORD", "label": "SMTP password / app password",
+          "kind": "secret"},
+         {"name": "SMTP_FROM", "label": "From address", "kind": "secret"}],
+     "setup": ["Gmail: enable 2FA → App passwords → paste here (port 587, TLS auto)",
+               "Outlook: smtp.office365.com:587",
+               "self-hosted: your relay host/port"],
+     "note": "full SMTP — works with Gmail/Outlook/your own relay"},
+    {"id": "telegram", "label": "Telegram", "group": "telegram",
+     "target_label": "Chat ID (numeric, e.g. 123456789)",
+     "fields": [
+         {"name": "chat_id", "label": "Chat ID", "kind": "target"},
+         {"name": "TELEGRAM_BOT_TOKEN", "label": "Bot token",
+          "kind": "secret"}],
+     "setup": ["Telegram → @BotFather → /newbot → copy the token",
+               "message your bot once, then visit "
+               "api.telegram.org/bot<TOKEN>/getUpdates → copy chat.id",
+               "paste both here"],
+     "note": "fastest to set up — 2 minutes"},
+    {"id": "whatsapp", "label": "WhatsApp via Twilio", "group": "twilio",
+     "target_label": "Recipient phone (+15551234567)",
+     "fields": [
+         {"name": "to", "label": "Recipient phone (E.164)", "kind": "target"},
+         {"name": "TWILIO_ACCOUNT_SID", "label": "Twilio Account SID",
+          "kind": "secret"},
+         {"name": "TWILIO_AUTH_TOKEN", "label": "Twilio Auth Token",
+          "kind": "secret"},
+         {"name": "TWILIO_FROM", "label": "Twilio WhatsApp sender "
+          "(e.g. +14155238886 sandbox)", "kind": "secret"}],
+     "setup": ["twilio.com → console → Account SID + Auth Token",
+               "Messaging → Try WhatsApp → join sandbox (or approved sender)",
+               "recipient must join the sandbox first in test mode"],
+     "note": "production WhatsApp needs an approved Twilio sender"},
+    {"id": "sms", "label": "SMS via Twilio", "group": "twilio",
+     "target_label": "Recipient phone (+15551234567)",
+     "fields": [
+         {"name": "to", "label": "Recipient phone (E.164)", "kind": "target"},
+         {"name": "TWILIO_ACCOUNT_SID", "label": "Twilio Account SID",
+          "kind": "secret"},
+         {"name": "TWILIO_AUTH_TOKEN", "label": "Twilio Auth Token",
+          "kind": "secret"},
+         {"name": "TWILIO_FROM", "label": "Twilio SMS number", "kind": "secret"}],
+     "setup": ["twilio.com → console → Account SID + Auth Token",
+               "Phone Numbers → buy a number → paste as TWILIO_FROM"],
+     "note": "any Twilio SMS-capable number works"},
 ]
 
 
 class ChannelIn(BaseModel):
-    channel: str
+    channel: str            # email_resend | email_smtp | telegram | whatsapp | sms
     target: str
     min_severity: str = "critical"
-    from_addr: str | None = None
+    extra: dict = {}        # {from: ...} + per-channel config
 
 
 @router.get("/notifications")
@@ -300,7 +364,7 @@ async def notif_add(body: ChannelIn,
     c = NotificationChannel(
         channel=body.channel, target=body.target,
         min_severity=body.min_severity,
-        extra={"from": body.from_addr} if body.from_addr else {})
+        extra=body.extra or {})
     db.add(c)
     await db.flush()
     await audit(db, action="notification.add", actor=user,
