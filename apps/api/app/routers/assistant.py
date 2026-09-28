@@ -118,7 +118,8 @@ async def _llm(db: AsyncSession, msg: str, history: list) -> str | None:
                     "https://api.anthropic.com/v1/messages",
                     headers={"x-api-key": cfg.api_key,
                              "anthropic-version": "2023-06-01"},
-                    json={"model": cfg.model, "max_tokens": 400,
+                    json={"model": cfg.model.split("/", 1)[-1],
+                          "max_tokens": 400,
                           "system": system,
                           "messages": [{"role": m["role"],
                                         "content": m["content"]}
@@ -134,14 +135,19 @@ async def _llm(db: AsyncSession, msg: str, history: list) -> str | None:
                     "custom": None}.get(cfg.provider))
             if url is None:
                 return None
+            model = cfg.model.split("/", 1)[-1]  # "openai/gpt-5" → "gpt-5"
             r = await c.post(
                 f"{url}/chat/completions",
                 headers=({"Authorization": f"Bearer {cfg.api_key}"}
                          if cfg.api_key else {}),
-                json={"model": cfg.model, "max_tokens": 400,
+                json={"model": model, "max_tokens": 400,
                       "messages": [{"role": "system",
                                     "content": system}] + messages})
-            return r.json()["choices"][0]["message"]["content"]
+            d = r.json()
+            if r.status_code >= 400 or "error" in d:
+                return (f"(model call failed: {d.get('error', d)}"[:200]
+                        + " — showing local answers)")
+            return d["choices"][0]["message"]["content"]
     except Exception as e:
         return f"(model call failed: {e} — showing local answers)"
 

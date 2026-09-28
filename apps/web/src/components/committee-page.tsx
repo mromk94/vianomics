@@ -91,7 +91,7 @@ export function CommitteePage() {
   const run = async () => {
     setRunning(true); setError(null); setNotice(null);
     try {
-      const d = await apiPost<Decision>(`/api/v1/committee/evaluate/${symbol}`, {});
+      const d = await apiPost<Decision>(`/api/v1/committee/evaluate/${symbol}`, {}, 60000);
       setDecision(d);
       loadHistory();
     } catch (e) {
