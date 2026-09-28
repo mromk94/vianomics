@@ -82,3 +82,20 @@ class LedgerEntry(Base, IdMixin, TimestampMixin):
     )
     memo: Mapped[str | None]
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class ExternalAccount(Base, IdMixin, TimestampMixin):
+    """Positions/balances pushed from outside the platform —
+    MT4 terminal EA, Bamboo brokerage, manual CSV. The Command
+    Center portfolio strip can read these alongside internal fills."""
+    __tablename__ = "external_accounts"
+
+    source: Mapped[str] = mapped_column(index=True)   # mt4|bamboo|manual
+    label: Mapped[str]                                # "MT4 #123456"
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    balance: Mapped[float | None] = mapped_column(MONEY)
+    equity: Mapped[float | None] = mapped_column(MONEY)
+    positions: Mapped[list] = mapped_column(JSON, default=list)
+    synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True))
+    connected: Mapped[bool] = mapped_column(default=True)

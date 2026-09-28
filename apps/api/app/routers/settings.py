@@ -46,6 +46,17 @@ KEY_SPECS = [
     ("Alpaca mode", "ALPACA_BASE_URL",
      "paper-api.alpaca.markets (default) or api.alpaca.markets",
      "paper vs live Alpaca"),
+    ("MT4 push secret", "MT4_PUSH_SECRET",
+     "any string — goes in the VAIIP_Push.mq4 EA input field",
+     "MetaTrader 4 → platform portfolio sync"),
+    ("Bamboo client ID", "BAMBOO_CLIENT_ID",
+     "investbamboo.com partner dashboard → API credentials",
+     "Bamboo brokerage sync"),
+    ("Bamboo client secret", "BAMBOO_CLIENT_SECRET", "same page",
+     "Bamboo brokerage sync"),
+    ("Bamboo API base", "BAMBOO_BASE_URL",
+     "default https://api.investbamboo.com — sandbox differs",
+     "Bamboo brokerage sync"),
     ("TradingView webhook secret", "TRADINGVIEW_WEBHOOK_SECRET",
      "any string you choose — paste the same string in the TV alert "
      "webhook body field",
@@ -275,6 +286,8 @@ NOTIF_KEY_NAMES = {
     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM",
     "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ALPACA_BASE_URL",
     "TRADINGVIEW_WEBHOOK_SECRET",
+    "MT4_PUSH_SECRET",
+    "BAMBOO_CLIENT_ID", "BAMBOO_CLIENT_SECRET", "BAMBOO_BASE_URL",
 }
 
 CHANNEL_SPECS = [

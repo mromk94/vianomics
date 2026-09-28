@@ -99,17 +99,23 @@ export function CommandCenter() {
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [source, setSource] = useState("internal");
+  const [extSources, setExtSources] = useState<{ source: string; label: string }[]>([]);
 
   const load = () => {
     setLoading(true);
     setError(null);
-    apiGet<Data>("/api/v1/command-center")
+    apiGet<Data>(`/api/v1/command-center?source=${source}`)
       .then(setData)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   };
+  useEffect(() => {
+    apiGet<{ source: string; label: string }[]>("/api/v1/external/sources")
+      .then(setExtSources).catch(() => {});
+  }, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(load, []);
+  useEffect(load, [source]);
 
   if (error) {
     return (
@@ -136,6 +142,15 @@ export function CommandCenter() {
         subtitle="Daily briefing — the decision pipeline at a glance"
         demo={demo.size > 0}
         meta={data ? `Data as of ${fmtTime(data.generated_at)}` : undefined}
+        actions={
+          <select value={source} onChange={(e) => setSource(e.target.value)}
+            className="rounded-lg border border-border bg-surface-solid px-2.5 py-1.5 text-[12px] text-text">
+            <option value="internal">Internal portfolio</option>
+            {extSources.map((x) => (
+              <option key={x.source} value={x.source}>{x.label}</option>))}
+            {extSources.length > 0 && <option value="all">All sources combined</option>}
+          </select>
+        }
       />
       {loading && <SkeletonRows />}
 
