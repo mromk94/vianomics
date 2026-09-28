@@ -1,6 +1,14 @@
 """Configuration status — shows WHICH keys are set, never values."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import get_db
+from app.models.identity import User
+from app.models.ops import ModelConfig, RuntimeFlag, SecretStore
+from app.security import audit, require
 
 from app.config import get_settings
 
@@ -44,19 +52,26 @@ MODEL_SPECS = [
 
 
 @router.get("/env")
-async def env_status():
+async def env_status(db: AsyncSession = Depends(get_db)):
     """Which env keys exist — booleans only, values never leave the
     server."""
     import os
     s = get_settings()
     out = []
     for label, var, where, unlocks in KEY_SPECS:
+        is_set = False
         if var == "EXECUTION_ENABLED":
             is_set = s.execution_enabled
         elif var == "ADMIN_PASSWORD":
             is_set = bool(os.environ.get("ADMIN_PASSWORD"))
         else:
-            is_set = any(os.environ.get(v) for v in var.split(" / "))
+            for v in var.split(" / "):
+                st = (await db.execute(
+                    select(SecretStore).where(SecretStore.key == v))
+                ).scalar_one_or_none()
+                if st or os.environ.get(v):
+                    is_set = True
+                    break
         out.append({"label": label, "var": var, "set": is_set,
                     "where": where, "unlocks": unlocks})
     return {
@@ -71,15 +86,6 @@ async def env_status():
 
 # ── model configs (Part E: user-selectable AI providers) ──
 
-from fastapi import Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.db.session import get_db
-from app.models.identity import User
-from app.models.ops import ModelConfig, RuntimeFlag
-from app.security import audit, require
 
 PROVIDERS = [
     {"id": "anthropic", "label": "Anthropic", "models": [
@@ -217,3 +223,30 @@ async def set_flag(key: str, value: bool,
                 detail={"value": value})
     await db.commit()
     return {"key": key, "value": value}
+
+
+# ── editable data-source keys (DB-backed, masked on read) ──
+
+from app.services.secrets import set_secret
+
+
+class KeyIn(BaseModel):
+    key: str
+    value: str
+
+
+@router.post("/keys", status_code=201)
+async def set_key(body: KeyIn,
+                  db: AsyncSession = Depends(get_db),
+                  user: User = Depends(require("admin:*"))):
+    """Store a data-source key server-side. Never logged, never
+    returned — only status+masked tail appear anywhere."""
+    allowed = {k["var"] for spec in KEY_SPECS
+               for k in [{"var": v} for v in spec[1].split(" / ")]}
+    if body.key not in allowed:
+        raise HTTPException(400, f"unknown key {body.key}")
+    await set_secret(db, body.key, body.value.strip())
+    await audit(db, action="secret.set", actor=user,
+                detail={"key": body.key})
+    await db.commit()
+    return {"key": body.key, "set": True}

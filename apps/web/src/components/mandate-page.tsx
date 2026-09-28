@@ -78,20 +78,9 @@ function EnvSettings() {
         </p>
         <ul className="space-y-1.5">
           {cfg.env.map((k) => (
-            <li key={k.var} className="glass-tile flex items-start justify-between gap-3 px-3 py-2">
-              <div>
-                <div className="flex items-center gap-2 text-[12px]">
-                  <span className="font-medium">{k.label}</span>
-                  <code className="text-[10px] text-faint">{k.var}</code>
-                  <StatusBadge tone={k.set ? "pos" : "warn"}>
-                    {k.set ? "set" : "not set"}
-                  </StatusBadge>
-                </div>
-                <div className="mt-0.5 text-[11px] text-dim">
-                  {k.unlocks} · <span className="text-faint">{k.where}</span>
-                </div>
-              </div>
-            </li>
+            <KeyRow key={k.var} k={k} onSaved={() => {
+              apiGet<EnvStatus>("/api/v1/settings/env").then(setCfg);
+            }} />
           ))}
         </ul>
       </SectionCard>
@@ -564,5 +553,56 @@ function DemoToggle({ me }: { me: Me | null }) {
         currently: {current ? "demo fills ON" : "live only"} {msg && `· ${msg}`}
       </p>
     </SectionCard>
+  );
+}
+
+/** Editable data-source key row — input expands inline, saves
+ * server-side (masked forever after). */
+function KeyRow({ k, onSaved }: { k: EnvKey; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const save = async () => {
+    try {
+      await apiPost("/api/v1/settings/keys", { key: k.var.split(" / ")[0], value: val });
+      setVal(""); setEditing(false); setMsg(null); onSaved();
+    } catch (e) {
+      setMsg(e instanceof ApiError && e.status === 403
+        ? "Admin required" : (e as Error).message);
+    }
+  };
+  return (
+    <li className="glass-tile px-3 py-2">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 text-[12px]">
+            <span className="font-medium">{k.label}</span>
+            <code className="text-[10px] text-faint">{k.var}</code>
+            <StatusBadge tone={k.set ? "pos" : "warn"}>
+              {k.set ? "set" : "not set"}
+            </StatusBadge>
+          </div>
+          <div className="mt-0.5 text-[11px] text-dim">
+            {k.unlocks} · <span className="text-faint">{k.where}</span>
+          </div>
+          {editing && (
+            <div className="mt-2 flex gap-2">
+              <input type="password" value={val} autoComplete="new-password"
+                placeholder="paste key — stored server-side"
+                onChange={(e) => setVal(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && save()}
+                className="w-64 rounded-md border border-border bg-surface-2 px-2 py-1 text-[12px] text-text" />
+              <button onClick={save}
+                className="rounded-md bg-accent px-3 text-[11px] font-semibold text-[#0b0f1a]">save</button>
+            </div>
+          )}
+          {msg && <div className="mt-1 text-[11px] text-warn">{msg}</div>}
+        </div>
+        <button onClick={() => setEditing((x) => !x)}
+          className="shrink-0 text-[11px] text-accent hover:underline">
+          {editing ? "cancel" : k.set ? "update" : "set"}
+        </button>
+      </div>
+    </li>
   );
 }

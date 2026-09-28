@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { ChatWidget } from "./chat-widget";
 import { CommandPalette } from "./command-palette";
 import { Sidebar } from "./sidebar";
 import { Topbar } from "./topbar";
@@ -24,6 +25,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </main>
       </div>
       <CommandPalette />
+      <ChatWidget />
     </div>
   );
 }
