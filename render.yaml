@@ -1,0 +1,43 @@
+# Render blueprint — API + Postgres + Redis. Deploy web to Vercel
+# separately; set NEXT_PUBLIC_API_URL to this service's URL.
+services:
+  - type: web
+    name: vaiip-api
+    runtime: docker
+    dockerfilePath: apps/api/Dockerfile
+    dockerContext: apps/api
+    region: oregon
+    plan: starter
+    healthCheckPath: /api/v1/health
+    startCommand: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          name: vaiip-db
+          type: psql
+          property: connectionString
+      - key: CORS_ORIGINS
+        value: https://vianomics.com,https://app.vianomics.com
+      - key: EXECUTION_ENABLED
+        value: "false"          # stays off until IBKR verified
+      - key: DEMO_FIXTURES
+        value: "false"          # production = honest empty states
+      - key: ADMIN_PASSWORD
+        sync: false             # set in render dashboard
+      - key: ADMIN_EMAIL
+        value: admin@vianomics.com
+      # provider keys — set in render dashboard (never in git):
+      - key: TIINGO_API_KEY
+        sync: false
+      - key: FRED_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+
+databases:
+  - name: vaiip-db
+    plan: starter

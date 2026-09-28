@@ -91,3 +91,45 @@ async def runs_for(job_key: str, limit: int = 20,
          "quarantined": r.records_quarantined,
          "error": r.error}
         for r in rows]
+
+
+@router.post("/run/{job_key}", status_code=202)
+async def run_job_now(job_key: str,
+                      db: AsyncSession = Depends(get_db)):
+    """Manually trigger an ingestion job by its key —
+    ingest:edgar:facts:AAPL, ingest:fred:CPIAUCSL, ingest:yahoo:MSFT."""
+    from app.ingestion import jobs as ing
+    from app.providers.edgar import EdgarAdapter
+    from app.providers.fred import FredAdapter
+    from app.providers.yahoo import YahooAdapter
+    adapters = {"edgar": EdgarAdapter, "fred": FredAdapter,
+                "yahoo": YahooAdapter}
+    parts = job_key.split(":")
+    try:
+        if job_key.startswith("ingest:edgar:facts:"):
+            sym = parts[-1]
+            if await _instr(db, sym) is None:
+                return {"status": "failed", "error": f"{sym} not in universe"}
+            run = await ing.ingest_edgar_facts(db, adapters["edgar"](), sym)
+        elif job_key.startswith("ingest:fred:"):
+            run = await ing.ingest_fred_series(
+                db, adapters["fred"](), parts[-1], parts[-1])
+        elif job_key.startswith("ingest:yahoo:") or \
+                job_key.startswith("ingest:stooq:"):
+            run = await ing.ingest_stooq_bars(db, adapters["yahoo"](), parts[-1])
+        else:
+            return {"status": "failed",
+                    "error": f"no runner for {job_key}"}
+    except Exception as e:
+        return {"status": "failed", "error": str(e)[:200]}
+    from app.services import cache
+    cache.invalidate()           # new bars change scan/snapshot
+    return {"status": run.status, "records_ok": run.records_ok,
+            "error": run.error}
+
+
+async def _instr(db: AsyncSession, symbol: str):
+    from app.models.instruments import Instrument
+    return (await db.execute(
+        select(Instrument).where(Instrument.symbol == symbol.upper()))
+    ).scalar_one_or_none()

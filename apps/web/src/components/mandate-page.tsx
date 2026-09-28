@@ -375,6 +375,7 @@ export function MandatePage() {
       <ModelManager me={me} />
       <Notifications me={me} />
       <DemoToggle me={me} />
+      <AccountSecurity me={me} />
     </div>
   );
 }
@@ -741,6 +742,86 @@ function Notifications({ me }: { me: Me | null }) {
             </li>
           ))}
         </ul>
+      )}
+    </SectionCard>
+  );
+}
+
+/* ── account: change password + user admin ── */
+
+interface UserRow { id: string; email: string; display_name?: string | null; roles: string[] }
+
+function AccountSecurity({ me }: { me: Me | null }) {
+  const [pw, setPw] = useState({ old: "", new: "" });
+  const [msg, setMsg] = useState<string | null>(null);
+  const [users, setUsers] = useState<UserRow[]>([]);
+  const [nu, setNu] = useState({ email: "", password: "", name: "", role: "viewer" });
+  const isAdmin = me?.permissions?.includes("admin:*");
+
+  const load = () => {
+    if (isAdmin) apiGet<UserRow[]>("/api/v1/auth/users").then(setUsers).catch(() => {});
+  };
+  useEffect(load, [isAdmin]);
+
+  return (
+    <SectionCard title="Account & users" className="rise">
+      {me && (
+        <div className="mb-4">
+          <div className="mb-1 text-[12px] font-medium">Change your password</div>
+          <div className="flex flex-wrap gap-2">
+            <input type="password" placeholder="current password" value={pw.old}
+              autoComplete="current-password"
+              onChange={(e) => setPw({ ...pw, old: e.target.value })}
+              className="w-48 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text" />
+            <input type="password" placeholder="new password (10+ chars)" value={pw.new}
+              autoComplete="new-password"
+              onChange={(e) => setPw({ ...pw, new: e.target.value })}
+              className="w-48 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text" />
+            <button onClick={async () => {
+                setMsg(null);
+                try { await apiPost("/api/v1/auth/change-password", { old_password: pw.old, new_password: pw.new }); setMsg("✓ password changed"); setPw({ old: "", new: "" }); }
+                catch (e) { setMsg((e as Error).message); }
+              }}
+              className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-[#0b0f1a]">Change</button>
+          </div>
+          {msg && <p className="mt-1 text-[11px] text-warn">{msg}</p>}
+        </div>
+      )}
+
+      {isAdmin && (
+        <div>
+          <div className="mb-1 text-[12px] font-medium">Users <span className="text-faint">(admin)</span></div>
+          <div className="mb-2 flex flex-wrap gap-2">
+            <input placeholder="email" value={nu.email}
+              onChange={(e) => setNu({ ...nu, email: e.target.value })}
+              className="w-48 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text" />
+            <input placeholder="display name" value={nu.name}
+              onChange={(e) => setNu({ ...nu, name: e.target.value })}
+              className="w-40 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text" />
+            <input type="password" placeholder="temp password" value={nu.password}
+              onChange={(e) => setNu({ ...nu, password: e.target.value })}
+              className="w-40 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text" />
+            <select value={nu.role} onChange={(e) => setNu({ ...nu, role: e.target.value })}
+              className="rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text">
+              <option value="viewer">viewer</option>
+              <option value="admin">admin</option>
+            </select>
+            <button onClick={async () => {
+                setMsg(null);
+                try { await apiPost("/api/v1/auth/users", { email: nu.email, password: nu.password, display_name: nu.name || null, role: nu.role }); setNu({ email: "", password: "", name: "", role: "viewer" }); load(); setMsg("✓ user created"); }
+                catch (e) { setMsg((e as Error).message); }
+              }}
+              className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-[#0b0f1a]">Create</button>
+          </div>
+          <ul className="space-y-1">
+            {users.map((u) => (
+              <li key={u.id} className="glass-tile flex items-center justify-between px-3 py-1.5 text-[12px]">
+                <span>{u.email} {u.display_name && <span className="text-faint">· {u.display_name}</span>}</span>
+                <span className="text-[10px] text-dim">{u.roles.join(", ")}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </SectionCard>
   );

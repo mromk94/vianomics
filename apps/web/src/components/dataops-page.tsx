@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { apiGet } from "@/lib/api";
+import { apiGet, apiPost } from "@/lib/api";
 import { fmtTime } from "@/lib/format";
 import { DataTable } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -29,10 +29,15 @@ const ST: Record<string, "pos" | "neg" | "warn"> = {
 export function DataOpsPage() {
   const [d, setD] = useState<Overview | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    apiGet<Overview>("/api/v1/dataops/overview").then(setD)
-      .catch((e) => setError(e.message));
-  }, []);
+  const [running, setRunning] = useState<string | null>(null);
+  const load = () => apiGet<Overview>("/api/v1/dataops/overview")
+    .then(setD).catch((e) => setError(e.message));
+  useEffect(() => { load(); }, []);
+  const runNow = async (key: string) => {
+    setRunning(key);
+    try { await apiPost(`/api/v1/dataops/run/${key}`, {}); await load(); }
+    finally { setRunning(null); }
+  };
 
   const failed = d?.jobs.filter((j) => j.last_status === "failed").length ?? 0;
   const quar = d?.quarantine.reduce((s, q) => s + q.count, 0) ?? 0;
@@ -59,6 +64,10 @@ export function DataOpsPage() {
                 ? <StatusBadge tone={ST[j.last_status] ?? "warn"}>{j.last_status}</StatusBadge>
                 : <span className="text-faint text-[11px]">never</span> },
               { key: "at", header: "At", align: "right", render: (j) => <span className="num text-faint text-[11px]">{j.last_run_at ? fmtTime(j.last_run_at) : "—"}</span> },
+              { key: "run", header: "", render: (j) => (
+                <button onClick={() => runNow(j.key)} disabled={running === j.key}
+                  className="text-[10px] text-accent hover:underline disabled:opacity-40">
+                  {running === j.key ? "running…" : "run"}</button>) },
             ]}
             rows={d.jobs} rowKey={(j) => j.id}
           />
