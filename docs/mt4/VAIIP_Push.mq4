@@ -5,13 +5,22 @@
 //| on account change.                                                |
 //+------------------------------------------------------------------+
 #property strict
-#property script_show_inputs
+#property description "Pushes account snapshot to VAIIP every PushEverySec"
 
 input string PushSecret  = "";          // MT4_PUSH_SECRET from Settings
 input string ApiBase     = "https://vianomics.onrender.com/api/v1";
 input int    PushEverySec = 60;
 
-int OnInit()  { EventSetTimer(PushEverySec); return INIT_SUCCEEDED; }
+int OnInit()
+{
+   EventSetTimer(PushEverySec);
+   if (PushSecret == "")
+      Print("VAIIP: PushSecret is EMPTY — set it in EA inputs");
+   else
+      Print("VAIIP: armed, pushing every ", PushEverySec, "s");
+   Push();   // immediate first push
+   return INIT_SUCCEEDED;
+}
 void OnDeinit(const int r) { EventKillTimer(); }
 void OnTimer() { Push(); }
 
