@@ -1,0 +1,23 @@
+name: Keep Render awake
+
+# Free-tier Render services sleep after ~15 min idle. Ping /healthz
+# every 5 min so the API stays warm until the plan upgrades.
+# Note: GitHub schedules are best-effort (can lag a few minutes under
+# load) — still vastly better than a cold start on first visit.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:          # manual trigger for testing
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping API health
+        run: |
+          code=$(curl -s -o /tmp/health.json -w "%{http_code}" --max-time 30 \
+            https://vianomics.onrender.com/healthz)
+          echo "status=$code"; cat /tmp/health.json
+          test "$code" = "200"
