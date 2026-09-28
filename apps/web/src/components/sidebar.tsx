@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 
-import { apiGet } from "@/lib/api";
+import { apiGet, apiPost, setToken } from "@/lib/api";
 import { NAV } from "@/lib/modules";
 
 interface Me { email: string; display_name?: string | null;
@@ -91,8 +91,27 @@ export function Sidebar({
         ))}
       </nav>
 
-      <div className="mt-4 border-t border-border pt-3 text-center text-[11px] tracking-wider text-faint uppercase">
-        VAIIP v0.1 · Internal
+      <div className="mt-4 border-t border-border pt-3">
+        {me ? (
+          <button
+            onClick={async () => {
+              try { await apiPost("/api/v1/auth/logout", {}); } catch {}
+              setToken(null); setMe(null);
+              window.location.href = "/settings";
+            }}
+            className="mb-2 w-full rounded-lg border border-border px-3 py-1.5 text-[11px] text-dim transition hover:border-neg/50 hover:text-neg"
+          >
+            Sign out
+          </button>
+        ) : (
+          <Link href="/settings" onClick={onClose}
+            className="mb-2 block w-full rounded-lg border border-accent/50 px-3 py-1.5 text-center text-[11px] font-semibold text-accent transition hover:bg-accent/10">
+            Sign in
+          </Link>
+        )}
+        <div className="text-center text-[11px] tracking-wider text-faint uppercase">
+          VAIIP v0.1 · Internal
+        </div>
       </div>
     </>
   );

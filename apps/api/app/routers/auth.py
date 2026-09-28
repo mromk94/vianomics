@@ -7,12 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.session import get_db
-from app.models.identity import Session, User
+from app.models.identity import Role, Session, User
 from app.security import (
     audit,
     create_session,
     current_user,
     user_permissions,
+    hash_password,
+    require,
     verify_password,
 )
 
@@ -83,3 +85,63 @@ async def me(user: User = Depends(current_user)) -> dict:
         "name": user.display_name,
         "permissions": sorted(user_permissions(user)),
     }
+
+
+class PasswordChange(BaseModel):
+    old_password: str
+    new_password: str
+
+
+@router.post("/change-password")
+async def change_password(body: PasswordChange,
+                          db: AsyncSession = Depends(get_db),
+                          user: User = Depends(current_user)):
+    if len(body.new_password) < 10:
+        raise HTTPException(400, "min 10 chars")
+    if not verify_password(body.old_password, user.password_hash):
+        raise HTTPException(400, "current password wrong")
+    user.password_hash = hash_password(body.new_password)
+    await audit(db, action="user.password_change", actor=user)
+    await db.commit()
+    return {"ok": True}
+
+
+class UserIn(BaseModel):
+    email: str
+    password: str
+    display_name: str | None = None
+    role: str = "viewer"   # admin can grant admin
+
+
+@router.get("/users")
+async def list_users(db: AsyncSession = Depends(get_db),
+                     _admin: User = Depends(require("admin:*"))):
+    rows = (await db.execute(select(User))).scalars().all()
+    return [{"id": u.id, "email": u.email,
+             "display_name": u.display_name,
+             "roles": [r.name for r in u.roles]} for u in rows]
+
+
+@router.post("/users", status_code=201)
+async def create_user(body: UserIn,
+                      db: AsyncSession = Depends(get_db),
+                      admin: User = Depends(require("admin:*"))):
+    if len(body.password) < 10:
+        raise HTTPException(400, "min 10 chars")
+    exists = (await db.execute(
+        select(User).where(User.email == body.email))).scalar_one_or_none()
+    if exists:
+        raise HTTPException(409, "email already registered")
+    role = (await db.execute(
+        select(Role).where(Role.name == body.role))).scalar_one_or_none()
+    u = User(email=body.email, display_name=body.display_name,
+             password_hash=hash_password(body.password))
+    if role:
+        u.roles.append(role)
+    db.add(u)
+    await db.flush()
+    await audit(db, action="user.create", actor=admin,
+                entity_type="user", entity_id=u.id,
+                detail={"email": u.email, "role": body.role})
+    await db.commit()
+    return {"id": u.id, "email": u.email}
