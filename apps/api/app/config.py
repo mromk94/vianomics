@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     app_name: str = "VAIIP API"
     version: str = "0.1.0"
 
-    database_url: str = "postgresql://vianomics:vianomics@localhost:5432/vianomics"
+    database_url: str = "postgresql://vianomics:vianomics@localhost:5433/vianomics"
     redis_url: str = "redis://localhost:6379/0"
     cors_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002"
 
