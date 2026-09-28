@@ -106,6 +106,8 @@ const BLOCKS: Block[] = [
           <Row k="Fear & Greed / VIX" v="Pulled from public indices where available; no key." />
           <Row k="Interactive Brokers — trading" v="IBKR_HOST / IBKR_PORT / IBKR_CLIENT_ID + TWS or Gateway running with API enabled (paper: port 7497, live: 7496). See the execution section before enabling." />
           <Row k="ADMIN_PASSWORD" v="The admin password set when the system was seeded. Keep it out of git." />
+          <Row k="AI model providers" v="Settings → AI models: pick Anthropic, OpenAI, Gemini, DeepSeek, Kimi, local Ollama, or a custom endpoint, paste the key, choose the model, mark default. Keys stay server-side (shown masked). Today all analysis is deterministic — models power narrative features when added." />
+          <Row k="Demo / live data" v="Settings → Demo/live toggle. Demo fills empty sections with labeled examples; live mode shows honest empty states. Real sections are real either way." />
         </ul>
         <P><B>If a provider fails</B>, the system raises a data-quality alert — it never pretends missing data means no risk.</P>
       </>

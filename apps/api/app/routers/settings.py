@@ -67,3 +67,153 @@ async def env_status():
         "execution_broker": s.execution_broker,
         "demo_fixtures": s.demo_fixtures,
     }
+
+
+# ── model configs (Part E: user-selectable AI providers) ──
+
+from fastapi import Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.session import get_db
+from app.models.identity import User
+from app.models.ops import ModelConfig, RuntimeFlag
+from app.security import audit, require
+
+PROVIDERS = [
+    {"id": "anthropic", "label": "Anthropic", "models": [
+        "claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"],
+     "where": "console.anthropic.com → API Keys"},
+    {"id": "openai", "label": "OpenAI", "models": [
+        "gpt-5", "gpt-5-mini", "o4-mini"],
+     "where": "platform.openai.com → API keys"},
+    {"id": "gemini", "label": "Google Gemini", "models": [
+        "gemini-2.5-pro", "gemini-2.5-flash"],
+     "where": "aistudio.google.com → Get API key"},
+    {"id": "deepseek", "label": "DeepSeek", "models": [
+        "deepseek-chat", "deepseek-reasoner"],
+     "where": "platform.deepseek.com → API keys"},
+    {"id": "kimi", "label": "Moonshot Kimi", "models": [
+        "kimi-k2", "moonshot-v1-128k"],
+     "where": "platform.moonshot.ai → API keys"},
+    {"id": "ollama", "label": "Local (Ollama / open models)", "models": [
+        "llama3.3", "qwen3", "deepseek-r1"],
+     "where": "ollama.com — runs on your machine, no key",
+     "needs_base_url": True},
+    {"id": "custom", "label": "Custom / Meta AI compatible endpoint",
+     "models": [], "where": "any OpenAI-compatible base URL",
+     "needs_base_url": True},
+]
+
+
+@router.get("/models")
+async def model_catalog(db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(ModelConfig))).scalars().all()
+    return {
+        "providers": PROVIDERS,
+        "configs": [
+            {"id": c.id, "provider": c.provider, "label": c.label,
+             "model": c.model,
+             "key_set": bool(c.api_key),
+             "key_masked": ("••••" + c.api_key[-4:]) if c.api_key else None,
+             "base_url": c.base_url, "enabled": c.enabled,
+             "is_default": c.is_default}
+            for c in rows],
+        "note": "keys are stored server-side and masked — never "
+                "returned in full"}
+
+
+class ModelIn(BaseModel):
+    provider: str
+    model: str
+    api_key: str | None = None
+    base_url: str | None = None
+    label: str = ""
+    is_default: bool = False
+
+
+@router.post("/models", status_code=201)
+async def upsert_model(body: ModelIn,
+                       db: AsyncSession = Depends(get_db),
+                       user: User = Depends(require("admin:*"))):
+    if body.provider not in {p["id"] for p in PROVIDERS}:
+        raise HTTPException(400, f"unknown provider {body.provider}")
+    c = ModelConfig(
+        provider=body.provider, model=body.model,
+        api_key=body.api_key, base_url=body.base_url,
+        label=body.label or f"{body.provider}/{body.model}",
+        is_default=body.is_default)
+    if c.is_default:
+        for r in (await db.execute(
+                select(ModelConfig).where(ModelConfig.is_default))).scalars():
+            r.is_default = False
+    db.add(c)
+    await db.flush()
+    await audit(db, action="model.config.add", actor=user,
+                entity_type="model_config", entity_id=c.id,
+                detail={"provider": c.provider, "model": c.model})
+    await db.commit()
+    return {"id": c.id, "ok": True}
+
+
+@router.post("/models/{config_id}/default")
+async def set_default(config_id: str,
+                      db: AsyncSession = Depends(get_db),
+                      user: User = Depends(require("admin:*"))):
+    c = await db.get(ModelConfig, config_id)
+    if c is None:
+        raise HTTPException(404, "config not found")
+    for r in (await db.execute(
+            select(ModelConfig).where(ModelConfig.is_default))).scalars():
+        r.is_default = False
+    c.is_default = True
+    await db.commit()
+    return {"ok": True, "default": c.id}
+
+
+@router.delete("/models/{config_id}")
+async def delete_model(config_id: str,
+                       db: AsyncSession = Depends(get_db),
+                       user: User = Depends(require("admin:*"))):
+    c = await db.get(ModelConfig, config_id)
+    if c is None:
+        raise HTTPException(404, "config not found")
+    await db.delete(c)
+    await db.commit()
+    return {"ok": True}
+
+
+# ── runtime flags: demo/live switch without restart ──
+
+async def runtime_flag(db: AsyncSession, key: str,
+                       default: bool) -> bool:
+    """DB-backed runtime switch; on any read failure fall back to the
+    env default — a flag lookup must never break the endpoint."""
+    try:
+        r = (await db.execute(
+            select(RuntimeFlag).where(RuntimeFlag.key == key))
+        ).scalar_one_or_none()
+        return r.value if r else default
+    except Exception:
+        return default
+
+
+@router.post("/flags/{key}")
+async def set_flag(key: str, value: bool,
+                   db: AsyncSession = Depends(get_db),
+                   user: User = Depends(require("admin:*"))):
+    if key not in {"demo_fixtures"}:
+        raise HTTPException(400, f"unknown flag {key}")
+    r = (await db.execute(
+        select(RuntimeFlag).where(RuntimeFlag.key == key))
+    ).scalar_one_or_none()
+    if r is None:
+        r = RuntimeFlag(key=key, value=value)
+        db.add(r)
+    else:
+        r.value = value
+    await audit(db, action=f"flag.{key}", actor=user,
+                detail={"value": value})
+    await db.commit()
+    return {"key": key, "value": value}

@@ -97,3 +97,28 @@ class QuarantinedRecord(Base, IdMixin, TimestampMixin):
     raw: Mapped[dict] = mapped_column(JSON)
     errors: Mapped[list] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(default="quarantined")  # quarantined|reprocessed|dismissed
+
+
+class ModelConfig(Base, IdMixin, TimestampMixin):
+    """AI model provider configs — api_key stored server-side, masked
+    on read. One row marked default drives agent calls."""
+
+    __tablename__ = "model_configs"
+
+    provider: Mapped[str] = mapped_column(index=True)  # openai|anthropic|gemini|deepseek|kimi|ollama|custom
+    label: Mapped[str] = mapped_column(default="")      # "GPT-5 prod"
+    model: Mapped[str] = mapped_column(default="")      # gpt-5, claude-…
+    api_key: Mapped[str | None]                         # never returned
+    base_url: Mapped[str | None]                        # custom/ollama
+    enabled: Mapped[bool] = mapped_column(default=True)
+    is_default: Mapped[bool] = mapped_column(default=False)
+
+
+class RuntimeFlag(Base, IdMixin, TimestampMixin):
+    """Runtime switches that would otherwise need a restart —
+    e.g. demo_fixtures on/off."""
+
+    __tablename__ = "runtime_flags"
+
+    key: Mapped[str] = mapped_column(unique=True)   # demo_fixtures…
+    value: Mapped[bool] = mapped_column(default=False)
