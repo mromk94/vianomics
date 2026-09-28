@@ -116,10 +116,13 @@ def test_ibkr_refuses_unconfigured():
         IbkrAdapter()
 
 
-def test_alpaca_planned_not_operational():
+def test_alpaca_requires_keys():
     from app.providers.broker import get_adapter
     from app.providers.base import ProviderConfigError
-    with pytest.raises(ProviderConfigError, match="not implemented"):
+    import os
+    os.environ.pop("ALPACA_API_KEY", None)
+    os.environ.pop("ALPACA_SECRET_KEY", None)
+    with pytest.raises(ProviderConfigError, match="ALPACA_API_KEY"):
         get_adapter("alpaca")
 
 

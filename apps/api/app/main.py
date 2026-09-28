@@ -6,6 +6,7 @@ from app.routers import (
     assistant, auth, backtest, command_center, committee, dataops, engines,
     execution, feedback, health, mandate, market, monitoring, portfolio,
     research, risk, screener, technical, universe, valuation,
+    webhooks,
 )
 from app.routers import settings as settings_router
 
@@ -42,6 +43,7 @@ app.include_router(portfolio.router, prefix="/api/v1")
 app.include_router(dataops.router, prefix="/api/v1")
 app.include_router(settings_router.router, prefix="/api/v1")
 app.include_router(assistant.router, prefix="/api/v1")
+app.include_router(webhooks.router, prefix="/api/v1")
 
 
 @app.on_event("startup")

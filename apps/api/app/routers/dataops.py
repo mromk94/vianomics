@@ -158,6 +158,47 @@ async def backfill(db: AsyncSession = Depends(get_db)):
         except Exception as e:
             await db.rollback()       # don't poison the session
             failed.append({"symbol": inst.symbol, "error": str(e)[:120]})
+
+    # macro series — needs FRED_API_KEY
+    macro_ok = macro_fail = 0
+    try:
+        from app.providers.fred import FredAdapter
+        from app.services.macro_regime import FRED_SERIES
+        fred = FredAdapter()
+        for code, (name, _cat) in FRED_SERIES.items():
+            try:
+                await ing.ingest_fred_series(db, fred, code, name)
+                macro_ok += 1
+                await db.commit()
+            except Exception as e:
+                await db.rollback()
+                macro_fail += 1
+                failed.append({"symbol": f"fred:{code}",
+                               "error": str(e)[:120]})
+    except Exception as e:
+        failed.append({"symbol": "fred", "error": str(e)[:120]})
+
+    # fundamentals — EDGAR needs a contact email, no key
+    fund_ok = 0
+    import os
+    if os.environ.get("EDGAR_USER_AGENT") or os.environ.get(
+            "SEC_EDGAR_EMAIL"):
+        from app.providers.edgar import EdgarAdapter
+        ed = EdgarAdapter()
+        for inst in insts:
+            try:
+                r = await ing.ingest_edgar_facts(db, ed, inst.symbol)
+                fund_ok += 1 if r.status == "success" else 0
+                await db.commit()
+            except Exception as e:
+                await db.rollback()
+                failed.append({"symbol": f"edgar:{inst.symbol}",
+                               "error": str(e)[:120]})
+    else:
+        failed.append({"symbol": "edgar",
+                       "error": "EDGAR_USER_AGENT not set"})
+
     cache.invalidate()
-    return {"instruments": len(insts), "ingested": done,
+    return {"instruments": len(insts), "bars_ingested": done,
+            "macro_series": macro_ok, "fundamentals": fund_ok,
             "failed": failed}

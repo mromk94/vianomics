@@ -232,25 +232,103 @@ class IbkrAdapter(BrokerAdapter):
 
 
 class AlpacaAdapter(BrokerAdapter):
-    """Planned — NOT operational. Do not present as connected."""
+    """Alpaca REST v2 — paper or live depending on base URL.
+    Paper: paper-api.alpaca.markets · Live: api.alpaca.markets.
+    Keys: ALPACA_API_KEY / ALPACA_SECRET_KEY (env or secret store)."""
+
     key = "alpaca"
     live = True
 
     def __init__(self):
-        raise ProviderConfigError("alpaca: adapter not yet implemented")
+        import os
+        self._key = os.environ.get("ALPACA_API_KEY")
+        self._secret = os.environ.get("ALPACA_SECRET_KEY")
+        self._base = os.environ.get(
+            "ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+        if not (self._key and self._secret):
+            raise ProviderConfigError(
+                "alpaca: set ALPACA_API_KEY + ALPACA_SECRET_KEY")
+        self._paper = "paper" in self._base
 
     def capabilities(self):
-        return {"mode": "planned", "operational": False}
-    account_summary = positions = margin_requirements = submit_order = \
-        cancel_order = order_status = executions = None
+        return {"mode": "paper" if self._paper else "live",
+                "operational": True, "broker": "alpaca"}
+
+    def _h(self):
+        return {"APCA-API-KEY-ID": self._key,
+                "APCA-API-SECRET-KEY": self._secret}
+
+    async def account_summary(self) -> dict:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(f"{self._base}/v2/account",
+                            headers=self._h())
+            r.raise_for_status()
+            a = r.json()
+            return {"equity": float(a.get("equity", 0)),
+                    "cash": float(a.get("cash", 0)),
+                    "buying_power": float(a.get("buying_power", 0)),
+                    "paper": self._paper}
+
+    async def submit_order(self, o: BrokerOrder) -> BrokerOrder:
+        body = {"symbol": o.symbol, "qty": o.qty, "side": o.side,
+                "type": o.order_type, "time_in_force": "day"}
+        if o.order_type == "limit":
+            body["limit_price"] = o.limit_price
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(f"{self._base}/v2/orders",
+                             headers=self._h(), json=body)
+            if r.status_code >= 400:
+                o.status = "rejected"
+                o.events.append({"t": datetime.utcnow().isoformat(),
+                                 "stage": "rejected",
+                                 "detail": r.text[:200]})
+                return o
+            d = r.json()
+            o.broker_order_id = d["id"]
+            o.status = ("filled" if d.get("status") == "filled"
+                        else "submitted")
+            if d.get("filled_qty"):
+                o.filled_qty = float(d["filled_qty"])
+                o.avg_fill_price = (float(d["filled_avg_price"])
+                                    if d.get("filled_avg_price") else None)
+            o.events.append({"t": datetime.utcnow().isoformat(),
+                             "stage": "submitted", "detail": d["id"]})
+            return o
+
+    async def order_status(self, o: BrokerOrder) -> BrokerOrder:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(f"{self._base}/v2/orders/{o.broker_order_id}",
+                            headers=self._h())
+            r.raise_for_status()
+            d = r.json()
+            o.status = {"filled": "filled", "canceled": "cancelled",
+                        "rejected": "rejected",
+                        "expired": "cancelled"}.get(
+                            d.get("status"), "submitted")
+            o.filled_qty = float(d.get("filled_qty") or 0)
+            o.avg_fill_price = (float(d["filled_avg_price"])
+                                if d.get("filled_avg_price") else None)
+            return o
+
+    async def cancel_order(self, o: BrokerOrder) -> BrokerOrder:
+        async with httpx.AsyncClient(timeout=15) as c:
+            await c.delete(
+                f"{self._base}/v2/orders/{o.broker_order_id}",
+                headers=self._h())
+            o.status = "cancelled"
+            return o
+
+    positions = margin_requirements = executions = None
 
 
-# registry — paper is the only operational adapter
+# registry — paper default; alpaca + ibkr when configured
 def get_adapter(key: str = "paper") -> BrokerAdapter:
     if key == "paper":
         return PAPER
     if key == "ibkr":
         return IbkrAdapter()
+    if key == "alpaca":
+        return AlpacaAdapter()
     raise ProviderConfigError(f"broker '{key}' not implemented")
 
 
