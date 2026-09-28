@@ -32,7 +32,7 @@ export function ChatWidget() {
     setBusy(true);
     try {
       const r = await apiPost<{ reply: string; source: string }>(
-        "/api/v1/assistant/chat", { message: m, history: msgs.slice(-6) });
+        "/api/v1/assistant/chat", { message: m, history: msgs.slice(-6) }, 45000);
       setMsgs((x) => [...x, { role: "assistant", content: r.reply, src: r.source }]);
     } catch {
       setMsgs((x) => [...x, { role: "assistant", content: "Couldn't reach the API — is it running?" }]);

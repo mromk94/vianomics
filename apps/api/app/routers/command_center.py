@@ -109,7 +109,7 @@ async def command_center(
     from app.models.governance import Approval, DecisionRecord
     from app.models.instruments import Instrument, Sector
     from app.models.macro import RegimeRun
-    from app.models.ops import Alert, JobRun
+    from app.models.ops import Alert, Job, JobRun
     from app.routers.risk import _portfolio_ctx
     from app.models.market import OhlcvBar
     from app.services import risk_engine as re_
@@ -274,8 +274,10 @@ async def command_center(
         select(func.count(JobRun.id)))).scalar()
     last_runs = (
         await db.execute(
-            select(JobRun.job_id, func.max(JobRun.finished_at),
-                   func.max(JobRun.status)).group_by(JobRun.job_id))
+            select(Job.key, func.max(JobRun.finished_at),
+                   func.max(JobRun.status))
+            .join(Job, JobRun.job_id == Job.id)
+            .group_by(Job.key))
     ).all() if job_count else []
 
     # CIO block — latest decision's verdict/confidence
@@ -343,8 +345,8 @@ async def command_center(
         watchlist=entries,
         providers=providers + [
             ProviderHealth(
-                name=f"job:{jid}", status=("up" if st == "success"
-                                           else "degraded"),
+                name=jid, status=("up" if st == "success"
+                                  else "degraded"),
                 last_sync=ft.isoformat() if ft else None)
             for jid, ft, st in last_runs],
     )
