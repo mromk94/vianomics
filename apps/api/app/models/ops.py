@@ -133,3 +133,17 @@ class SecretStore(Base, IdMixin, TimestampMixin):
 
     key: Mapped[str] = mapped_column(unique=True)   # TIINGO_API_KEY…
     value: Mapped[str]
+
+
+class NotificationChannel(Base, IdMixin, TimestampMixin):
+    """Outbound notification channel — alert dispatch adapters.
+    Credentials (bot tokens, Twilio SID/secret, SMTP) go through
+    SecretStore; this row holds target + enablement."""
+
+    __tablename__ = "notification_channels"
+
+    channel: Mapped[str] = mapped_column(index=True)  # email|whatsapp|telegram|sms
+    target: Mapped[str]  # email addr | phone | chat_id
+    enabled: Mapped[bool] = mapped_column(default=True)
+    min_severity: Mapped[str] = mapped_column(default="critical")  # info|warning|critical
+    extra: Mapped[dict] = mapped_column(JSON, default=dict)  # from_addr etc.

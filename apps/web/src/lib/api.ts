@@ -71,6 +71,19 @@ export async function apiPost<T>(
   }
 }
 
+export async function apiDelete<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "DELETE", headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new ApiError(res.status,
+      typeof detail?.detail === "string"
+        ? detail.detail : `API ${res.status} on ${path}`);
+  }
+  return (await res.json()) as T;
+}
+
 /* ── Command Center types (mirror apps/api schemas) ── */
 
 export interface CommandCenter {

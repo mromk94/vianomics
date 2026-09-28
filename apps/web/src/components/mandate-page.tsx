@@ -2,7 +2,7 @@
 
  import { useEffect, useState } from "react";
 
-import { apiGet, apiPost, ApiError, getToken, setToken } from "@/lib/api";
+import { apiGet, apiPost, apiDelete, ApiError, getToken, setToken } from "@/lib/api";
 import { fmtTime } from "@/lib/format";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
@@ -373,6 +373,7 @@ export function MandatePage() {
 
       <EnvSettings />
       <ModelManager me={me} />
+      <Notifications me={me} />
       <DemoToggle me={me} />
     </div>
   );
@@ -604,5 +605,115 @@ function KeyRow({ k, onSaved }: { k: EnvKey; onSaved: () => void }) {
         </button>
       </div>
     </li>
+  );
+}
+
+/* ── notification channels — email / whatsapp / telegram / sms ── */
+
+interface NotifCfg {
+  id: string; channel: string; target: string; enabled: boolean;
+  min_severity: string;
+}
+interface NotifCatalog {
+  channels: NotifCfg[];
+  specs: { id: string; label: string; target_label: string;
+    keys: string; note: string }[];
+  note: string;
+}
+
+function Notifications({ me }: { me: Me | null }) {
+  const [cat, setCat] = useState<NotifCatalog | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [form, setForm] = useState({ channel: "email", target: "",
+    min_severity: "critical" });
+  const load = () => apiGet<NotifCatalog>("/api/v1/settings/notifications")
+    .then(setCat).catch(() => {});
+  useEffect(() => { load(); }, []);
+
+  const spec = cat?.specs.find((s) => s.id === form.channel);
+  const add = async () => {
+    setMsg(null);
+    try {
+      await apiPost("/api/v1/settings/notifications", form);
+      setForm({ ...form, target: "" });
+      load();
+    } catch (e) {
+      setMsg(e instanceof ApiError && e.status === 403
+        ? "Admin required" : (e as Error).message);
+    }
+  };
+
+  return (
+    <SectionCard title="Notifications" className="rise"
+      action={<a href="/docs#keys" className="text-accent text-[11px] hover:underline">setup →</a>}>
+      <p className="mb-3 text-[11px] text-dim">
+        Alerts dispatch here when they meet the severity floor. Channel
+        credentials (Twilio keys, bot token, SMTP) go in the API-keys
+        section above or the server .env.
+      </p>
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {cat?.specs.map((s) => (
+          <button key={s.id}
+            onClick={() => setForm({ ...form, channel: s.id })}
+            className={`rounded-full border px-3 py-1 text-[11px] transition ${
+              form.channel === s.id
+                ? "border-accent bg-accent/10 font-semibold text-accent"
+                : "border-border text-dim hover:text-text"}`}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+      {spec && (
+        <div className="mb-2 text-[11px] text-dim">
+          {spec.note} · credentials: <code className="text-accent text-[10px]">{spec.keys}</code>
+        </div>
+      )}
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="text-[11px] text-dim">{spec?.target_label ?? "Target"}
+          <input value={form.target} placeholder="you@x.com / +1555… / chat id"
+            onChange={(e) => setForm({ ...form, target: e.target.value })}
+            className="mt-1 block w-64 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text" />
+        </label>
+        <label className="text-[11px] text-dim">Min severity
+          <select value={form.min_severity}
+            onChange={(e) => setForm({ ...form, min_severity: e.target.value })}
+            className="mt-1 block rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text">
+            <option value="info">info+</option>
+            <option value="warning">warning+</option>
+            <option value="critical">critical only</option>
+          </select>
+        </label>
+        <button onClick={add} disabled={!me || !form.target}
+          className="rounded-lg bg-accent px-4 py-1.5 text-[12px] font-semibold text-[#0b0f1a] disabled:opacity-40">
+          Add channel
+        </button>
+      </div>
+      {msg && <p className="mt-2 text-[12px] text-warn">{msg}</p>}
+
+      {cat && cat.channels.length > 0 && (
+        <ul className="mt-3 space-y-1.5">
+          {cat.channels.map((c) => (
+            <li key={c.id} className="glass-tile flex items-center justify-between px-3 py-2 text-[12px]">
+              <span className="flex items-center gap-2">
+                <StatusBadge tone="info">{c.channel}</StatusBadge>
+                <span className="num">{c.target}</span>
+                <span className="text-[10px] text-faint">{c.min_severity}+</span>
+                {!c.enabled && <StatusBadge tone="warn">off</StatusBadge>}
+              </span>
+              <span className="flex gap-2">
+                <button onClick={async () => {
+                    const r = await apiPost<{ok: boolean; error?: string}>(`/api/v1/settings/notifications/${c.id}/test`, {});
+                    setMsg(r.ok ? `✓ test sent to ${c.channel}` : `✗ ${c.channel}: ${r.error}`);
+                  }} className="text-[11px] text-accent hover:underline">test</button>
+                <button onClick={async () => { await apiPost(`/api/v1/settings/notifications/${c.id}/toggle`, {}); load(); }}
+                  className="text-[11px] text-dim hover:text-text">{c.enabled ? "disable" : "enable"}</button>
+                <button onClick={async () => { await apiDelete(`/api/v1/settings/notifications/${c.id}`); load(); }}
+                  className="text-[11px] text-neg hover:underline">remove</button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </SectionCard>
   );
 }

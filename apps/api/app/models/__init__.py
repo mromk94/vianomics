@@ -30,7 +30,7 @@ from app.models.market import (
     MacroSeries,
     OhlcvBar,
 )
-from app.models.ops import ModelConfig, RuntimeFlag, Alert, Job, JobRun, QuarantinedRecord, SecretStore, SyncStatus
+from app.models.ops import ModelConfig, NotificationChannel, RuntimeFlag, Alert, Job, JobRun, QuarantinedRecord, SecretStore, SyncStatus
 from app.models.portfolio import LedgerEntry, Portfolio, Position, Trade
 from app.models.providers import DataProvider, ProviderCredentialMeta
 from app.models.research import AnalysisRun

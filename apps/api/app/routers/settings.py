@@ -250,3 +250,96 @@ async def set_key(body: KeyIn,
                 detail={"key": body.key})
     await db.commit()
     return {"key": body.key, "set": True}
+
+
+# ── notification channels (email/whatsapp/telegram/sms) ──
+
+from app.models.ops import NotificationChannel
+from app.services.notifications import dispatch_alert
+
+CHANNEL_SPECS = [
+    {"id": "email", "label": "Email (SMTP)", "target_label": "Email address",
+     "keys": "SMTP_HOST, SMTP_PORT env", "note": "uses local/host SMTP"},
+    {"id": "telegram", "label": "Telegram", "target_label": "Chat ID",
+     "keys": "TELEGRAM_BOT_TOKEN", "note": "create a bot via @BotFather, get chat id via getUpdates"},
+    {"id": "whatsapp", "label": "WhatsApp (Twilio)", "target_label": "+1555… phone",
+     "keys": "TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM", "note": "Twilio sandbox or approved sender"},
+    {"id": "sms", "label": "SMS (Twilio)", "target_label": "+1555… phone",
+     "keys": "TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM", "note": "Twilio number → SMS"},
+]
+
+
+class ChannelIn(BaseModel):
+    channel: str
+    target: str
+    min_severity: str = "critical"
+    from_addr: str | None = None
+
+
+@router.get("/notifications")
+async def notif_list(db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(NotificationChannel))).scalars().all()
+    return {
+        "channels": [
+            {"id": c.id, "channel": c.channel, "target": c.target,
+             "enabled": c.enabled, "min_severity": c.min_severity}
+            for c in rows],
+        "specs": CHANNEL_SPECS,
+        "note": "credentials (bot token / Twilio keys / SMTP) go in "
+                "API keys section or .env"}
+
+
+@router.post("/notifications", status_code=201)
+async def notif_add(body: ChannelIn,
+                    db: AsyncSession = Depends(get_db),
+                    user: User = Depends(require("admin:*"))):
+    if body.channel not in {s["id"] for s in CHANNEL_SPECS}:
+        raise HTTPException(400, "unknown channel")
+    if body.min_severity not in {"info", "warning", "critical"}:
+        raise HTTPException(400, "severity must be info|warning|critical")
+    c = NotificationChannel(
+        channel=body.channel, target=body.target,
+        min_severity=body.min_severity,
+        extra={"from": body.from_addr} if body.from_addr else {})
+    db.add(c)
+    await db.flush()
+    await audit(db, action="notification.add", actor=user,
+                detail={"channel": c.channel, "target": c.target})
+    await db.commit()
+    return {"id": c.id}
+
+
+@router.post("/notifications/{cid}/toggle")
+async def notif_toggle(cid: str, db: AsyncSession = Depends(get_db),
+                       user: User = Depends(require("admin:*"))):
+    c = await db.get(NotificationChannel, cid)
+    if c is None:
+        raise HTTPException(404, "channel not found")
+    c.enabled = not c.enabled
+    await db.commit()
+    return {"id": c.id, "enabled": c.enabled}
+
+
+@router.delete("/notifications/{cid}")
+async def notif_del(cid: str, db: AsyncSession = Depends(get_db),
+                    user: User = Depends(require("admin:*"))):
+    c = await db.get(NotificationChannel, cid)
+    if c is None:
+        raise HTTPException(404, "channel not found")
+    await db.delete(c)
+    await db.commit()
+    return {"ok": True}
+
+
+@router.post("/notifications/{cid}/test")
+async def notif_test(cid: str, db: AsyncSession = Depends(get_db),
+                     user: User = Depends(require("admin:*"))):
+    c = await db.get(NotificationChannel, cid)
+    if c is None:
+        raise HTTPException(404, "channel not found")
+    try:
+        from app.services.notifications import _send
+        await _send(db, c, "VAIIP test — notifications working")
+        return {"ok": True, "channel": c.channel}
+    except Exception as e:
+        return {"ok": False, "channel": c.channel, "error": str(e)[:200]}

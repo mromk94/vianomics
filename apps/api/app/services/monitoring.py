@@ -52,6 +52,14 @@ async def emit_alert(
     )
     db.add(a)
     await db.flush()
+    # dispatch to notification channels — never let a broken channel
+    # break the alert pipeline
+    try:
+        from app.services.notifications import dispatch_alert
+        await dispatch_alert(db, severity,
+                             f"[{severity.upper()}] {message}")
+    except Exception:
+        pass
     return a
 
 
