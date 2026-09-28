@@ -17,8 +17,8 @@ int OnInit()
    if (PushSecret == "")
       Print("VAIIP: PushSecret is EMPTY — set it in EA inputs");
    else
-      Print("VAIIP: armed, pushing every ", PushEverySec, "s");
-   Push();   // immediate first push
+      Print("VAIIP: armed, pushing every ", PushEverySec, "s. ",
+            "First push on first timer tick (WebRequest blocked in OnInit).");
    return INIT_SUCCEEDED;
 }
 void OnDeinit(const int r) { EventKillTimer(); }
@@ -48,5 +48,11 @@ void Push()
    StringToCharArray(body, post, 0, WHOLE_ARRAY, CP_UTF8);
    headers = "Content-Type: application/json\r\n";
    string url = ApiBase + "/external/mt4/push";
-   WebRequest("POST", url, headers, 5000, post, result, headers);
+   int rc = WebRequest("POST", url, headers, 5000, post, result, headers);
+   if (rc == -1)
+      Print("VAIIP push failed err=", GetLastError(),
+            " — check Tools→Options→EA→WebRequest whitelist for ",
+            ApiBase);
+   else
+      Print("VAIIP pushed, HTTP ", rc);
 }
