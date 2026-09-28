@@ -482,13 +482,13 @@ function ModelManager({ me }: { me: Me | null }) {
             className="mt-1 block w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text" />
         </label>
         {prov?.needs_base_url && (
-          <label className="col-span-2 text-[11px] text-dim">Base URL
+          <label className="col-span-12 md:col-span-2 text-[11px] text-dim">Base URL
             <input value={form.base_url} placeholder="http://localhost:11434/v1"
               onChange={(e) => setForm({ ...form, base_url: e.target.value })}
               className="mt-1 block w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12px] text-text" />
           </label>
         )}
-        <label className="col-span-2 flex items-center gap-2 text-[11px] text-dim">
+        <label className="col-span-12 md:col-span-2 flex items-center gap-2 text-[11px] text-dim">
           <input type="checkbox" checked={form.is_default}
             onChange={(e) => setForm({ ...form, is_default: e.target.checked })} />
           Make this the default model

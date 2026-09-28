@@ -53,8 +53,8 @@ export function ChatWidget() {
       </button>
 
       {open && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-surface sm:inset-auto sm:bottom-20 sm:right-5 sm:h-[480px] sm:w-[360px] sm:overflow-hidden sm:rounded-2xl sm:border sm:border-border-strong sm:shadow-2xl">
-          <header className="flex items-center justify-between border-b border-border px-4 py-3">
+        <div className="fixed inset-0 z-50 flex flex-col bg-surface-solid sm:inset-auto sm:bottom-20 sm:right-5 sm:h-[480px] sm:w-[360px] sm:overflow-hidden sm:rounded-2xl sm:border sm:border-border-strong sm:shadow-2xl">
+          <header className="flex items-center justify-between border-b border-border bg-surface-solid px-4 py-3">
             <div>
               <div className="text-[13px] font-semibold">VAIIP Assistant</div>
               <div className="text-[10px] text-faint">answers from live system state — never fabricates</div>
@@ -67,7 +67,7 @@ export function ChatWidget() {
           <div className="flex-1 space-y-2.5 overflow-y-auto p-3">
             {msgs.map((m, i) => (
               <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-[12.5px] leading-relaxed ${
+                <div className={`max-w-[85%] min-w-0 break-words rounded-2xl px-3 py-2 text-[12.5px] leading-relaxed ${
                   m.role === "user"
                     ? "bg-accent text-[#0b0f1a]"
                     : "bg-surface-2 text-text"}`}>
@@ -91,7 +91,7 @@ export function ChatWidget() {
               ))}
             </div>
           )}
-          <div className="flex items-center gap-2 border-t border-border p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
+          <div className="flex items-center gap-2 border-t border-border bg-surface-solid p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}

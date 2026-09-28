@@ -46,8 +46,8 @@ export function AllocationPage() {
       <PageHeader title="Capital Allocation" subtitle="mandate targets vs actual sector/position weights" />
       {error && <ErrorState title="API error" detail={error} />}
       {!a ? <SkeletonRows /> : (
-        <div className="grid grid-cols-12 gap-4">
-          <SectionCard title="Mandate targets" className="rise col-span-5">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-12">
+          <SectionCard title="Mandate targets" className="rise col-span-12 md:col-span-5">
             <Bar label="Investment sleeve" pct={a.mandate_targets.investment_pct} tone="#34d399" />
             <Bar label="Trading sleeve" pct={a.mandate_targets.trading_pct} tone="#7c9cff" />
             <ul className="mt-3 space-y-1 text-[11px] text-dim">
@@ -55,7 +55,7 @@ export function AllocationPage() {
               <li>max drawdown <b className="num text-neg">{fmtPct(a.mandate_targets.max_drawdown_pct)}</b> → liquidate-all trigger</li>
             </ul>
           </SectionCard>
-          <SectionCard title="Actual sector weights" className="rise col-span-7">
+          <SectionCard title="Actual sector weights" className="rise col-span-12 md:col-span-7">
             {a.actual.sectors.length === 0 ? (
               <EmptyState title="No positions" hint="Sector weights compute once positions exist." />
             ) : (

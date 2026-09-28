@@ -74,8 +74,8 @@ export function DataOpsPage() {
         )}
       </SectionCard>
 
-      <div className="grid grid-cols-12 gap-4">
-        <SectionCard title="Provider sync freshness" className="rise col-span-7">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-12">
+        <SectionCard title="Provider sync freshness" className="rise col-span-12 md:col-span-7">
           {!d ? <SkeletonRows /> : d.sync.length === 0 ? (
             <EmptyState title="No sync status" hint="Provider syncs write here." />
           ) : (
@@ -90,7 +90,7 @@ export function DataOpsPage() {
             />
           )}
         </SectionCard>
-        <SectionCard title="Quarantine" className="rise col-span-5">
+        <SectionCard title="Quarantine" className="rise col-span-12 md:col-span-5">
           {!d ? <SkeletonRows /> : d.quarantine.length === 0 ? (
             <EmptyState title="Clean" hint="Invalid records would land here — never silently dropped." />
           ) : (
