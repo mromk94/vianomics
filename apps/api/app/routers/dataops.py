@@ -154,9 +154,10 @@ async def backfill(db: AsyncSession = Depends(get_db)):
                 done += 1
             else:
                 failed.append({"symbol": inst.symbol, "error": run.error})
+            await db.commit()         # each instrument = its own txn
         except Exception as e:
+            await db.rollback()       # don't poison the session
             failed.append({"symbol": inst.symbol, "error": str(e)[:120]})
-    await db.commit()
     cache.invalidate()
     return {"instruments": len(insts), "ingested": done,
             "failed": failed}
