@@ -13,11 +13,10 @@ services:
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     envVars:
+      # Supabase pooler (session mode :5432 — migrations need it).
+      # Set this in the dashboard; never commit the password.
       - key: DATABASE_URL
-        fromService:
-          name: vaiip-db
-          type: psql
-          property: connectionString
+        sync: false
       - key: CORS_ORIGINS
         value: https://vianomics.com,https://app.vianomics.com
       - key: EXECUTION_ENABLED
@@ -38,6 +37,5 @@ services:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
 
-databases:
-  - name: vaiip-db
-    plan: starter
+# Postgres lives on Supabase — set DATABASE_URL in the dashboard:
+# postgresql+asyncpg://postgres.<ref>:<pw>@aws-0-us-east-1.pooler.supabase.com:5432/postgres
