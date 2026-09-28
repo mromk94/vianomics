@@ -53,12 +53,16 @@ export function ChatWidget() {
       </button>
 
       {open && (
-        <div className="fixed bottom-20 right-5 z-50 flex h-[480px] w-[360px] flex-col overflow-hidden rounded-2xl border border-border-strong bg-surface shadow-2xl">
+        <div className="fixed inset-0 z-50 flex flex-col bg-surface sm:inset-auto sm:bottom-20 sm:right-5 sm:h-[480px] sm:w-[360px] sm:overflow-hidden sm:rounded-2xl sm:border sm:border-border-strong sm:shadow-2xl">
           <header className="flex items-center justify-between border-b border-border px-4 py-3">
             <div>
               <div className="text-[13px] font-semibold">VAIIP Assistant</div>
               <div className="text-[10px] text-faint">answers from live system state — never fabricates</div>
             </div>
+            <button onClick={() => setOpen(false)} aria-label="Close chat"
+              className="rounded-full p-1.5 text-dim hover:text-text sm:hidden">
+              <X className="size-5" />
+            </button>
           </header>
           <div className="flex-1 space-y-2.5 overflow-y-auto p-3">
             {msgs.map((m, i) => (
@@ -87,7 +91,7 @@ export function ChatWidget() {
               ))}
             </div>
           )}
-          <div className="flex items-center gap-2 border-t border-border p-2">
+          <div className="flex items-center gap-2 border-t border-border p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
