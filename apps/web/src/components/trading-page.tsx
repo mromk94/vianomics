@@ -70,6 +70,7 @@ function sma(vals: number[], n: number): (number | null)[] {
 export function TradingPage() {
   const [symbol, setSymbol] = useState("NVDA");
   const [tf, setTf] = useState<string>("1d");
+  const [tvMode, setTvMode] = useState(false);
   const [branch, setBranch] = useState<"mr" | "tf">("mr");
   const [bars, setBars] = useState<Bar[]>([]);
   const [sig, setSig] = useState<Signal | null>(null);
@@ -165,14 +166,26 @@ export function TradingPage() {
       {/* chart */}
       <SectionCard title={symbol} className="rise"
         action={
-          <div className="flex gap-1">
+          <div className="flex items-center gap-1">
+            <button onClick={() => setTvMode((x) => !x)}
+              className={`rounded-full px-2.5 py-1 text-[11px] transition ${tvMode ? "bg-warn text-[#0b0f1a] font-semibold" : "border border-border text-dim hover:text-text"}`}>
+              TradingView</button>
             {TFS.map((t) => (
               <button key={t} onClick={() => setTf(t)}
                 className={`rounded-full px-2.5 py-1 text-[11px] transition ${tf === t ? "bg-accent text-[#0b0f1a] font-semibold" : "border border-border text-dim hover:text-text"}`}>{t}</button>
             ))}
           </div>
         }>
-        <div ref={chartRef} className="w-full" />
+        {tvMode ? (
+          <iframe
+            key={symbol}
+            title={`TradingView ${symbol}`}
+            src={`https://www.tradingview.com/widgetembed/?symbol=${symbol}&interval=D&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1&hide_side_toolbar=0&allow_symbol_change=1&studies=%5B%22RSI%40tv-basicstudies%22%5D`}
+            className="h-[420px] w-full rounded-lg border-0"
+          />
+        ) : (
+          <div ref={chartRef} className="w-full" />
+        )}
         {bars.some((x) => x.provisional) && (
           <div className="mt-1 text-[10px] text-faint">last aggregated bar provisional (incomplete period) — excluded from signal math</div>
         )}

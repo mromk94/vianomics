@@ -38,6 +38,18 @@ KEY_SPECS = [
     ("Admin password", "ADMIN_PASSWORD",
      "set at first seed",
      "Admin sign-in"),
+    ("Alpaca API key", "ALPACA_API_KEY",
+     "alpaca.markets → Paper Trading → View Keys",
+     "Alpaca paper/live trading"),
+    ("Alpaca secret", "ALPACA_SECRET_KEY", "same page",
+     "Alpaca paper/live trading"),
+    ("Alpaca mode", "ALPACA_BASE_URL",
+     "paper-api.alpaca.markets (default) or api.alpaca.markets",
+     "paper vs live Alpaca"),
+    ("TradingView webhook secret", "TRADINGVIEW_WEBHOOK_SECRET",
+     "any string you choose — paste the same string in the TV alert "
+     "webhook body field",
+     "TradingView alerts → platform signals"),
 ]
 
 MODEL_SPECS = [
@@ -261,6 +273,8 @@ NOTIF_KEY_NAMES = {
     "RESEND_API_KEY", "SMTP_HOST", "SMTP_PORT", "SMTP_USER",
     "SMTP_PASSWORD", "SMTP_FROM", "TELEGRAM_BOT_TOKEN",
     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM",
+    "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ALPACA_BASE_URL",
+    "TRADINGVIEW_WEBHOOK_SECRET",
 }
 
 CHANNEL_SPECS = [
