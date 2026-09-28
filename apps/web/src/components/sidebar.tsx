@@ -21,7 +21,11 @@ export function Sidebar({
   const pathname = usePathname();
   const [me, setMe] = useState<Me | null>(null);
   useEffect(() => {
-    apiGet<Me>("/api/v1/auth/me").then(setMe).catch(() => setMe(null));
+    const fetch = () =>
+      apiGet<Me>("/api/v1/auth/me").then(setMe).catch(() => setMe(null));
+    fetch();
+    window.addEventListener("vaiip-auth", fetch);
+    return () => window.removeEventListener("vaiip-auth", fetch);
   }, []);
   const name = me?.display_name || me?.email || "Sign in";
   const initials = me ? (me.display_name ?? me.email)

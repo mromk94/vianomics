@@ -24,6 +24,7 @@ export function getToken(): string | null {
 export function setToken(t: string | null) {
   if (t) window.localStorage.setItem("vaiip-token", t);
   else window.localStorage.removeItem("vaiip-token");
+  window.dispatchEvent(new Event("vaiip-auth"));
 }
 
 export async function apiGet<T>(path: string, timeoutMs = 8000): Promise<T> {
