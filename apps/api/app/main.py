@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers import (
-    auth, backtest, command_center, committee, dataops, engines,
+    assistant, auth, backtest, command_center, committee, dataops, engines,
     execution, feedback, health, mandate, market, monitoring, portfolio,
     research, risk, screener, technical, universe, valuation,
 )
@@ -41,3 +41,17 @@ app.include_router(market.router, prefix="/api/v1")
 app.include_router(portfolio.router, prefix="/api/v1")
 app.include_router(dataops.router, prefix="/api/v1")
 app.include_router(settings_router.router, prefix="/api/v1")
+app.include_router(assistant.router, prefix="/api/v1")
+
+
+@app.on_event("startup")
+async def _load_secrets():
+    """DB-stored API keys → process env so providers find them after
+    restart."""
+    try:
+        from app.db.session import SessionFactory
+        from app.services.secrets import load_all_into_env
+        async with SessionFactory() as db:
+            await load_all_into_env(db)
+    except Exception:
+        pass

@@ -122,3 +122,14 @@ class RuntimeFlag(Base, IdMixin, TimestampMixin):
 
     key: Mapped[str] = mapped_column(unique=True)   # demo_fixtures…
     value: Mapped[bool] = mapped_column(default=False)
+
+
+class SecretStore(Base, IdMixin, TimestampMixin):
+    """Server-side API-key store — set from Settings UI, masked on
+    read, injected into the process env at startup/set-time so
+    provider adapters (which read os.environ) pick them up."""
+
+    __tablename__ = "secret_store"
+
+    key: Mapped[str] = mapped_column(unique=True)   # TIINGO_API_KEY…
+    value: Mapped[str]
