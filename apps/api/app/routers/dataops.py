@@ -133,3 +133,30 @@ async def _instr(db: AsyncSession, symbol: str):
     return (await db.execute(
         select(Instrument).where(Instrument.symbol == symbol.upper()))
     ).scalar_one_or_none()
+
+
+@router.post("/backfill", status_code=202)
+async def backfill(db: AsyncSession = Depends(get_db)):
+    """Pull daily bars for EVERY universe instrument — one shot.
+    Server-side loop so a browser timeout doesn't stop it."""
+    from app.ingestion import jobs as ing
+    from app.models.instruments import Instrument
+    from app.providers.yahoo import YahooAdapter
+    from app.services import cache
+
+    insts = (await db.execute(select(Instrument))).scalars().all()
+    adapter = YahooAdapter()
+    done, failed = 0, []
+    for inst in insts:
+        try:
+            run = await ing.ingest_stooq_bars(db, adapter, inst.symbol)
+            if run.status == "success":
+                done += 1
+            else:
+                failed.append({"symbol": inst.symbol, "error": run.error})
+        except Exception as e:
+            failed.append({"symbol": inst.symbol, "error": str(e)[:120]})
+    await db.commit()
+    cache.invalidate()
+    return {"instruments": len(insts), "ingested": done,
+            "failed": failed}
