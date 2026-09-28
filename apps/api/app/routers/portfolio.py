@@ -62,3 +62,50 @@ async def allocation(db: AsyncSession = Depends(get_db)):
         "note": "splits target mandate policy; trading vs investment "
                 "cash is tracked by order_tickets.side routing",
     }
+
+
+@router.get("/equity-curve")
+async def equity_curve(db: AsyncSession = Depends(get_db)):
+    """NAV history reconstructed from fills + daily closes.
+    Honest — starts at first fill, not a synthetic backfill."""
+    from app.models.execution import BrokerOrderRec
+    from app.models.instruments import Instrument
+    from app.models.market import OhlcvBar
+
+    fills = (await db.execute(
+        select(BrokerOrderRec)
+        .where(BrokerOrderRec.status == "filled")
+        .order_by(BrokerOrderRec.created_at))).scalars().all()
+    if not fills:
+        return {"points": [], "note": "no fills yet"}
+
+    # qty per instrument as of each day
+    inst_ids = list({f.instrument_id for f in fills})
+    bars = (await db.execute(
+        select(OhlcvBar.instrument_id, OhlcvBar.time, OhlcvBar.close)
+        .where(OhlcvBar.instrument_id.in_(inst_ids),
+               OhlcvBar.timeframe == "1d")
+        .order_by(OhlcvBar.time))).all()
+    if not bars:
+        return {"points": [], "note": "no bars"}
+    closes: dict[tuple, float] = {}
+    by_day: dict[str, dict[str, float]] = {}
+    for iid, t, c in bars:
+        d = t.isoformat()[:10]
+        by_day.setdefault(d, {})[iid] = float(c)
+
+    days = sorted(by_day)
+    start = min(f.created_at.isoformat()[:10] for f in fills)
+    cash0, points = 0.0, []
+    for d in days:
+        if d < start:
+            continue
+        qty = {}
+        for f in fills:
+            if f.created_at.isoformat()[:10] <= d:
+                qty[f.instrument_id] = qty.get(f.instrument_id, 0) + (
+                    f.filled_qty if f.side == "buy" else -f.filled_qty)
+        nav = cash0 + sum(q * by_day[d].get(iid, 0)
+                          for iid, q in qty.items() if q > 0)
+        points.append({"t": d, "equity": round(nav, 2)})
+    return {"points": points, "note": "reconstructed from fills × daily closes"}

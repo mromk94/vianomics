@@ -108,9 +108,9 @@ export function BacktestPage() {
       {notice && <div className="glass border-pos/40 p-3 text-[13px] text-pos">{notice}</div>}
       {error && <ErrorState title="API error" detail={error} onRetry={load} />}
 
-      <div className="grid grid-cols-12 gap-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-12">
         {/* config */}
-        <SectionCard title="Configure & run" className="rise col-span-4">
+        <SectionCard title="Configure & run" className="rise col-span-12 md:col-span-4">
           <div className="space-y-3">
             <label><span className={lbl}>Universe (symbols)</span>
               <input className={inp} value={form.symbols}
@@ -153,7 +153,7 @@ export function BacktestPage() {
         </SectionCard>
 
         {/* runs list */}
-        <SectionCard title="Run history — versioned" className="rise col-span-8">
+        <SectionCard title="Run history — versioned" className="rise col-span-12 md:col-span-8">
           {runs === null ? <SkeletonRows /> : runs.length === 0 ? (
             <EmptyState title="No runs" hint="Configure and run a backtest." />
           ) : (
@@ -193,9 +193,9 @@ export function BacktestPage() {
             <EquityCurve points={detail.equity_curve} />
           </SectionCard>
 
-          <div className="grid grid-cols-12 gap-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-12">
             {/* trades */}
-            <SectionCard title={`Trades (${detail.trades.length})`} className="rise col-span-7">
+            <SectionCard title={`Trades (${detail.trades.length})`} className="rise col-span-12 md:col-span-7">
               {detail.trades.length === 0 ? (
                 <EmptyState title="No trades" hint="Signals never fired on this window." />
               ) : (
@@ -215,7 +215,7 @@ export function BacktestPage() {
             </SectionCard>
 
             {/* validation */}
-            <div className="col-span-5 space-y-4">
+            <div className="col-span-12 md:col-span-5 space-y-4">
               <SectionCard title="Walk-forward stability" className="rise">
                 {detail.validation.walk_forward?.windows.length ? (
                   <ul className="space-y-1 text-[11px]">

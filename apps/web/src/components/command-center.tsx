@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  CheckCircle2, Info, MinusCircle, StopCircle, XCircle,
+  CheckCircle2, ChevronDown, ChevronRight, Info, MinusCircle, StopCircle, XCircle,
 } from "lucide-react";
+import { AreaSeries, createChart } from "lightweight-charts";
 
 import { apiGet, type CommandCenter } from "@/lib/api";
 import { fmtCurrency, fmtNum, fmtPct, fmtTime } from "@/lib/format";
@@ -140,20 +141,8 @@ export function CommandCenter() {
 
       {data && (
         <>
-          {/* portfolio strip */}
-          <div className="rise rise-1 grid grid-cols-2 gap-3 xl:grid-cols-4">
-            <MetricCard label="Portfolio Value" value={fmtCurrency(data.portfolio.total_value)} />
-            <MetricCard label="Cash" value={fmtCurrency(data.portfolio.cash)} />
-            <MetricCard
-              label="Daily P&L" value={fmtCurrency(data.portfolio.daily_pnl)}
-              sub={fmtPct(data.portfolio.daily_pnl_pct)}
-              tone={data.portfolio.daily_pnl == null ? "neutral" : data.portfolio.daily_pnl >= 0 ? "pos" : "neg"}
-            />
-            <MetricCard
-              label="Unrealized P&L" value={fmtCurrency(data.portfolio.unrealized_pnl)}
-              tone={data.portfolio.unrealized_pnl == null ? "neutral" : data.portfolio.unrealized_pnl >= 0 ? "pos" : "neg"}
-            />
-          </div>
+          {/* portfolio strip — collapsible */}
+          <PortfolioStrip p={data.portfolio} demo={isDemo("portfolio")} />
 
           {/* CIO Recommendation */}
           <SectionCard title="CIO Recommendation" demo={isDemo("cio")} className="rise rise-2"
@@ -460,6 +449,86 @@ export function CommandCenter() {
               VAIIP · Vianomics AI{demo.size > 0 ? " · simulated sections labeled DEMO" : ""}
             </span>
           </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ── collapsible portfolio strip + equity curve ── */
+
+interface PfT { total_value: number | null; cash: number | null;
+  daily_pnl: number | null; daily_pnl_pct: number | null;
+  unrealized_pnl: number | null }
+
+function PortfolioStrip({ p, demo }: { p: PfT; demo: boolean }) {
+  const [open, setOpen] = useState(true);
+  const [curve, setCurve] = useState<{ t: string; equity: number }[]>([]);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    apiGet<{ points: { t: string; equity: number }[] }>(
+      "/api/v1/portfolio/equity-curve"
+    ).then((d) => setCurve(d.points)).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!ref.current || !curve.length) return;
+    const chart = createChart(ref.current, {
+      autoSize: true, height: 180,
+      layout: { background: { color: "transparent" },
+        textColor: "#5d6a8a", fontSize: 10 },
+      grid: { vertLines: { visible: false },
+        horzLines: { color: "#1a2333" } },
+      timeScale: { borderVisible: false },
+      rightPriceScale: { borderVisible: false },
+      crosshair: { mode: 1 },
+      localization: { priceFormatter: (v: number) =>
+        "$" + v.toLocaleString(undefined, { maximumFractionDigits: 0 }) },
+    });
+    const s = chart.addSeries(AreaSeries, {
+      lineColor: "#34d399", topColor: "rgba(52,211,153,0.3)",
+      bottomColor: "rgba(52,211,153,0.02)", lineWidth: 2,
+      priceLineVisible: false });
+    s.setData(curve.map((c) => ({ time: c.t, value: c.equity })));
+    chart.timeScale().fitContent();
+    return () => chart.remove();
+  }, [curve]);
+
+  return (
+    <div className="rise rise-1">
+      <button onClick={() => setOpen((o) => !o)}
+        className="mb-2 flex w-full items-center justify-between text-left">
+        <span className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-dim uppercase">
+          {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+          Portfolio
+          {demo && <span className="rounded-full border border-warn/40 bg-warn-bg px-1.5 py-px text-[9px] font-bold text-warn">DEMO</span>}
+        </span>
+        {!open && (
+          <span className="num text-[12px] text-faint">
+            NAV {fmtCurrency(p.total_value)} · P&L {fmtCurrency(p.daily_pnl)}
+          </span>
+        )}
+      </button>
+      {open && (
+        <>
+          <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <MetricCard label="Portfolio Value" value={fmtCurrency(p.total_value)} />
+            <MetricCard label="Cash" value={fmtCurrency(p.cash)} />
+            <MetricCard label="Daily P&L" value={fmtCurrency(p.daily_pnl)}
+              sub={fmtPct(p.daily_pnl_pct)}
+              tone={p.daily_pnl == null ? "neutral" : p.daily_pnl >= 0 ? "pos" : "neg"} />
+            <MetricCard label="Unrealized P&L" value={fmtCurrency(p.unrealized_pnl)}
+              tone={p.unrealized_pnl == null ? "neutral" : p.unrealized_pnl >= 0 ? "pos" : "neg"} />
+          </div>
+          {curve.length > 1 && (
+            <div className="glass mt-3 p-3">
+              <div className="mb-1 text-[10px] uppercase tracking-wide text-faint">
+                Equity curve — reconstructed from fills × daily closes
+              </div>
+              <div ref={ref} style={{ height: 180 }} />
+            </div>
+          )}
         </>
       )}
     </div>
