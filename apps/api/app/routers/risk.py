@@ -372,24 +372,10 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
     ).scalars().all()
     external = []
     for a in ext_rows:
-        hist = a.equity_history or []
-        eqs = [float(h["equity"]) for h in hist
-               if h.get("equity") is not None]
-        rets = [eqs[i] / eqs[i - 1] - 1 for i in range(1, len(eqs))
-                if eqs[i - 1]]
-        mdd = var95 = daily = None
-        if len(eqs) >= 2:
-            peak, mdd = eqs[0], 0.0
-            for e in eqs:
-                peak = max(peak, e)
-                mdd = min(mdd, e / peak - 1)
-            rets_s = sorted(rets)
-            var95 = (rets_s[max(0, int(len(rets_s) * 0.05))]
-                     * float(a.equity or 0) if rets_s else None)
-            today = utcnow().date().isoformat()
-            past = [h for h in hist if h.get("t", "")[:10] < today]
-            if past:
-                daily = float(a.equity or 0) - float(past[-1]["equity"])
+        stats = re_.equity_stats(a.equity_history or [],
+                                 float(a.equity) if a.equity else None)
+        mdd, var95, daily = (stats["mdd_pct"], stats["var_95"],
+                             stats["daily_pnl"])
         external.append({
             "label": a.label, "source": a.source,
             "equity": float(a.equity or 0),
