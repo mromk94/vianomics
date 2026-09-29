@@ -8,6 +8,7 @@ import { fmtNum, fmtTime } from "@/lib/format";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { PageHeader } from "@/components/ui/page-header";
+import { Sym } from "@/components/symbol-drawer";
 import { SectionCard } from "@/components/ui/section-card";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -74,7 +75,7 @@ export function JournalPage() {
                 <li key={r.id}>
                   <button onClick={() => open(r.id)}
                     className="glass-tile flex w-full items-center justify-between px-3 py-2 text-left text-[12px] transition hover:bg-surface-2">
-                    <span className="font-semibold text-accent">{r.symbol}</span>
+                    <Sym s={r.symbol} />
                     <StatusBadge tone={TONE[r.verdict] ?? "info"}>{r.verdict.replace(/_/g, " ")}</StatusBadge>
                     <span className="num text-dim">{r.confidence != null ? `${Math.round(r.confidence * 100)}%` : "—"}</span>
                     <span className="num text-faint">{fmtTime(r.at)}</span>

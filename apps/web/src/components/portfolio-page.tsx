@@ -9,6 +9,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { MetricCard } from "@/components/ui/metric-card";
 import { PageHeader } from "@/components/ui/page-header";
+import { Sym } from "@/components/symbol-drawer";
 import { SectionCard } from "@/components/ui/section-card";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -59,7 +60,7 @@ export function PortfolioPage() {
             columns={[
               { key: "s", header: "Symbol", render: (p: Positions["positions"][0]) => (
                 <span>
-                  <span className="font-semibold text-accent">{p.display_symbol ?? p.symbol}</span>
+                  <Sym s={p.display_symbol ?? p.symbol} />
                   {p.source && p.source !== "ledger" && <StatusBadge tone="info">{p.source}</StatusBadge>}
                 </span>) },
               { key: "sec", header: "Sector", render: (p) => p.sector },

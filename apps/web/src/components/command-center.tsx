@@ -15,6 +15,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { SectionCard } from "@/components/ui/section-card";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { Sym } from "@/components/symbol-drawer";
 
 type Data = CommandCenter;
 
@@ -167,7 +168,7 @@ export function CommandCenter() {
               <span className="text-dim">Holdings</span>
               {data.portfolio.holdings!.slice(0, 8).map((h) => (
                 <span key={h.symbol} className="flex items-center gap-1.5">
-                  <span className="font-semibold text-accent">{h.symbol}</span>
+                  <Sym s={h.symbol} />
                   <span className="num">${fmtNum(h.market_value)}</span>
                   <span className={`num text-[11px] ${(h.unrealized ?? 0) >= 0 ? "text-pos" : "text-neg"}`}>
                     {h.unrealized != null ? `${h.unrealized >= 0 ? "+" : ""}${fmtNum(h.unrealized)}` : ""}
@@ -419,7 +420,7 @@ export function CommandCenter() {
                   {data.watchlist.map((w) => (
                     <li key={w.ticker} className="glass-tile flex items-center justify-between px-3 py-1.5">
                       <span>
-                        <span className="font-semibold text-accent">{w.ticker}</span>
+                        <Sym s={w.ticker} />
                         {w.name && <span className="ml-2 text-dim">{w.name}</span>}
                       </span>
                       <span className="num text-dim">
@@ -440,7 +441,7 @@ export function CommandCenter() {
                   {data.approvals.map((a) => (
                     <li key={a.id} className="glass-tile flex items-center justify-between px-3 py-2 text-[13px]">
                       <div>
-                        <span className="font-semibold">{a.ticker}</span>
+                        <Sym s={a.ticker} />
                         <span className="ml-2 text-dim">{a.action}</span>
                       </div>
                       <StatusBadge tone={toneOf(a.cio_rating)}>{a.cio_rating ?? "—"}</StatusBadge>
@@ -458,7 +459,7 @@ export function CommandCenter() {
                   {data.decisions.map((d) => (
                     <li key={d.id} className="glass-tile flex items-center justify-between px-3 py-2 text-[13px]">
                       <span>
-                        <span className="font-semibold">{d.ticker}</span>
+                        <Sym s={d.ticker} />
                         <span className="ml-2 text-faint">{fmtTime(d.at)}</span>
                       </span>
                       <StatusBadge tone={toneOf(d.verdict)}>{d.verdict}</StatusBadge>

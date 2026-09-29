@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { FilterSelect } from "@/components/ui/filter-select";
 import { PageHeader } from "@/components/ui/page-header";
+import { Sym } from "@/components/symbol-drawer";
 import { SearchInput } from "@/components/ui/search-input";
 import { SectionCard } from "@/components/ui/section-card";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -133,7 +134,7 @@ export function UniversePage() {
         render: (r) => (
           <button
             onClick={() => openDetail(r.symbol)}
-            className="font-semibold text-accent hover:underline"
+            className="font-semibold text-accent hover:underline" data-sym
           >
             {r.symbol}
           </button>

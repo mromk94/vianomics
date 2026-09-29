@@ -9,6 +9,7 @@ import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { PageHeader } from "@/components/ui/page-header";
+import { Sym } from "@/components/symbol-drawer";
 import { SectionCard } from "@/components/ui/section-card";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -105,7 +106,7 @@ export function RiskPage() {
   ];
 
   const checkCols: Column<Check>[] = [
-    { key: "s", header: "Symbol", render: (r) => <span className="font-semibold text-accent">{r.symbol}</span> },
+    { key: "s", header: "Symbol", render: (r) => <Sym s={r.symbol} /> },
     { key: "n", header: "Notional", align: "right", render: (r) => <span className="num">${fmtNum(r.notional / 1000, 0)}k</span> },
     { key: "a", header: "Result", render: (r) => <StatusBadge tone={r.allowed ? "pos" : "neg"}>{r.allowed ? "allowed" : "BLOCKED"}</StatusBadge> },
     { key: "b", header: "Breaches", render: (r) => r.breaches.length ? <span className="text-[11px] text-neg">{r.breaches.map((b) => b.rule).join(", ")}</span> : <span className="text-faint">—</span> },
@@ -242,7 +243,7 @@ export function RiskPage() {
                       <div className="mt-2 border-t border-border pt-1.5 text-[11px] text-dim">
                         {a.positions.slice(0, 6).map((p2, i) => (
                           <div key={i} className="flex justify-between py-0.5">
-                            <span className="font-medium text-text">{p2.symbol}</span>
+                            <Sym s={p2.symbol} />
                             <span className="num">×{p2.qty} @ {p2.price}</span>
                             <span className={`num ${(p2.profit ?? 0) >= 0 ? "text-pos" : "text-neg"}`}>{p2.profit != null ? `${p2.profit >= 0 ? "+" : ""}${fmtNum(p2.profit, 0)}` : "—"}</span>
                           </div>
@@ -270,7 +271,7 @@ export function RiskPage() {
                     <tbody>
                       {c.positions.map((pp) => (
                         <tr key={pp.symbol} className="border-b border-border/50 last:border-0">
-                          <td className="py-1.5 font-semibold text-accent">{pp.symbol}</td>
+                          <td className="py-1.5"><Sym s={pp.symbol} /></td>
                           <td className="text-dim">{pp.sector}</td>
                           <td className="num text-right">${fmtNum(pp.market_value, 0)}</td>
                           <td className={`num text-right ${(pp.unrealized ?? 0) >= 0 ? "text-pos" : "text-neg"}`}>{pp.unrealized != null ? `${pp.unrealized >= 0 ? "+" : ""}$${fmtNum(pp.unrealized, 0)}` : "—"}</td>
@@ -291,7 +292,7 @@ export function RiskPage() {
                   {c.monitors.map((m2) => (
                     <div key={m2.symbol} className="glass-tile p-2.5">
                       <div className="flex items-center justify-between text-[12px]">
-                        <span className="font-semibold text-accent">{m2.symbol}</span>
+                        <Sym s={m2.symbol} />
                         <span className="num text-dim">{(m2.weight * 100).toFixed(1)}%</span>
                       </div>
                       {Object.keys(m2.actionable).length === 0 ? (
@@ -320,7 +321,7 @@ export function RiskPage() {
                 {c.pyramid_trades.map((t) => (
                   <div key={t.id} className="glass-tile p-3 text-[12px]">
                     <div className="flex items-center justify-between">
-                      <span className="font-semibold text-accent">{t.symbol}</span>
+                      <Sym s={t.symbol} />
                       <StatusBadge tone="info">{t.state}</StatusBadge>
                     </div>
                     <div className="num mt-1.5 grid grid-cols-3 gap-1 text-[11px]">
