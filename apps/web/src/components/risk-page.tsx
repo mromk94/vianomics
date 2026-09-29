@@ -15,11 +15,26 @@ import { StatusBadge } from "@/components/ui/status-badge";
 
 interface Center {
   nav: number; cash: number;
-  positions: { symbol: string; sector: string; market_value: number; quantity: number }[];
+  positions: { symbol: string; sector: string; market_value: number;
+    quantity: number; avg_cost?: number; unrealized?: number;
+    daily_pnl?: number | null; price_vs_iv?: number }[];
   dimensions: Record<string, any>;
   limits: Record<string, number>;
   active_blocks: { rule: string; observed: number | null; required: number | string; remediation: string; timestamp: string }[];
   open_pyramid_trades: number;
+  pyramid_trades: { id: string; symbol: string; state: string;
+    entry: number; shares: number; stop: number; target1: number;
+    additions: number }[];
+  monitors: { symbol: string; weight: number;
+    price_vs_iv: number | null; tests: Record<string, string>;
+    actionable: Record<string, string> }[];
+  external: { label: string; source: string; equity: number;
+    balance: number; unrealized: number;
+    positions: { symbol: string; qty: number; price: number;
+      profit?: number }[];
+    mdd_pct: number | null; var_95: number | null;
+    daily_pnl: number | null; synced_at: string | null;
+    stale: boolean }[];
   vix: number | null; fear_greed: number | null;
   engine: string; as_of: string;
 }
@@ -202,6 +217,119 @@ export function RiskPage() {
               ) : <EmptyState title="No checks yet" />}
             </SectionCard>
           </div>
+
+          {/* external accounts (MT4 etc.) — real equity risk stats */}
+          {c.external?.length > 0 && (
+            <SectionCard title="External accounts" className="rise rise-2" action="pushed by EA bridge">
+              <div className="grid gap-2 sm:grid-cols-2">
+                {c.external.map((a) => (
+                  <div key={a.label} className={`glass-tile p-3 ${a.stale ? "border border-warn/40" : ""}`}>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[13px] font-semibold">{a.label}</span>
+                      <StatusBadge tone={a.stale ? "warn" : "pos"}>{a.stale ? "stale" : "live"}</StatusBadge>
+                    </div>
+                    <div className="num mt-1.5 grid grid-cols-4 gap-2 text-[12px]">
+                      <div><div className="text-[10px] text-faint">EQUITY</div>${fmtNum(a.equity, 0)}</div>
+                      <div><div className="text-[10px] text-faint">UNREAL.</div><span className={a.unrealized >= 0 ? "text-pos" : "text-neg"}>{a.unrealized >= 0 ? "+" : ""}{fmtNum(a.unrealized, 0)}</span></div>
+                      <div><div className="text-[10px] text-faint">MDD</div>{a.mdd_pct != null ? `${(a.mdd_pct * 100).toFixed(1)}%` : "—"}</div>
+                      <div><div className="text-[10px] text-faint">VAR95</div>{a.var_95 != null ? `$${fmtNum(a.var_95, 0)}` : "—"}</div>
+                    </div>
+                    {a.positions.length > 0 && (
+                      <div className="mt-2 border-t border-border pt-1.5 text-[11px] text-dim">
+                        {a.positions.slice(0, 6).map((p2, i) => (
+                          <div key={i} className="flex justify-between py-0.5">
+                            <span className="font-medium text-text">{p2.symbol}</span>
+                            <span className="num">×{p2.qty} @ {p2.price}</span>
+                            <span className={`num ${(p2.profit ?? 0) >= 0 ? "text-pos" : "text-neg"}`}>{p2.profit != null ? `${p2.profit >= 0 ? "+" : ""}${fmtNum(p2.profit, 0)}` : "—"}</span>
+                          </div>
+                        ))}
+                        {a.positions.length > 6 && <div className="text-faint">+{a.positions.length - 6} more</div>}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </SectionCard>
+          )}
+
+          {/* positions + holding monitor */}
+          <div className="rise rise-2 grid gap-3 lg:grid-cols-2">
+            <SectionCard title="Positions" action={`${c.positions.length} open`}>
+              {c.positions.length === 0 ? (
+                <EmptyState title="No internal positions" hint="Internal book empty — MT4/external equity shown above." />
+              ) : (
+                <div className="max-h-64 overflow-y-auto">
+                  <table className="w-full text-[12px]">
+                    <thead><tr className="border-b border-border text-left text-[10px] tracking-wider text-dim uppercase">
+                      <th className="py-1">Symbol</th><th>Sector</th><th className="text-right">Value</th><th className="text-right">Unreal.</th><th className="text-right">vs IV</th>
+                    </tr></thead>
+                    <tbody>
+                      {c.positions.map((pp) => (
+                        <tr key={pp.symbol} className="border-b border-border/50 last:border-0">
+                          <td className="py-1.5 font-semibold text-accent">{pp.symbol}</td>
+                          <td className="text-dim">{pp.sector}</td>
+                          <td className="num text-right">${fmtNum(pp.market_value, 0)}</td>
+                          <td className={`num text-right ${(pp.unrealized ?? 0) >= 0 ? "text-pos" : "text-neg"}`}>{pp.unrealized != null ? `${pp.unrealized >= 0 ? "+" : ""}$${fmtNum(pp.unrealized, 0)}` : "—"}</td>
+                          <td className={`num text-right ${(pp.price_vs_iv ?? 0) > 0 ? "text-neg" : "text-pos"}`}>{pp.price_vs_iv != null ? `${pp.price_vs_iv >= 0 ? "+" : ""}${(pp.price_vs_iv * 100).toFixed(0)}%` : "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </SectionCard>
+
+            <SectionCard title="Holding monitor" action="Part 13 — 5 tests, no mechanical stops">
+              {!c.monitors?.length ? (
+                <EmptyState title="Nothing to monitor" hint="Runs on internal investment positions." />
+              ) : (
+                <div className="space-y-2">
+                  {c.monitors.map((m2) => (
+                    <div key={m2.symbol} className="glass-tile p-2.5">
+                      <div className="flex items-center justify-between text-[12px]">
+                        <span className="font-semibold text-accent">{m2.symbol}</span>
+                        <span className="num text-dim">{(m2.weight * 100).toFixed(1)}%</span>
+                      </div>
+                      {Object.keys(m2.actionable).length === 0 ? (
+                        <span className="text-[11px] text-pos">all tests pass</span>
+                      ) : (
+                        Object.entries(m2.actionable).map(([k, v]) => (
+                          <div key={k} className="mt-1 text-[11px]">
+                            <span className="text-warn">{k.replace(/_/g, " ")}</span>
+                            <span className="ml-1.5 text-neg font-medium">{v.replace(/_/g, " ")}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </SectionCard>
+          </div>
+
+          {/* pyramid state machine */}
+          <SectionCard title={`Pyramid trades (${c.open_pyramid_trades})`} className="rise rise-3" action="ATR state machine — Watchlist→Exit">
+            {!c.pyramid_trades?.length ? (
+              <EmptyState title="No open pyramid trades" hint="Created via POST /risk/pyramid when a setup fires." />
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {c.pyramid_trades.map((t) => (
+                  <div key={t.id} className="glass-tile p-3 text-[12px]">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-accent">{t.symbol}</span>
+                      <StatusBadge tone="info">{t.state}</StatusBadge>
+                    </div>
+                    <div className="num mt-1.5 grid grid-cols-3 gap-1 text-[11px]">
+                      <div><div className="text-[10px] text-faint">ENTRY</div>${fmtNum(t.entry, 2)}</div>
+                      <div><div className="text-[10px] text-faint">STOP</div><span className="text-neg">${fmtNum(t.stop, 2)}</span></div>
+                      <div><div className="text-[10px] text-faint">T1</div><span className="text-pos">${fmtNum(t.target1, 2)}</span></div>
+                    </div>
+                    <div className="num mt-1 text-[11px] text-dim">shares {t.shares} · +{t.additions} adds</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </SectionCard>
 
           {/* limits */}
           <SectionCard title="Configured limits" className="rise">

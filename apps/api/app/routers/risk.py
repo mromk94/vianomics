@@ -32,6 +32,10 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
     positions = []
     cash = nav = 0.0
     if pf:
+        from app.models.portfolio import LedgerEntry
+        cash = float((await db.execute(
+            select(func.sum(LedgerEntry.amount))
+            .where(LedgerEntry.portfolio_id == pf.id))).scalar() or 0)
         rows = (
             await db.execute(
                 select(Position, Instrument, Sector)
@@ -73,6 +77,28 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
                 "beta": None, "liquidity_days": None,
             })
         nav = sum(p["market_value"] for p in positions) or 1
+
+    # latest valuation per held instrument → price vs intrinsic
+    try:
+        from app.models.valuation import ValuationRun
+        for p in positions:
+            v = (await db.execute(
+                select(ValuationRun)
+                .join(Instrument,
+                      ValuationRun.instrument_id == Instrument.id)
+                .where(Instrument.symbol == p["symbol"])
+                .order_by(ValuationRun.created_at.desc()).limit(1))
+            ).scalars().first()
+            if v:
+                o = v.outputs or {}
+                iv = (o.get("sticker") or o.get("buy")
+                      or (o.get("dcf") or {}).get("fair_value"))
+                px = p["market_value"] / p["quantity"] if p["quantity"] else 0
+                if iv and px:
+                    p["price_vs_iv"] = round(px / iv - 1, 4)
+                    p["intrinsic_value"] = iv
+    except Exception:
+        pass
 
     regime = (
         await db.execute(select(RegimeRun).order_by(RegimeRun.as_of.desc()))
@@ -248,15 +274,80 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
             b["timestamp"] = utcnow().isoformat()
             blocks.append(b)
 
-    open_trades = (
-        await db.execute(
-            select(func.count(PyramidTradeRec.id)).where(
-                PyramidTradeRec.state.not_in(
-                    ["closed", "stopped_out", "rejected"]))
-        )
-    ).scalar()
+    open_recs = (await db.execute(
+        select(PyramidTradeRec, Instrument.symbol)
+        .join(Instrument,
+              PyramidTradeRec.instrument_id == Instrument.id)
+        .where(PyramidTradeRec.state.not_in(
+            ["closed", "stopped_out", "rejected"])))
+    ).all()
+    open_trades = len(open_recs)
+
+    # Part 13 — per-position holding monitor (investment book)
+    nav_for_w = ctx["nav"] or 1
+    monitors = []
+    for p in ctx["positions"]:
+        t = re_.holding_tests({
+            "weight": p["market_value"] / nav_for_w,
+            "price_vs_iv": p.get("price_vs_iv", -1),
+            "thesis_broken": False,
+            "fundamentals_deteriorated": False,
+            "max_weight": 0.10})
+        # only surface actionable tests
+        actionable = {k: v for k, v in t.items()
+                      if v not in ("pass", "no_action")
+                      and k != "note"}
+        monitors.append({"symbol": p["symbol"],
+                         "weight": p["market_value"] / nav_for_w,
+                         "price_vs_iv": p.get("price_vs_iv"),
+                         "tests": t, "actionable": actionable})
+
+    # external accounts — equity-history risk stats (VaR95, MDD, daily)
+    from app.models.portfolio import ExternalAccount
+    ext_rows = (await db.execute(
+        select(ExternalAccount).where(ExternalAccount.connected))
+    ).scalars().all()
+    external = []
+    for a in ext_rows:
+        hist = a.equity_history or []
+        eqs = [float(h["equity"]) for h in hist
+               if h.get("equity") is not None]
+        rets = [eqs[i] / eqs[i - 1] - 1 for i in range(1, len(eqs))
+                if eqs[i - 1]]
+        mdd = var95 = daily = None
+        if len(eqs) >= 2:
+            peak, mdd = eqs[0], 0.0
+            for e in eqs:
+                peak = max(peak, e)
+                mdd = min(mdd, e / peak - 1)
+            rets_s = sorted(rets)
+            var95 = (rets_s[max(0, int(len(rets_s) * 0.05))]
+                     * float(a.equity or 0) if rets_s else None)
+            today = utcnow().date().isoformat()
+            past = [h for h in hist if h.get("t", "")[:10] < today]
+            if past:
+                daily = float(a.equity or 0) - float(past[-1]["equity"])
+        external.append({
+            "label": a.label, "source": a.source,
+            "equity": float(a.equity or 0),
+            "balance": float(a.balance or 0),
+            "unrealized": (float(a.equity or 0)
+                           - float(a.balance or 0)),
+            "positions": a.positions or [],
+            "mdd_pct": mdd, "var_95": var95, "daily_pnl": daily,
+            "synced_at": a.synced_at.isoformat() if a.synced_at
+                         else None,
+            "stale": bool(a.synced_at and (
+                utcnow() - a.synced_at).total_seconds() > 900)})
 
     return {
+        "external": external,
+        "monitors": monitors,
+        "pyramid_trades": [
+            {"id": r.id, "symbol": sym, "state": r.state,
+             "entry": r.entry, "shares": r.shares, "stop": r.stop,
+             "target1": r.target1,
+             "additions": r.additions} for r, sym in open_recs],
         "nav": ctx["nav"], "cash": ctx["cash"],
         "positions": ctx["positions"],
         "dimensions": dims,
