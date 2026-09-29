@@ -258,9 +258,9 @@ export function CommandCenter() {
                   <RegimeSteps active={data.regime.economic_regime} />
                   <div className="mt-3 grid grid-cols-3 gap-2">
                     {macro.map(([k, v]) => (
-                      <div key={k} className="glass-tile px-3 py-2">
-                        <div className="text-[10px] tracking-wider text-dim uppercase">{k}</div>
-                        <div className={`num text-base font-semibold ${
+                      <div key={k} className="glass-tile min-w-0 px-3 py-2 overflow-hidden">
+                        <div className="truncate text-[10px] tracking-wider text-dim uppercase" title={k}>{k}</div>
+                        <div className={`num break-all text-base font-semibold ${
                           String(v).startsWith("-") ? "text-neg" : "text-pos"}`}>
                           {v}
                         </div>
