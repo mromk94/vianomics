@@ -8,6 +8,7 @@ import { fmtTime } from "@/lib/format";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { PageHeader } from "@/components/ui/page-header";
+import { Sym } from "@/components/symbol-drawer";
 import { SectionCard } from "@/components/ui/section-card";
 import { SearchInput } from "@/components/ui/search-input";
 import { SkeletonRows } from "@/components/ui/skeleton";
@@ -159,7 +160,7 @@ export function ResearchPage() {
                   className="flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] hover:bg-surface-2"
                   onClick={() => { setSymbol(o.symbol); setQuery(o.symbol); setOptions([]); loadDossier(o.symbol); }}
                 >
-                  <span className="font-semibold text-accent">{o.symbol}</span>
+                  <Sym s={o.symbol} />
                   <span className="truncate text-dim">{o.name}</span>
                 </button>
               ))}

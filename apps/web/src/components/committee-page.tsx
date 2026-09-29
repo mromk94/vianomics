@@ -8,6 +8,7 @@ import { fmtNum, fmtTime } from "@/lib/format";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { PageHeader } from "@/components/ui/page-header";
+import { Sym } from "@/components/symbol-drawer";
 import { SearchInput } from "@/components/ui/search-input";
 import { SectionCard } from "@/components/ui/section-card";
 import { SkeletonRows } from "@/components/ui/skeleton";
@@ -284,7 +285,7 @@ export function CommitteePage() {
           <ul className="space-y-1.5">
             {history.map((h) => (
               <li key={h.id} className="glass-tile flex items-center justify-between px-3 py-2 text-[12px]">
-                <span className="font-semibold text-accent">{h.symbol}</span>
+                <Sym s={h.symbol} />
                 <StatusBadge tone={VERDICT_TONE[h.verdict] ?? "info"}>{h.verdict.replace(/_/g, " ")}</StatusBadge>
                 <span className="num text-dim">conf {h.confidence != null ? Math.round(h.confidence * 100) : "—"}%</span>
                 <span className="num text-faint">{fmtTime(h.at)}</span>

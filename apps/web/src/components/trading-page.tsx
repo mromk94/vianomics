@@ -9,6 +9,7 @@ import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { PageHeader } from "@/components/ui/page-header";
+import { Sym, openSymbol } from "@/components/symbol-drawer";
 import { SearchInput } from "@/components/ui/search-input";
 import { SectionCard } from "@/components/ui/section-card";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -181,7 +182,7 @@ export function TradingPage() {
   const b = branch === "mr" ? sig?.mean_reversion : sig?.trend_following;
 
   const scanCols: Column<ScanRow>[] = [
-    { key: "s", header: "Ticker", render: (r) => <button className="font-semibold text-accent hover:underline" onClick={() => setSymbol(r.symbol)}>{r.symbol}</button> },
+    { key: "s", header: "Ticker", render: (r) => <span className="inline-flex items-center gap-2"><button className="font-semibold text-accent hover:underline" onClick={() => setSymbol(r.symbol)}>{r.symbol}</button><button onClick={() => openSymbol(r.symbol)} title="Open detail" className="text-faint hover:text-accent text-[10px]">ⓘ</button></span> },
     { key: "d", header: "Signal", render: (r) => <StatusBadge tone={TONE[r.decision]}>{r.decision.replace(/_/g, " ")}</StatusBadge> },
     { key: "mr", header: "MR", render: (r) => <StatusBadge tone={TONE[r.mr]}>{r.mr.replace(/_/g, " ")}</StatusBadge> },
     { key: "tf", header: "TF", render: (r) => <StatusBadge tone={TONE[r.tf]}>{r.tf.replace(/_/g, " ")}</StatusBadge> },

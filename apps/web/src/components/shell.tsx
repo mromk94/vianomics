@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 
 import { ChatWidget } from "./chat-widget";
 import { CommandPalette } from "./command-palette";
+import { SymbolDrawer } from "./symbol-drawer";
 import { Sidebar } from "./sidebar";
 import { Topbar } from "./topbar";
 
@@ -29,6 +30,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </main>
       </div>
       <CommandPalette />
+      <SymbolDrawer />
       <ChatWidget />
     </div>
   );
