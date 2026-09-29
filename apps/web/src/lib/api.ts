@@ -170,6 +170,7 @@ export interface CommandCenter {
     expected_return_pct: number | null;
     mos_pct: number | null;
     risk_veto: string | null;
+    book_note?: string | null;
     kill_conditions: string[];
     conflict_note: string | null;
   };

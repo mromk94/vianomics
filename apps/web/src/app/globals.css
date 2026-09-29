@@ -194,3 +194,32 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .rise, .bar-anim, .pulse-dot, .confidence-fill::after { animation: none; }
 }
+
+/* ── CC mood animations ── */
+@keyframes mood-breathe {
+  0%, 100% { opacity: .14; transform: scale(1); }
+  50% { opacity: .32; transform: scale(1.05); }
+}
+@keyframes gauge-sweep {
+  from { transform: rotate(-90deg); }
+}
+@keyframes pillar-glow {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-soft); }
+  50% { box-shadow: 0 0 18px 3px var(--accent-soft); }
+}
+@keyframes vix-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .55; }
+}
+@keyframes shimmer-x {
+  from { background-position: -200px 0; }
+  to { background-position: 200px 0; }
+}
+.mood-aura { animation: mood-breathe 5s ease-in-out infinite; }
+.gauge-needle { animation: gauge-sweep .9s cubic-bezier(.2,.9,.3,1.2) both;
+  transform-origin: 50% 100%; transition: transform .8s cubic-bezier(.2,.9,.3,1.15); }
+.regime-pill-active { animation: pillar-glow 2.6s ease-in-out infinite; }
+.vix-hot { animation: vix-pulse 1.4s ease-in-out infinite; }
+.cio-shimmer { background-image: linear-gradient(90deg, transparent,
+  rgba(255,255,255,.14), transparent); background-size: 200px 100%;
+  animation: shimmer-x 2.4s linear infinite; }

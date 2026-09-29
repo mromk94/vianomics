@@ -46,14 +46,19 @@ function Bar({ pct, className = "confidence-fill" }: { pct: number; className?: 
 function Gauge({ value, label }: { value: number; label: string }) {
   const pct = Math.min(100, Math.max(0, value));
   const color = pct <= 25 ? "var(--neg)" : pct <= 45 ? "var(--warn)" : pct <= 65 ? "var(--accent)" : "var(--pos)";
+  const angle = -90 + (pct / 100) * 180;           // semicircle sweep
   return (
-    <div
-      className="relative flex size-14 shrink-0 items-center justify-center rounded-full"
-      style={{ background: `conic-gradient(${color} 0deg ${(pct / 100) * 360}deg, var(--surface-3) 0deg)` }}
-      role="meter" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={label}
-    >
-      <div className="absolute size-10 rounded-full bg-surface-solid" />
-      <span className="num relative text-base font-bold">{fmtNum(value, 0)}</span>
+    <div className="relative flex size-16 shrink-0 flex-col items-center justify-center rounded-full"
+      role="meter" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}
+      aria-label={label}
+      style={{ background:
+        `conic-gradient(from 225deg, var(--neg) 0deg, var(--warn) 90deg, var(--accent) 160deg, var(--pos) 225deg, var(--surface-3) 225deg 360deg)`,
+        boxShadow: `0 0 14px 2px ${color}33` }}>
+      {/* needle */}
+      <div className="gauge-needle absolute bottom-1/2 left-1/2 h-[46%] w-[2.5px] origin-bottom rounded-full"
+        style={{ transform: `translateX(-50%) rotate(${angle}deg)`, background: color }} />
+      <div className="absolute size-8 rounded-full bg-surface-solid" />
+      <span className="num relative mt-4 text-[15px] font-bold">{fmtNum(value, 0)}</span>
     </div>
   );
 }
@@ -66,7 +71,7 @@ function RegimeSteps({ active }: { active: string | null }) {
         <span
           key={s}
           className={`flex-1 rounded-full py-1 text-center text-[11px] transition-all duration-300 ${
-            active?.toLowerCase() === s.toLowerCase() ? "bg-accent font-semibold text-[#0b0f1a]" : "text-dim"
+            active?.toLowerCase() === s.toLowerCase() ? "bg-accent font-semibold text-[#0b0f1a] regime-pill-active" : "text-dim"
           }`}
         >
           {s}
@@ -193,7 +198,7 @@ export function CommandCenter() {
             ) : (
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-4">
-                  <span className={`rounded-full px-5 py-1 text-lg font-bold tracking-wide ${tonePill[toneOf(data.cio.rating)]}`}>
+                  <span className={`rounded-full px-5 py-1 text-lg font-bold tracking-wide regime-pill-active ${tonePill[toneOf(data.cio.rating)]}`}>
                     {data.cio.rating}
                   </span>
                   <span className="text-sm text-dim">
@@ -202,6 +207,9 @@ export function CommandCenter() {
                   </span>
                 </div>
                 {data.cio.confidence != null && <Bar pct={data.cio.confidence} />}
+                {data.cio.book_note && (
+                  <div className="text-[11px] text-faint">evaluated against {data.cio.book_note}</div>
+                )}
                 <div className="flex flex-wrap gap-x-3.5 gap-y-1.5">
                   {data.agents.map((a) => (
                     <span key={a.agent}
@@ -222,7 +230,16 @@ export function CommandCenter() {
 
           <div className="grid gap-4 xl:grid-cols-2">
             {/* Economic & Market Regime */}
-            <SectionCard title="Economic & Market Regime" demo={isDemo("regime")} className="rise rise-3" action="Macro overlay">
+            <SectionCard title="Economic & Market Regime" demo={isDemo("regime")} className="rise rise-3 relative overflow-hidden" action="Macro overlay">
+              {/* breathing aura tinted by regime mood */}
+              {data.regime.economic_regime && (
+                <div className="mood-aura pointer-events-none absolute -right-16 -top-16 size-56 rounded-full blur-3xl"
+                  style={{ background:
+                    { expansion: "#34d399", recovery: "#60a5fa",
+                      slowdown: "#fbbf24", recession: "#f87171" }[
+                      data.regime.economic_regime.toLowerCase()]
+                    ?? "#14b8a6" }} />
+              )}
               {!data.regime.economic_regime ? (
                 <EmptyState title="No macro data" hint="Awaiting macro-regime engine + data ingestion." />
               ) : (
@@ -316,10 +333,18 @@ export function CommandCenter() {
                 </div>
                 <div className="flex flex-wrap items-center gap-4">
                   <div className="text-sm font-semibold">
-                    VIX: <strong className="num">{fmtNum(data.regime.vix)}</strong>
-                    <span className="ml-1.5 text-[13px] font-normal text-accent">→ Tighten risk</span>
+                    VIX: <strong className={`num ${(data.regime.vix ?? 0) >= 25 ? "vix-hot text-neg" : ""}`}>{fmtNum(data.regime.vix)}</strong>
+                    {data.regime.vix != null && (
+                      <span className="ml-1.5 text-[13px] font-normal text-accent">
+                        → {data.regime.vix >= 35 ? "Risk-off" : data.regime.vix >= 25 ? "Reduce" : data.regime.vix >= 18 ? "Tighten risk" : "Normal"}
+                      </span>)}
                   </div>
-                  <ScaleBar active="Tighten" labels={["Normal", "Tighten", "Reduce", "Risk-off"]} />
+                  {data.regime.vix != null && (
+                    <div className="relative h-1.5 w-36 overflow-hidden rounded-full bg-surface-3">
+                      <div className={`bar-anim h-full rounded-full ${(data.regime.vix ?? 0) >= 25 ? "bg-neg" : (data.regime.vix ?? 0) >= 18 ? "bg-warn" : "bg-pos"}`}
+                        style={{ width: `${Math.min(100, (data.regime.vix / 50) * 100)}%` }} />
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-1.5 border-t border-border pt-2 text-[11px] text-faint">
                   <Info className="size-3 text-accent" />

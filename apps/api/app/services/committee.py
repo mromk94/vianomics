@@ -62,16 +62,18 @@ async def gather_ctx(db: AsyncSession, inst: Instrument,
             db, inst, price=price, growth=growth, mandate=mandate)
         valuation = run.outputs
 
-    risk_ctx = {"nav": 1_000_000, "cash": 200_000, "positions": [],
-                "vix": None, "fear_greed": None}
+    # REAL aggregate book — ledger + MT4 + Bamboo — the gate and the
+    # PM agent evaluate against actual holdings, never a phantom nav
+    from app.routers.risk import _portfolio_ctx
+    risk_ctx = await _portfolio_ctx(db)
     regime = await macro_classify(db, as_of)
     risk_ctx["vix"], risk_ctx["fear_greed"] = regime["vix"], regime["fear_greed"]
 
-    # RM gate on a hypothetical 2%-of-nav allocation
+    # RM gate on a hypothetical 2%-of-REAL-nav allocation
     gate = re_.check_order(
         {"symbol": inst.symbol, "side": "buy",
          "sector": sec.name if sec else None,
-         "notional": 20_000}, risk_ctx)
+         "notional": max(1_000, risk_ctx["nav"] * 0.02)}, risk_ctx)
 
     # green zone latest score for this instrument
     gz = (
