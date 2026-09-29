@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, UniqueConstraint
+from sqlalchemy import Date, DateTime, ForeignKey, Index, JSON, Numeric, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, IdMixin, ProvenanceMixin, TimestampMixin, utcnow
@@ -73,3 +73,20 @@ class EconomicRelease(Base, IdMixin, TimestampMixin):
     )
     period: Mapped[date | None] = mapped_column(Date)
     source: Mapped[str]
+
+
+class TechnicalScanResult(Base, IdMixin, TimestampMixin):
+    """Persisted technical-engine verdict per instrument — produced by
+    the `technical:scan` job, consumed by CC + Trading Desk."""
+
+    __tablename__ = "technical_scan_results"
+    __table_args__ = (
+        Index("ix_tsr_instr", "instrument_id", "created_at"),)
+
+    instrument_id: Mapped[str] = mapped_column(
+        ForeignKey("instruments.id"), index=True)
+    decision: Mapped[str]          # entry_signal|wait|no_trade|invalid
+    engine: Mapped[str]            # mean_reversion|trend_following|combined
+    indicators: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_close: Mapped[float | None]
+    data_fresh: Mapped[bool] = mapped_column(default=True)

@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.base import utcnow
 from app.models.instruments import Instrument
 from app.models.market import OhlcvBar
 from app.services import technical as ti
@@ -234,3 +235,40 @@ async def evaluate(
     return {**base, "mean_reversion": mr, "trend_following": tf,
             "decision": decision,
             "explanation": f"MR={mr['decision']}; TF={tf['decision']}"}
+
+
+async def run_scan(db: AsyncSession, instruments=None) -> int:
+    """Job: evaluate every active instrument, persist latest verdict.
+    Returns count of actionable signals (non-wait/no_trade)."""
+    from app.models.market import TechnicalScanResult
+    if instruments is None:
+        instruments = (await db.execute(
+            select(Instrument).where(Instrument.is_active))
+        ).scalars().all()
+    actionable = 0
+    now = utcnow()
+    for inst in instruments:
+        try:
+            r = await evaluate(db, inst, now)
+        except Exception:
+            continue
+        mr_d = r.get("mean_reversion", {}).get("decision", "")
+        tf_d = r.get("trend_following", {}).get("decision", "")
+        if mr_d not in ("wait", "no_trade", "invalid_data"):
+            eng, dec = "mean_reversion", mr_d
+        elif tf_d not in ("wait", "no_trade", "invalid_data"):
+            eng, dec = "trend_following", tf_d
+        else:
+            eng, dec = "combined", r.get("decision", "wait")
+        if dec not in ("wait", "no_trade", "invalid_data"):
+            actionable += 1
+        db.add(TechnicalScanResult(
+            instrument_id=inst.id, decision=dec, engine=eng,
+            indicators={
+                "mr": mr_d, "tf": tf_d,
+                "rsi": r.get("mean_reversion", {}).get("rsi_10")
+                       or r.get("indicators", {})},
+            last_close=r.get("last_close"),
+            data_fresh=r.get("data_fresh", True)))
+    await db.commit()
+    return actionable

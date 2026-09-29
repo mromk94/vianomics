@@ -288,36 +288,28 @@ async def command_center(
                     danger=o.status == "unknown")
         for o, s in ords]
     if len(signals) < 4:
-        # fill with strongest technical candidates — real scan output
+        # persisted technical scan results — produced by the
+        # `technical:scan` job (runs after each backfill, or on demand)
         try:
-            from app.services import technical_engine as te
-            scan_insts = (await db.execute(
-                select(Instrument).where(Instrument.is_active)
-                .limit(24))).scalars().all()
-            cands = []
-            for i_ in scan_insts:
-                try:
-                    sig = await te.evaluate(db, i_, datetime.now(UTC))
-                    mr_d = sig.get("mean_reversion", {})
-                    tf_d = sig.get("trend_following", {})
-                    best = max(
-                        (mr_d.get("decision", "wait"), "mean-rev"),
-                        (tf_d.get("decision", "wait"), "trend"),
-                        key=lambda x: 0 if x[0] in ("wait", "no_trade",
-                                                  "invalid_data") else 1)
-                    if best[0] not in ("wait", "no_trade"):
-                        cands.append((i_.symbol, best))
-                except Exception:
-                    continue
-            for sym_, (d_, engine_) in cands[:5]:
+            from app.models.market import TechnicalScanResult
+            rows = (await db.execute(
+                select(TechnicalScanResult, Instrument.symbol)
+                .join(Instrument,
+                      TechnicalScanResult.instrument_id == Instrument.id)
+                .where(TechnicalScanResult.decision.not_in(
+                    ["wait", "no_trade", "invalid_data"]))
+                .order_by(TechnicalScanResult.created_at.desc())
+                .limit(5))).all()
+            for r, sym_ in rows:
                 signals.append(TradeSignal(
                     kind="technical",
-                    message=f"{sym_}: {d_.replace('_', ' ')} "
-                            f"({engine_})",
+                    message=f"{sym_}: {r.decision.replace('_', ' ')} "
+                            f"({r.engine})",
                     danger=False))
         except Exception as e:
             import logging
             logging.warning("CC technical signals failed: %s", e)
+            await db.rollback()
 
     # watchlist: top Green Zone scores from latest screening run
     from app.models.screening import ScreeningResult
