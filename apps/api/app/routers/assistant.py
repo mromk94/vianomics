@@ -324,9 +324,11 @@ async def _symbol_context(db: AsyncSession, msg: str) -> dict | None:
         from app.services import technical_engine as te
         sig = await te.evaluate(db, inst, utcnow())
         out["signal"] = {
-            "mr": sig["mr"]["decision"], "tf": sig["tf"]["decision"],
+            "mr": sig.get("mean_reversion", {}).get("decision"),
+            "tf": sig.get("trend_following", {}).get("decision"),
             "last_close": sig.get("last_close"),
-            "rsi": sig["mr"].get("rsi")}
+            "rsi": sig.get("mean_reversion", {}).get("rsi_14")
+                   or sig.get("mean_reversion", {}).get("rsi")}
     except Exception:
         pass
     try:

@@ -129,6 +129,36 @@ async def command_center(
             macro_indicators={
                 "overlay": rg.overlay or "",
                 "as_of": rg.as_of.isoformat() if rg.as_of else ""})
+    else:
+        # no persisted run — compute live (same as /macro/current)
+        try:
+            from app.services import macro_regime as mr
+            c = await mr.classify(db, utcnow())
+            rg_live = c
+            regime = RegimeSnapshot(
+                economic_regime=c["econ_regime"],
+                market_regime=c["market_regime"],
+                fear_greed=c["fear_greed"],
+                vix=c.get("vix"),
+                macro_indicators={
+                    "overlay": c.get("overlay", ""),
+                    "fed funds": (c["features"]["FEDFUNDS"]["value"]
+                                  if c["features"].get("FEDFUNDS")
+                                  else "—"),
+                    "cpi": (c["features"]["CPIAUCSL"]["value"]
+                            if c["features"].get("CPIAUCSL") else "—"),
+                    "unrate": (c["features"]["UNRATE"]["value"]
+                               if c["features"].get("UNRATE") else "—"),
+                    "yield curve": (c["features"]["T10Y2Y"]["value"]
+                                    if c["features"].get("T10Y2Y")
+                                    else "—"),
+                    "vix": (c["features"]["VIXCLS"]["value"]
+                            if c["features"].get("VIXCLS") else "—"),
+                    "stale": f"{len(c.get('stale_inputs', []))} series"})
+            rg = type("Rg", (), {"sector_preferences":
+                                 c.get("sector_preferences", {})})()
+        except Exception:
+            rg_live = None
 
     # portfolio / risk
     pf = await _portfolio_ctx(db)
@@ -147,6 +177,8 @@ async def command_center(
     has_positions = bool(pf.get("positions"))
     nav = pf.get("nav") if has_positions else None
     cash = pf.get("cash") if has_positions else None
+    daily_pnl = pf.get("daily_pnl") if has_positions else None
+    unreal_pnl = pf.get("unrealized_pnl") if has_positions else None
 
     # external sources (MT4 push, Bamboo sync) — merge per ?source=
     if source != "internal":
@@ -160,13 +192,36 @@ async def command_center(
         ).scalars().all()
         ext_nav = sum(float(a.equity or a.balance or 0) for a in ext)
         ext_cash = sum(float(a.balance or 0) for a in ext)
+        # external unrealized = equity − balance; daily = eq delta vs
+        # first snapshot today (equity_history)
+        ext_unreal = sum(float(a.equity or 0) - float(a.balance or 0)
+                         for a in ext if a.equity is not None)
+        today = datetime.now(UTC).date().isoformat()
+        ext_daily = 0.0
+        for a in ext:
+            hist = a.equity_history or []
+            past = [h for h in hist if h.get("t", "")[:10] < today]
+            if past and a.equity is not None:
+                ext_daily += float(a.equity) - float(past[-1]["equity"])
         if source == "all":
             nav = (nav or 0) + ext_nav if (nav or ext_nav) else None
             cash = (cash or 0) + ext_cash if (cash or ext_cash) else None
+            unreal_pnl = ((unreal_pnl or 0) + ext_unreal
+                          if (unreal_pnl or ext_unreal) else None)
+            daily_pnl = ((daily_pnl or 0) + ext_daily
+                         if (daily_pnl or ext_daily) else None)
+            has_positions = has_positions or bool(ext)
         else:
             nav, cash = ext_nav or None, ext_cash or None
+            unreal_pnl = ext_unreal if ext else None
+            daily_pnl = ext_daily if ext else None
             has_positions = bool(ext)
-    portfolio = PortfolioSummary(total_value=nav, cash=cash)
+    dpct = (daily_pnl / (nav - daily_pnl) * 100
+            if nav and daily_pnl else None)
+    portfolio = PortfolioSummary(
+        total_value=nav, cash=cash,
+        daily_pnl=daily_pnl, daily_pnl_pct=dpct,
+        unrealized_pnl=unreal_pnl)
 
     # alerts
     arows = (
@@ -230,6 +285,36 @@ async def command_center(
                     message=f"{s} {o.side} {o.qty} — {o.status}",
                     danger=o.status == "unknown")
         for o, s in ords]
+    if len(signals) < 4:
+        # fill with strongest technical candidates — real scan output
+        try:
+            from app.services import technical_engine as te
+            scan_insts = (await db.execute(
+                select(Instrument).where(Instrument.is_active)
+                .limit(24))).scalars().all()
+            cands = []
+            for i_ in scan_insts:
+                try:
+                    sig = await te.evaluate(db, i_, utcnow())
+                    mr_d = sig.get("mean_reversion", {})
+                    tf_d = sig.get("trend_following", {})
+                    best = max(
+                        (mr_d.get("decision", "wait"), "mean-rev"),
+                        (tf_d.get("decision", "wait"), "trend"),
+                        key=lambda x: 0 if x[0] in ("wait", "no_trade",
+                                                  "invalid_data") else 1)
+                    if best[0] not in ("wait", "no_trade"):
+                        cands.append((i_.symbol, best))
+                except Exception:
+                    continue
+            for sym_, (d_, engine_) in cands[:5]:
+                signals.append(TradeSignal(
+                    kind="technical",
+                    message=f"{sym_}: {d_.replace('_', ' ')} "
+                            f"({engine_})",
+                    danger=False))
+        except Exception:
+            pass
 
     # watchlist: top Green Zone scores from latest screening run
     from app.models.screening import ScreeningResult
