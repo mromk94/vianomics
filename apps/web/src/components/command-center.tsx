@@ -105,7 +105,7 @@ export function CommandCenter() {
   const load = () => {
     setLoading(true);
     setError(null);
-    apiGet<Data>(`/api/v1/command-center?source=${source}`)
+    apiGet<Data>(`/api/v1/command-center?source=${source}`, 60000)
       .then(setData)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));

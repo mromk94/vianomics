@@ -97,6 +97,9 @@ async def command_center(
     from app.services import cache
     demo_on = await runtime_flag(db, "demo_fixtures",
                                  settings.demo_fixtures)
+    cached = cache.get(f"command_center:{source}:{demo_on}", 60)
+    if cached is not None:
+        return cached
     providers = await _system_health(db)
 
     # ── real state first — each section populates from stored data;
@@ -515,4 +518,5 @@ async def command_center(
             if empty:
                 setattr(resp, name, fixture)
                 resp.demo_sections.append(name)
+    cache.put(f"command_center:{source}:{demo_on}", resp)
     return resp
