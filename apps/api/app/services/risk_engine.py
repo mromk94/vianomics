@@ -291,7 +291,9 @@ def risk_dimensions(pf: dict) -> dict:
             "max_sector_pct": max(sectors.values()) if sectors else None,
             "sector_count": len(sectors),
             "sectors": sectors,
-            "status": "ok" if data_ok else "unknown"},
+            "status": ("breach" if max_w
+                       > DEFAULT_LIMITS["max_single_name_pct"]
+                       else "ok") if data_ok else "unknown"},
         "factor_correlation": {
             "avg_correlation": pf.get("avg_correlation"),
             "correlated_shock_30pct_pnl": corr_pnl,
@@ -302,11 +304,16 @@ def risk_dimensions(pf: dict) -> dict:
             "margin_used": pf.get("margin_used", 0),
             "margin_shock_pnl": scenario_pnl(pos, -0.20)["pnl"] *
             (pf.get("gross", 1.0)),
-            "status": "ok" if pf.get("gross", 1.0) <= 1.5 else "review"},
+            "status": ("breach" if pf.get("gross", 1.0)
+                       > DEFAULT_LIMITS["max_gross_leverage"] * 1.01
+                       else "ok" if pf.get("gross", 1.0) <= 1.0
+                       else "review")},
         "liquidity": {
             "illiquid_weight": illiq,
             "cash_pct": pf.get("cash", 0) / nav,
-            "status": "ok" if data_ok else "unknown"},
+            "status": ("breach" if pf.get("cash", 0) / nav
+                       < DEFAULT_LIMITS["min_cash_pct"]
+                       else "ok") if data_ok else "unknown"},
         "volatility_structure": {
             "max_drawdown": pf.get("max_dd"),
             "vol_shock_pnl": vol_shock["pnl"],
