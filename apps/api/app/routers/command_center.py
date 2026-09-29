@@ -135,33 +135,28 @@ async def command_center(
             from app.services import macro_regime as mr
             c = await mr.classify(db, datetime.now(UTC))
             rg_live = c
+            f = c.get("features", {})
+            def _fv(key: str) -> str:
+                v = (f.get(key) or {}).get("value")
+                return f"{v:g}" if isinstance(v, (int, float)) else "—"
             regime = RegimeSnapshot(
                 economic_regime=c["econ_regime"],
                 market_regime=c["market_regime"],
                 fear_greed=c["fear_greed"],
                 vix=c.get("vix"),
                 macro_indicators={
-                    "overlay": c.get("overlay", ""),
-                    "fed funds": (c["features"]["FEDFUNDS"]["value"]
-                                  if c["features"].get("FEDFUNDS")
-                                  else "—"),
-                    "cpi": (c["features"]["CPIAUCSL"]["value"]
-                            if c["features"].get("CPIAUCSL") else "—"),
-                    "unrate": (c["features"]["UNRATE"]["value"]
-                               if c["features"].get("UNRATE") else "—"),
-                    "yield curve": (c["features"]["T10Y2Y"]["value"]
-                                    if c["features"].get("T10Y2Y")
-                                    else "—"),
-                    "vix": (c["features"]["VIXCLS"]["value"]
-                            if c["features"].get("VIXCLS") else "—"),
+                    "overlay": str(c.get("overlay", "")),
+                    "fed funds": _fv("FEDFUNDS"),
+                    "cpi": _fv("CPIAUCSL"),
+                    "unrate": _fv("UNRATE"),
+                    "yield curve": _fv("T10Y2Y"),
+                    "vix": _fv("VIXCLS"),
                     "stale": f"{len(c.get('stale_inputs', []))} series"})
             rg = type("Rg", (), {"sector_preferences":
                                  c.get("sector_preferences", {})})()
         except Exception as e:
-            import logging, traceback
+            import logging
             logging.warning("CC regime fallback failed: %s", e)
-            traceback.print_exc()
-            regime.macro_indicators = {"_debug": str(e)[:100]}
             rg_live = None
 
     # portfolio / risk
@@ -411,13 +406,68 @@ async def command_center(
             agent=key, recommendation=o.recommendation or "?",
             score=int(o.score) if o.score is not None else None))
 
-    # sectors — real rotation prefs from the latest regime run
-    # ('favored'/'neutral'/'avoid' → momentum score for display)
-    pref_score = {"favored": 80.0, "neutral": 50.0, "avoid": 20.0}
-    sectors = [SectorPerf(sector=s,
-                          momentum=pref_score.get(str(w), 50.0))
-               for s, w in (rg.sector_preferences.items() if rg
-                            else [])] if rg else []
+    # sectors — real performance: mean 1D/1W return of universe
+    # instruments grouped by sector; regime-favored marked ★
+    sectors: list[SectorPerf] = []
+    try:
+        sec_rows = (await db.execute(
+            select(Instrument.id, Instrument.symbol, Sector.name)
+            .outerjoin(Sector, Instrument.sector_id == Sector.id)
+            .where(Instrument.is_active))).all()
+        ids = [r[0] for r in sec_rows]
+        if ids:
+            from datetime import timedelta
+            cutoff = datetime.now(UTC) - timedelta(days=10)
+            recent = (await db.execute(
+                select(OhlcvBar.instrument_id, OhlcvBar.time,
+                       OhlcvBar.close)
+                .where(OhlcvBar.instrument_id.in_(ids),
+                       OhlcvBar.timeframe == "1d",
+                       OhlcvBar.time >= cutoff)
+                .order_by(OhlcvBar.time))).all()
+            by_i: dict[str, list] = {}
+            for iid, t, c in recent:
+                by_i.setdefault(iid, []).append((t, float(c)))
+            agg: dict[str, dict] = {}
+            for iid, sym, sname in sec_rows:
+                pts = by_i.get(iid, [])
+                if len(pts) < 2:
+                    continue
+                sec = sname or "Unclassified"
+                d = agg.setdefault(sec, {"n": 0, "d1": [], "w1": []})
+                d["n"] += 1
+                last, first = pts[-1][1], pts[0][1]
+                prev = pts[-2][1]
+                d["d1"].append((last - prev) / prev * 100)
+                d["w1"].append((last - first) / first * 100)
+            total = sum(d["n"] for d in agg.values()) or 1
+            prefs = (rg.sector_preferences
+                     if rg and getattr(rg, "sector_preferences",
+                                       None) else {})
+            favored = set(prefs.keys())
+            sectors = [
+                SectorPerf(
+                    sector=(name + (" ★" if name in favored else "")),
+                    weight_pct=round(d["n"] / total * 100, 1),
+                    day_pct=round(sum(d["d1"]) / len(d["d1"]), 2),
+                    week_pct=round(sum(d["w1"]) / len(d["w1"]), 2),
+                    momentum=min(100, int(abs(
+                        sum(d["w1"]) / len(d["w1"])) * 10)))
+                for name, d in sorted(
+                    agg.items(),
+                    key=lambda kv: -abs(sum(kv[1]["w1"])
+                                        / len(kv[1]["w1"])))
+            ][:10]
+    except Exception as e:
+        import logging
+        logging.warning("CC sectors failed: %s", e)
+        sectors = [SectorPerf(sector=f"_debug:{e}"[:60])]
+    if not sectors:
+        pref_score = {"favored": 80.0, "neutral": 50.0, "avoid": 20.0}
+        sectors = [SectorPerf(sector=s,
+                              momentum=pref_score.get(str(w), 50.0))
+                   for s, w in (rg.sector_preferences.items() if rg
+                                else [])] if rg else []
 
     resp = CommandCenterResponse(
         generated_at=datetime.now(UTC).isoformat(),
