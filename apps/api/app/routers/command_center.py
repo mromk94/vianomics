@@ -238,10 +238,24 @@ async def command_center(
             has_positions = bool(ext)
     dpct = (daily_pnl / (nav - daily_pnl) * 100
             if nav and daily_pnl else None)
+    # per-position holdings — filtered by source, sorted by exposure
+    show = intl_pos if source == "internal" else \
+        [p for p in pf["positions"]
+         if (not p.get("external")) or source == "all"
+         or p.get("source") == source]
+    holdings = sorted(
+        [{"symbol": p.get("display_symbol") or p["symbol"],
+          "market_value": p["market_value"],
+          "unrealized": p.get("unrealized"),
+          "weight": p["market_value"] / (nav or 1),
+          "sector": p.get("sector"),
+          "source": p.get("source", "ledger")}
+         for p in show],
+        key=lambda x: -x["market_value"])
     portfolio = PortfolioSummary(
         total_value=nav, cash=cash,
         daily_pnl=daily_pnl, daily_pnl_pct=dpct,
-        unrealized_pnl=unreal_pnl)
+        unrealized_pnl=unreal_pnl, holdings=holdings)
 
     # alerts
     arows = (

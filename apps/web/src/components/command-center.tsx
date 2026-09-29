@@ -162,6 +162,23 @@ export function CommandCenter() {
         <>
           {/* portfolio strip — collapsible */}
           <PortfolioStrip p={data.portfolio} demo={isDemo("portfolio")} />
+          {(data.portfolio.holdings?.length ?? 0) > 0 && (
+            <div className="rise rise-1 glass px-4 py-2.5 flex flex-wrap gap-x-6 gap-y-1 text-[12px]">
+              <span className="text-dim">Holdings</span>
+              {data.portfolio.holdings!.slice(0, 8).map((h) => (
+                <span key={h.symbol} className="flex items-center gap-1.5">
+                  <span className="font-semibold text-accent">{h.symbol}</span>
+                  <span className="num">${fmtNum(h.market_value)}</span>
+                  <span className={`num text-[11px] ${(h.unrealized ?? 0) >= 0 ? "text-pos" : "text-neg"}`}>
+                    {h.unrealized != null ? `${h.unrealized >= 0 ? "+" : ""}${fmtNum(h.unrealized)}` : ""}
+                  </span>
+                  <span className="text-faint">{h.source}</span>
+                </span>
+              ))}
+              {(data.portfolio.holdings!.length ?? 0) > 8 &&
+                <span className="text-faint">+{data.portfolio.holdings!.length - 8} more</span>}
+            </div>
+          )}
 
           {/* CIO Recommendation */}
           <SectionCard title="CIO Recommendation" demo={isDemo("cio")} className="rise rise-2"
@@ -477,6 +494,9 @@ export function CommandCenter() {
 /* ── collapsible portfolio strip + equity curve ── */
 
 interface PfT { total_value: number | null; cash: number | null;
+  holdings?: { symbol: string; market_value: number;
+    unrealized: number | null; weight: number; sector: string | null;
+    source: string }[];
   daily_pnl: number | null; daily_pnl_pct: number | null;
   unrealized_pnl: number | null }
 

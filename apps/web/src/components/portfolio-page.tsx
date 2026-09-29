@@ -16,7 +16,9 @@ import { StatusBadge } from "@/components/ui/status-badge";
 interface Positions {
   nav: number | null; cash: number; as_of: string; note: string;
   positions: { symbol: string; sector: string; quantity: number;
-    market_value: number; weight_pct: number | null }[];
+    market_value: number; weight_pct: number | null;
+    source?: string; external?: boolean;
+    display_symbol?: string; unrealized?: number }[];
 }
 interface Attr {
   positions: { symbol: string; qty: number; avg_fill: number;
@@ -40,7 +42,7 @@ export function PortfolioPage() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Portfolio" info='Shows what the system currently owns (positions), how much each holding is worth, and its weight in the account. Fills from approved orders land here automatically — this is the book, not a broker statement.' subtitle="ledger positions — fills book automatically; broker reconciliation is separate" />
+      <PageHeader title="Portfolio" info='Shows what the system currently owns (positions), how much each holding is worth, and its weight in the account. Fills from approved orders land here automatically — this is the book, not a broker statement.' subtitle="aggregate book — ledger fills + connected accounts (MT4, Bamboo) as per-position holdings" />
       {error && <ErrorState title="API error" detail={error} />}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <MetricCard label="NAV" value={pos?.nav ? `$${fmtNum(pos.nav)}` : "—"} />
@@ -55,11 +57,17 @@ export function PortfolioPage() {
         ) : (
           <DataTable
             columns={[
-              { key: "s", header: "Symbol", render: (p: Positions["positions"][0]) => <span className="font-semibold text-accent">{p.symbol}</span> },
+              { key: "s", header: "Symbol", render: (p: Positions["positions"][0]) => (
+                <span>
+                  <span className="font-semibold text-accent">{p.display_symbol ?? p.symbol}</span>
+                  {p.source && p.source !== "ledger" && <StatusBadge tone="info">{p.source}</StatusBadge>}
+                </span>) },
               { key: "sec", header: "Sector", render: (p) => p.sector },
               { key: "q", header: "Qty", align: "right", render: (p) => <span className="num">{fmtNum(p.quantity, 0)}</span> },
               { key: "m", header: "Mkt value", align: "right", render: (p) => <span className="num">${fmtNum(p.market_value)}</span> },
               { key: "w", header: "Weight", align: "right", render: (p) => <span className="num">{fmtPct(p.weight_pct ?? 0)}</span> },
+              { key: "u", header: "Unreal.", align: "right", render: (p) => p.unrealized != null ? (
+                <span className={`num ${p.unrealized >= 0 ? "text-pos" : "text-neg"}`}>{p.unrealized >= 0 ? "+" : ""}${fmtNum(p.unrealized)}</span>) : "—" },
             ]}
             rows={pos.positions} rowKey={(p) => p.symbol}
           />

@@ -135,6 +135,11 @@ export interface CommandCenter {
     daily_pnl_pct: number | null;
     unrealized_pnl: number | null;
     currency: string;
+    holdings?: {
+      symbol: string; market_value: number;
+      unrealized: number | null; weight: number;
+      sector: string | null; source: string;
+    }[];
   };
   split: { investment_pct: number | null; trading_pct: number | null };
   regime: {
