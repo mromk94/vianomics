@@ -49,6 +49,10 @@ export function SymbolDrawer() {
   const [sym, setSym] = useState<string | null>(null);
   const [d, setD] = useState<SymbolDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  interface NewsItem { source: string; title: string; url: string | null;
+    at: string | null; summary: string | null }
+  const [news, setNews] = useState<{ items: NewsItem[];
+    sources: string[] } | null>(null);
 
   useEffect(() => {
     const on = (e: Event) =>
@@ -62,6 +66,8 @@ export function SymbolDrawer() {
     setD(null); setErr(null);
     apiGet<SymbolDetail>(`/api/v1/symbol/${sym}`)
       .then(setD).catch((e) => setErr(e.message));
+    setNews(null);
+    apiGet<{ items: NewsItem[]; sources: string[] }>(`/api/v1/news/${sym}`).then(setNews).catch(() => setNews({ items: [], sources: [] }));
   }, [sym]);
 
   useEffect(() => {
@@ -185,12 +191,35 @@ export function SymbolDrawer() {
             </section>
           )}
 
-          {/* TradingView news timeline */}
+          {/* real news — Alpaca market news + SEC filings */}
           <section>
-            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-dim">Market news</div>
-            <iframe title={`${sym} news`} loading="lazy"
-              src={`https://www.tradingview.com/widgetembed/?symbol=${sym}&theme=dark&feedmode=market`}
-              className="h-[300px] w-full rounded-lg border-0" />
+            <div className="mb-1.5 flex items-baseline justify-between">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-dim">Market news</span>
+              {news?.sources?.length ? <span className="text-[10px] text-faint">{news.sources.join(" + ")}</span> : null}
+            </div>
+            {!news ? (
+              <div className="text-[11px] text-faint">loading…</div>
+            ) : news.items.length === 0 ? (
+              <div className="rounded-lg border border-border/60 p-3 text-[11px] text-faint">
+                No news — configure ALPACA_API_KEY in Settings for headlines; SEC filings appear when the instrument has a CIK.
+              </div>
+            ) : (
+              <ul className="space-y-1.5">
+                {news.items.map((n, i) => (
+                  <li key={i}>
+                    <a href={n.url ?? undefined} target="_blank" rel="noreferrer"
+                      className="glass-tile block px-3 py-2 transition hover:border-accent/40">
+                      <div className="flex items-center justify-between text-[10px] text-faint">
+                        <span className="uppercase tracking-wider">{n.source}</span>
+                        <span className="num">{n.at ? fmtTime(n.at) : ""}</span>
+                      </div>
+                      <div className="mt-0.5 text-[12px] font-medium text-text leading-snug">{n.title}</div>
+                      {n.summary && <div className="mt-0.5 line-clamp-2 text-[11px] text-dim">{n.summary}</div>}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         </div>
       </aside>
