@@ -175,12 +175,24 @@ async def command_center(
                       .get(-0.1, {}).get("pnl")),
         warnings=[b["rule"] for b in
                   pf.get("breaches", [])] if pf.get("breaches") else [])
-    # empty book → null (never present a placeholder as live NAV)
-    has_positions = bool(pf.get("positions"))
-    nav = pf.get("nav") if has_positions else None
-    cash = pf.get("cash") if has_positions else None
-    daily_pnl = pf.get("daily_pnl") if has_positions else None
-    unreal_pnl = pf.get("unrealized_pnl") if has_positions else None
+    # external positions live INSIDE ctx as pseudo-positions now —
+    # split nav by flag so sources never double-count
+    intl_pos = [p for p in pf["positions"] if not p.get("external")]
+    ext_pos = [p for p in pf["positions"] if p.get("external")]
+    intl_nav = sum(p["market_value"] for p in intl_pos)
+    ctx_nav = {x["market_value"] for x in ext_pos}  # per-source below
+    if source == "internal":
+        has_positions = bool(intl_pos)
+        nav = intl_nav or None
+        cash = pf.get("cash") if has_positions else None
+        unreal = [p.get("unrealized", 0) for p in intl_pos]
+        unreal_pnl = sum(unreal) if intl_pos else None
+        daily_pnl = (sum(p["daily_pnl"] for p in intl_pos
+                         if p.get("daily_pnl") is not None)
+                     if any(p.get("daily_pnl") is not None
+                            for p in intl_pos) else None)
+    else:
+        has_positions = bool(pf["positions"])
 
     # external sources (MT4 push, Bamboo sync) — merge per ?source=
     if source != "internal":
@@ -206,12 +218,18 @@ async def command_center(
             if past and a.equity is not None:
                 ext_daily += float(a.equity) - float(past[-1]["equity"])
         if source == "all":
-            nav = (nav or 0) + ext_nav if (nav or ext_nav) else None
-            cash = (cash or 0) + ext_cash if (cash or ext_cash) else None
-            unreal_pnl = ((unreal_pnl or 0) + ext_unreal
-                          if (unreal_pnl or ext_unreal) else None)
-            daily_pnl = ((daily_pnl or 0) + ext_daily
-                         if (daily_pnl or ext_daily) else None)
+            # ctx already includes external — add only INTERNAL nav
+            nav = (intl_nav or 0) + ext_nav \
+                if (intl_nav or ext_nav) else None
+            cash = (pf.get("cash") or 0) + ext_cash \
+                if (pf.get("cash") or ext_cash) else None
+            intl_unreal = (sum(p.get("unrealized", 0)
+                               for p in intl_pos) if intl_pos else None)
+            unreal_pnl = ((intl_unreal or 0) + ext_unreal
+                          if (intl_unreal or ext_unreal) else None)
+            daily_pnl = ((pf.get("daily_pnl") or 0) + ext_daily
+                         if (pf.get("daily_pnl") or ext_daily)
+                         else None)
             has_positions = has_positions or bool(ext)
         else:
             nav, cash = ext_nav or None, ext_cash or None
