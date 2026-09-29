@@ -21,6 +21,7 @@ class PortfolioSummary(BaseModel):
     daily_pnl_pct: float | None = None
     unrealized_pnl: float | None = None
     currency: str = "USD"
+    holdings: list[dict] = []   # per-position rows across all books
 
 
 class PortfolioSplit(BaseModel):
