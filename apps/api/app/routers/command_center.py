@@ -404,6 +404,9 @@ async def command_center(
             risk_veto=(d0.gate_results.get("conflict") or {})
                 .get("reason"),
             conflict_note=None,
+            book_note=(f"real book: {len(pf['positions'])} positions · "
+                       f"NAV ${nav:,.0f} · source {source}")
+                if nav else None,
         )
 
     # split — mandate targets are real policy (not portfolio marks)

@@ -98,6 +98,7 @@ class CioBlock(BaseModel):
     risk_veto: str | None = None         # None|reason — veto is absolute
     kill_conditions: list[str] = Field(default_factory=list)
     conflict_note: str | None = None
+    book_note: str | None = None
 
 
 class AgentVote(BaseModel):
