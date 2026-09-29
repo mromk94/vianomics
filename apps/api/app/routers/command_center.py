@@ -157,7 +157,11 @@ async def command_center(
                     "stale": f"{len(c.get('stale_inputs', []))} series"})
             rg = type("Rg", (), {"sector_preferences":
                                  c.get("sector_preferences", {})})()
-        except Exception:
+        except Exception as e:
+            import logging, traceback
+            logging.warning("CC regime fallback failed: %s", e)
+            traceback.print_exc()
+            regime.macro_indicators = {"_debug": str(e)[:100]}
             rg_live = None
 
     # portfolio / risk
@@ -313,8 +317,9 @@ async def command_center(
                     message=f"{sym_}: {d_.replace('_', ' ')} "
                             f"({engine_})",
                     danger=False))
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.warning("CC technical signals failed: %s", e)
 
     # watchlist: top Green Zone scores from latest screening run
     from app.models.screening import ScreeningResult
