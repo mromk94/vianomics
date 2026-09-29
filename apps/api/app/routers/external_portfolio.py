@@ -43,6 +43,9 @@ async def mt4_push(body: Mt4PushIn, db: AsyncSession = Depends(get_db)):
     acc.balance, acc.equity = body.balance, body.equity
     acc.currency = body.currency.upper()
     acc.positions = body.positions
+    hist = list(acc.equity_history or [])
+    hist.append({"t": utcnow().isoformat(), "equity": body.equity})
+    acc.equity_history = hist[-400:]   # ~6h at 60s pushes
     acc.synced_at = utcnow()
     acc.connected = True
     db.add(acc)
@@ -107,6 +110,9 @@ async def bamboo_sync(db: AsyncSession = Depends(get_db)):
          "market_value": p.get("market_value")}
         for p in (pos if isinstance(pos, list)
                   else pos.get("positions", []))]
+    hist = list(acc.equity_history or [])
+    hist.append({"t": utcnow().isoformat(), "equity": acc.equity})
+    acc.equity_history = hist[-400:]
     acc.synced_at = utcnow()
     acc.connected = True
     db.add(acc)

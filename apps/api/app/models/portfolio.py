@@ -96,6 +96,8 @@ class ExternalAccount(Base, IdMixin, TimestampMixin):
     balance: Mapped[float | None] = mapped_column(MONEY)
     equity: Mapped[float | None] = mapped_column(MONEY)
     positions: Mapped[list] = mapped_column(JSON, default=list)
+    # rolling [{t, equity}] — powers daily P&L without a new table
+    equity_history: Mapped[list] = mapped_column(JSON, default=list)
     synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True))
     connected: Mapped[bool] = mapped_column(default=True)

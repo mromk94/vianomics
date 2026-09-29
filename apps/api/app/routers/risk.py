@@ -51,10 +51,25 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
                 )
             ).scalar_one_or_none()
             px = float(bar.close) if bar else float(pos.avg_cost or 0)
+            # previous close for daily P&L
+            prev = None
+            if bar:
+                prev = (await db.execute(
+                    select(OhlcvBar.close).where(
+                        OhlcvBar.instrument_id == inst.id,
+                        OhlcvBar.timeframe == "1d",
+                        OhlcvBar.time < bar.time)
+                    .order_by(OhlcvBar.time.desc()).limit(1)
+                )).scalar()
             mv = float(pos.quantity) * px
             positions.append({
                 "symbol": inst.symbol, "sector": sec.name if sec else "?",
                 "market_value": mv, "quantity": float(pos.quantity),
+                "avg_cost": float(pos.avg_cost or 0),
+                "unrealized": float(pos.quantity)
+                              * (px - float(pos.avg_cost or 0)),
+                "daily_pnl": (float(pos.quantity) * (px - float(prev))
+                              if prev else None),
                 "beta": None, "liquidity_days": None,
             })
         nav = sum(p["market_value"] for p in positions) or 1
@@ -62,8 +77,15 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
     regime = (
         await db.execute(select(RegimeRun).order_by(RegimeRun.as_of.desc()))
     ).scalars().first()
+    unrealized = sum(p.get("unrealized", 0) for p in positions) \
+        if positions else None
+    daily = sum(p["daily_pnl"] for p in positions
+                if p.get("daily_pnl") is not None) \
+        if any(p.get("daily_pnl") is not None for p in positions) \
+        else None
     return {
         "nav": nav, "cash": cash, "positions": positions,
+        "unrealized_pnl": unrealized, "daily_pnl": daily,
         "gross": nav / nav if nav else 1,
         "margin_used": 0,
         "avg_correlation": None,  # computed in center view

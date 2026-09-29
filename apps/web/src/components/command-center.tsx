@@ -112,7 +112,11 @@ export function CommandCenter() {
   };
   useEffect(() => {
     apiGet<{ source: string; label: string }[]>("/api/v1/external/sources")
-      .then(setExtSources).catch(() => {});
+      .then((xs) => {
+        setExtSources(xs);
+        if (xs.length && source === "internal") setSource("all");
+      }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(load, [source]);
