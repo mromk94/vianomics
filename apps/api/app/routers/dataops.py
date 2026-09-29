@@ -106,7 +106,27 @@ async def run_job_now(job_key: str,
                 "yahoo": YahooAdapter}
     parts = job_key.split(":")
     try:
-        if job_key.startswith("ingest:edgar:facts:"):
+        if job_key == "technical:scan":
+            from app.services import technical_engine as te
+            from app.ingestion.upsert import get_or_create
+            from app.models.ops import Job, JobRun
+            from app.db.base import utcnow
+            job, _ = await get_or_create(
+                db, Job, {"key": "technical:scan"},
+                {"kind": "analysis"})
+            run = JobRun(job_id=job.id)
+            db.add(run)
+            await db.flush()
+            try:
+                n = await te.run_scan(db)
+                run.status, run.records_ok, run.finished_at = (
+                    "success", n, utcnow())
+            except Exception as e:
+                run.status, run.error, run.finished_at = (
+                    "failed", str(e)[:200], utcnow())
+            db.add(run)
+            await db.commit()
+        elif job_key.startswith("ingest:edgar:facts:"):
             sym = parts[-1]
             if await _instr(db, sym) is None:
                 return {"status": "failed", "error": f"{sym} not in universe"}
@@ -189,4 +209,9 @@ async def _backfill_all():
                 await db.commit()
             except Exception:
                 await db.rollback()
+        try:
+            from app.services import technical_engine as te
+            await te.run_scan(db)
+        except Exception:
+            await db.rollback()
         cache.invalidate()
