@@ -11,7 +11,7 @@ gate) — the committee never reads stale snapshots."""
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from datetime import timezone as tz
 
 from sqlalchemy import select
@@ -50,7 +50,20 @@ async def run_pipeline(db: AsyncSession,
     insts = (await approved_universe(db))[:max_symbols]
     results: list[dict] = []
     verdicts: dict[str, int] = {}
+    # freshness guard — never re-run the full chain when a decision
+    # <6h old exists for the same instrument (agent/token economy)
+    from sqlalchemy import select as _select
+    from app.models.governance import DecisionRecord
+    fresh_cut = utcnow() - timedelta(hours=6)
+    fresh = set(
+        (await db.execute(
+            _select(DecisionRecord.instrument_id).where(
+                DecisionRecord.at > fresh_cut))).scalars().all())
     for inst in insts:
+        if inst.id in fresh:
+            results.append({"symbol": inst.symbol, "verdict":
+                            "fresh_decision_skipped"})
+            continue
         t0 = datetime.now(tz.utc)
         try:
             r = await cs.run_committee(db, inst)

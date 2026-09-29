@@ -147,13 +147,18 @@ def resolve_conflict(reports: dict[str, AgentReport | None]) -> dict:
 
 
 def cio_synthesize(reports: dict[str, AgentReport | None],
-                   ctx: dict, conflict: dict) -> dict:
+                   ctx: dict, conflict: dict,
+                   learned: dict | None = None) -> dict:
     """Deterministic CIO synthesis — weighted score + explicit
     confidence model (NOT a probability of positive returns)."""
     scores = {k: r.score for k, r in reports.items()
               if r and k in WEIGHTS}
-    tw = sum(WEIGHTS[k] for k in scores)
-    score = sum(scores[k] * WEIGHTS[k] for k in scores) / tw if tw else 0
+    # learned multipliers — outcome + human-alignment feedback
+    mult = {k: ((learned or {}).get("weights", {})
+                .get(k, {}).get("w", 1.0)) for k in scores}
+    w = {k: WEIGHTS[k] * mult[k] for k in scores}
+    tw = sum(w.values())
+    score = sum(scores[k] * w[k] for k in scores) / tw if tw else 0
 
     agree = sum(1 for r in reports.values()
                 if r and r.recommendation in
@@ -187,6 +192,7 @@ def cio_synthesize(reports: dict[str, AgentReport | None],
     return {
         "verdict": verdict,
         "score": round(score, 1),
+        "agent_weights": mult,
         "confidence": round(conf, 2),
         "confidence_note": ("confidence = agreement + evidence quality "
                             "− contradictions/gaps; NOT a probability "
@@ -243,7 +249,12 @@ async def run_committee(
             reports[key] = None
 
     conflict = resolve_conflict(reports)
-    cio = cio_synthesize(reports, ctx, conflict)
+    try:
+        from app.services import learning
+        learned = await learning.agent_weights(db)
+    except Exception:
+        learned = None
+    cio = cio_synthesize(reports, ctx, conflict, learned)
 
     # Part 22 — decision tree over the same ctx + CIO verdict
     from app.services.decision_tree import evaluate_tree, entry_protocol

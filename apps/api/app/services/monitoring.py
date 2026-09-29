@@ -168,6 +168,43 @@ async def run_checks(db: AsyncSession) -> dict:
                 observed=denied, required="<5",
                 action="review exposure"): n["portfolio"] += 1
 
+    # ── auto-resolve: clear stale job_fail + regime_missing alerts ──
+    latest_status = dict((await db.execute(
+        select(Job.id, JobRun.status)
+        .join(JobRun, JobRun.job_id == Job.id)
+        .order_by(JobRun.finished_at.desc()))).all())
+    # need per-job latest only — group map
+    per_job: dict[str, str] = {}
+    for jid, st in (await db.execute(
+            select(JobRun.job_id, JobRun.status)
+            .order_by(JobRun.finished_at.desc()))).all():
+        per_job.setdefault(jid, st)
+    for a in (await db.execute(
+            select(Alert).where(Alert.status.in_(["active",
+                                                "acknowledged"]),
+                                Alert.source.in_(
+                                    ["monitor:data",
+                                     "monitor:regime"])))).scalars():
+        dk = (a.context or {}).get("dedup_key", "")
+        if dk.startswith("job_fail:"):
+            job_key = dk.split(":", 1)[1]
+            job = (await db.execute(
+                select(Job).where(Job.key == job_key))
+            ).scalar_one_or_none()
+            if job and per_job.get(job.id) == "success":
+                a.status = "resolved"
+                a.resolved_at = datetime.now(timezone.utc)
+                a.context = {**(a.context or {}),
+                             "resolution": "auto: job succeeded"}
+        elif dk == "regime_missing":
+            rg = (await db.execute(
+                select(func.count(RegimeRun.id)))).scalar()
+            if rg:
+                a.status = "resolved"
+                a.resolved_at = datetime.now(timezone.utc)
+                a.context = {**(a.context or {}),
+                             "resolution": "auto: regime run exists"}
+
     # ── data quality: failed jobs / stale sync ──
     failed = (
         await db.execute(

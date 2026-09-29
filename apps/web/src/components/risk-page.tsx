@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { ShieldAlert } from "lucide-react";
 
-import { apiGet, apiPost, ApiError } from "@/lib/api";
+import { apiGet, apiPost, apiPut, ApiError } from "@/lib/api";
 import { fmtNum, fmtTime } from "@/lib/format";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -67,13 +67,17 @@ export function RiskPage() {
   const [probe, setProbe] = useState({ symbol: "NVDA", notional: "25000" });
   const [probeResult, setProbeResult] = useState<Check | null>(null);
   const [loading, setLoading] = useState(true);
+  const [limitsCfg, setLimitsCfg] = useState<{ version: number; limits: Record<string, number>; source: string } | null>(null);
+  const [limEdit, setLimEdit] = useState<Record<string, string>>({});
+  const [limEditing, setLimEditing] = useState(false);
 
   const load = () => {
     setError(null);
     Promise.all([
       apiGet<Center>("/api/v1/risk/center"),
       apiGet<Check[]>("/api/v1/risk/checks"),
-    ]).then(([cc, ch]) => { setC(cc); setChecks(ch); })
+      apiGet<{ version: number; limits: Record<string, number>; source: string }>("/api/v1/risk/limits"),
+    ]).then(([cc, ch, lc]) => { setC(cc); setChecks(ch); setLimitsCfg(lc); })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   };
@@ -331,16 +335,63 @@ export function RiskPage() {
             )}
           </SectionCard>
 
-          {/* limits */}
-          <SectionCard title="Configured limits" className="rise">
-            <div className="flex flex-wrap gap-2">
-              {Object.entries(c.limits).map(([k, v]) => (
-                <div key={k} className="glass-tile px-3 py-1.5 text-[12px]">
-                  <span className="text-dim">{k.replace(/_/g, " ")}</span>
-                  <span className="num ml-2 font-semibold">{typeof v === "number" && v < 1 ? `${(v * 100).toFixed(v < 0.01 ? 2 : 0)}%` : v}</span>
+          {/* limits — editable, versioned, enforced at the gate */}
+          <SectionCard title={`Configured limits ${limitsCfg ? `· v${limitsCfg.version} (${limitsCfg.source})` : ""}`} className="rise"
+            action={
+              <button onClick={() => {
+                        setLimEditing((x) => !x);
+                        if (limitsCfg && !limEditing) {
+                          const f: Record<string, string> = {};
+                          for (const [k, v] of Object.entries(limitsCfg.limits)) f[k] = String(v);
+                          setLimEdit(f);
+                        }
+                      }}
+                className="rounded-full border border-border px-3 py-1 text-[11px] text-dim hover:text-text">
+                {limEditing ? "Cancel" : "Edit limits"}
+              </button>
+            }>
+            {!limEditing ? (
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(c.limits).map(([k, v]) => (
+                  <div key={k} className="glass-tile px-3 py-1.5 text-[12px]">
+                    <span className="text-dim">{k.replace(/_/g, " ")}</span>
+                    <span className="num ml-2 font-semibold">{typeof v === "number" && v < 1 ? `${(v * 100).toFixed(v < 0.01 ? 2 : 0)}%` : v}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {Object.keys(limitsCfg?.limits ?? c.limits).map((k) => (
+                    <label key={k} className="text-[11px] text-dim">
+                      {k.replace(/_/g, " ")}
+                      <input value={limEdit[k] ?? ""} onChange={(e) => setLimEdit({ ...limEdit, [k]: e.target.value })}
+                        className="num mt-0.5 w-full rounded-md border border-border bg-surface-2 px-2 py-1 text-[12px] text-text" />
+                    </label>
+                  ))}
                 </div>
-              ))}
-            </div>
+                <button
+                  onClick={async () => {
+                    try {
+                      const body: Record<string, unknown> = {};
+                      for (const [k, v] of Object.entries(limEdit)) {
+                        const n = Number(v);
+                        if (!Number.isNaN(n)) body[k] = n;
+                      }
+                      const r = await apiPut<{ version: number; limits: Record<string, number> }>("/api/v1/risk/limits", body);
+                      setLimitsCfg({ ...r, source: "configured" });
+                      setLimEditing(false);
+                      setNotice(`Limits updated — v${r.version} now enforced at the gate.`);
+                      load();
+                    } catch (e) {
+                      setNotice(e instanceof Error ? e.message : "save failed");
+                    }
+                  }}
+                  className="mt-3 rounded-full bg-accent px-4 py-1.5 text-[12px] font-semibold text-[#0b0f1a]">
+                  Save as new version
+                </button>
+              </div>
+            )}
           </SectionCard>
         </>
       )}
