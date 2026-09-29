@@ -46,7 +46,7 @@ async def _context(db: AsyncSession) -> dict:
         from app.services import macro_regime as mr
         live = await mr.classify(db, utcnow())
     except Exception:
-        pass
+        await db.rollback()
     if live and not regime:
         regime = live
     elif regime:
@@ -75,10 +75,50 @@ async def _context(db: AsyncSession) -> dict:
                                "market_value": p["market_value"]}
                               for p in pc.get("positions", [])[:15]]}
     except Exception:
+        await db.rollback()
         snap = None
     inst_count = (await db.execute(
         select(func.count(Instrument.id)))).scalar()
+    # external accounts (MT4 etc.)
+    ext = []
+    try:
+        from app.models.portfolio import ExternalAccount
+        ea = (await db.execute(
+            select(ExternalAccount)
+            .where(ExternalAccount.connected))).scalars().all()
+        ext = [{"label": a.label, "equity": float(a.equity or 0),
+                "positions": len(a.positions or []),
+                "synced": a.synced_at.isoformat()[:16]
+                if a.synced_at else None} for a in ea]
+    except Exception:
+        await db.rollback()
+    # pending approvals + dossier/valuation presence
+    try:
+        from app.models.governance import OrderTicket
+        pending = (await db.execute(
+            select(func.count(OrderTicket.id))
+            .where(OrderTicket.status == "proposed"))).scalar()
+    except Exception:
+        await db.rollback()
+        pending = 0
+    try:
+        from app.models.dossier import Dossier
+        dossiers = (await db.execute(
+            select(Dossier.instrument_id, Instrument.symbol,
+                   func.max(Dossier.created_at))
+            .join(Instrument, Dossier.instrument_id == Instrument.id)
+            .group_by(Dossier.instrument_id, Instrument.symbol)
+            .order_by(func.max(Dossier.created_at).desc())
+            .limit(8))).all()
+        doss = [{"symbol": sym, "at": t.isoformat()[:16]}
+                for _, sym, t in dossiers]
+    except Exception:
+        await db.rollback()
+        doss = []
     return {
+        "external_accounts": ext,
+        "pending_approvals": pending,
+        "recent_dossiers": doss,
         "portfolio": snap,
         "instruments": inst_count,
         "regime": {"econ": regime.get("econ_regime"),
@@ -99,6 +139,8 @@ async def _det(db: AsyncSession, msg: str) -> str | None:
     question needs a model."""
     m = msg.lower()
     ctx = await _context(db)
+    sym = await _symbol_context(db, msg)
+    ctx["symbol_focus"] = sym
     if any(w in m for w in ("regime", "macro", "market mood",
                             "economy")):
         r = ctx["regime"]
@@ -119,6 +161,48 @@ async def _det(db: AsyncSession, msg: str) -> str | None:
         ds = ", ".join(f"{d['symbol']}={d['verdict']}"
                        for d in ctx["recent_decisions"]) or "none yet"
         return f"Recent decisions: {ds}. Full trail → /journal."
+    if any(w in m for w in ("portfolio", "position", "holding",
+                            "nav", "equity")):
+        pf = ctx.get("portfolio") or {}
+        exts = ctx.get("external_accounts") or []
+        pos = pf.get("positions") or []
+        lines = [f"Internal book: NAV {pf.get('nav')}, cash "
+                 f"{pf.get('cash')}, {len(pos)} position(s)"]
+        for e in exts:
+            lines.append(f"{e['label']}: equity {e['equity']}, "
+                         f"{e['positions']} pos, synced {e['synced']}")
+        if pos:
+            lines.append("Holdings: " + ", ".join(
+                f"{p['symbol']} ×{p['qty']}" for p in pos[:8]))
+        return ". ".join(lines) + "."
+    if sym and any(w in m for w in ("research", "review", "dossier",
+                                    "thesis", "look at", "analyze",
+                                    "report on")):
+        parts = [f"**{sym['symbol']}** ({sym.get('name', '')})"]
+        if sym.get("has_research_dossier"):
+            parts.append(f"dossier generated {sym['dossier_at']} → /research")
+        else:
+            parts.append("no dossier yet — Research Workbench can build one")
+        if sym.get("valuation"):
+            v = sym["valuation"]
+            parts.append(f"valuation v{v['version']} ({v['method']}): "
+                         f"verdict {v['verdict']}, buy-below {v['buy_below']}")
+        if sym.get("screening"):
+            parts.append(f"green-zone screen: {sym['screening']['verdict']} "
+                         f"({sym['screening']['score']} pts)")
+        if sym.get("signal"):
+            s_ = sym["signal"]
+            parts.append(f"technical: MR {s_['mr']}, TF {s_['tf']}, "
+                         f"RSI {s_.get('rsi')}")
+        return ". ".join(parts) + "."
+    if sym and sym.get("valuation") and any(
+            w in m for w in ("valuation", "value", "worth", "fair",
+                             "cheap", "expensive", "mos")):
+        v = sym["valuation"]
+        return (f"{sym['symbol']} latest valuation (v{v['version']}, "
+                f"{v['method']}): verdict **{v['verdict']}**, buy-below "
+                f"**{v['buy_below']}**, run {v['at']}. Full model → "
+                "/valuation.")
     if "where" in m or "how do i" in m or "go to" in m or "find" in m:
         for k, url in NAV.items():
             if k in m:
@@ -136,6 +220,7 @@ async def _llm(db: AsyncSession, msg: str, history: list) -> str | None:
     if cfg is None or not (cfg.api_key or cfg.base_url):
         return None
     ctx = await _context(db)
+    ctx["symbol_focus"] = await _symbol_context(db, msg)
     system = ("You are the VAIIP assistant inside a trading platform. "
               "Answer concisely using this live context; never claim "
               "orders executed that didn't. Context: "
@@ -168,11 +253,16 @@ async def _llm(db: AsyncSession, msg: str, history: list) -> str | None:
             if url is None:
                 return None
             model = cfg.model.split("/", 1)[-1]  # "openai/gpt-5" → "gpt-5"
+            # o-series + gpt-5* reject max_tokens; they want
+            # max_completion_tokens
+            tok_key = ("max_completion_tokens"
+                       if re.match(r"^(o\d|gpt-5)", model)
+                       else "max_tokens")
             r = await c.post(
                 f"{url}/chat/completions",
                 headers=({"Authorization": f"Bearer {cfg.api_key}"}
                          if cfg.api_key else {}),
-                json={"model": model, "max_tokens": 400,
+                json={"model": model, tok_key: 1500,
                       "messages": [{"role": "system",
                                     "content": system}] + messages})
             d = r.json()
@@ -204,3 +294,81 @@ async def chat(body: ChatIn, db: AsyncSession = Depends(get_db)):
         "Settings → AI models for free-form questions."),
         "source": "fallback"}
 
+
+
+_TICKER_RE = re.compile(r"\b([A-Z]{2,6})\b")
+_SKIP_WORDS = {"THE", "AND", "FOR", "YOU", "ARE", "NOT", "CAN", "ALL",
+               "HOW", "WHY", "WHAT", "WHEN", "THIS", "THAT", "YOUR",
+               "WITH", "HAVE", "HAS", "IS", "IT", "DO", "IN", "ON",
+               "AT", "OR", "MY", "ME", "SHOW", "GET", "ABOUT", "USD",
+               "API", "EA", "MT4", "ETF"}
+
+
+async def _symbol_context(db: AsyncSession, msg: str) -> dict | None:
+    """If the question names a ticker in the security master, pull its
+    live snapshot: signal, valuation verdict, dossier presence,
+    screening status."""
+    inst = None
+    for w in _TICKER_RE.findall(msg.upper()):
+        if w in _SKIP_WORDS:
+            continue
+        inst = (await db.execute(
+            select(Instrument).where(Instrument.symbol == w)
+        )).scalar_one_or_none()
+        if inst:
+            break
+    if inst is None:
+        return None
+    out: dict = {"symbol": inst.symbol, "name": inst.name}
+    try:
+        from app.services import technical_engine as te
+        sig = await te.evaluate(db, inst, utcnow())
+        out["signal"] = {
+            "mr": sig["mr"]["decision"], "tf": sig["tf"]["decision"],
+            "last_close": sig.get("last_close"),
+            "rsi": sig["mr"].get("rsi")}
+    except Exception:
+        pass
+    try:
+        from app.models.valuation import ValuationRun
+        v = (await db.execute(
+            select(ValuationRun)
+            .where(ValuationRun.instrument_id == inst.id)
+            .order_by(ValuationRun.created_at.desc())
+            .limit(1))).scalars().first()
+        if v:
+            o = v.outputs or {}
+            out["valuation"] = {
+                "method": v.methodology, "version": v.version,
+                "verdict": o.get("verdict") or o.get("mos", {}).get(
+                    "verdict"),
+                "buy_below": (o.get("buy") or o.get("sticker")),
+                "at": v.created_at.isoformat()[:16]}
+    except Exception:
+        pass
+    try:
+        from app.models.dossier import Dossier
+        d = (await db.execute(
+            select(Dossier).where(Dossier.instrument_id == inst.id)
+            .order_by(Dossier.created_at.desc()).limit(1))
+        ).scalars().first()
+        out["has_research_dossier"] = d is not None
+        if d:
+            out["dossier_at"] = d.created_at.isoformat()[:16]
+    except Exception:
+        pass
+    try:
+        from app.models.screening import ScreeningResult
+        sc = (await db.execute(
+            select(ScreeningResult)
+            .where(ScreeningResult.instrument_id == inst.id)
+            .order_by(ScreeningResult.created_at.desc()).limit(1))
+        ).scalars().first()
+        if sc:
+            out["screening"] = {"verdict": sc.verdict,
+                                "score": float(sc.score),
+                                "qualified": sc.qualified,
+                                "at": sc.created_at.isoformat()[:16]}
+    except Exception:
+        pass
+    return out
