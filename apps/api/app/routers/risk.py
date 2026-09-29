@@ -79,34 +79,64 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
             })
         nav = sum(p["market_value"] for p in positions) or 1
 
-    # ── external accounts are first-class book positions ──
-    # the platform analyzes holdings wherever they live (MT4, Bamboo)
+    # ── external accounts: each MT4/Bamboo position is a real
+    # book position — the platform analyzes holdings wherever they
+    # live, per-name, not as a black-box aggregate ──
     from app.models.portfolio import ExternalAccount
     ext_accounts = (await db.execute(
         select(ExternalAccount).where(ExternalAccount.connected))
     ).scalars().all()
+    if ext_accounts:
+        all_inst = {i.symbol: i for i in (await db.execute(
+            select(Instrument))).scalars().all()}
     for a in ext_accounts:
         eq = float(a.equity or 0)
         if eq <= 0:
             continue
-        positions.append({
-            "symbol": a.label,
-            "sector": f"External ({a.source})",
-            "market_value": eq,
-            "quantity": 1,
-            "avg_cost": float(a.balance or eq),
-            "unrealized": eq - float(a.balance or eq),
-            "daily_pnl": None,
-            "external": True,
-            "source": a.source,
-            "raw_positions": a.positions or [],
-            "beta": 1.0,          # conservative — no invented beta
-            "liquidity_days": 0,
-        })
-        cash += float(a.balance or 0) * 0  # balance ≠ free cash for
-        # margin accounts — equity already reflects it. keep honest.
+        # merge same-symbol rows into one position per account+symbol
+        merged: dict[str, dict] = {}
+        for rp in (a.positions or []):
+            sym = str(rp.get("symbol", "")).upper()
+            base = sym.split(".")[0]           # AMD.OQ → AMD
+            qty = float(rp.get("qty") or 0)
+            px = float(rp.get("price") or 0)
+            if qty <= 0 or px <= 0:
+                continue
+            m = merged.setdefault(sym, {
+                "symbol": base, "display": sym, "qty": 0.0,
+                "cost": 0.0, "profit": 0.0})
+            m["qty"] += qty
+            m["cost"] += qty * px              # VWAP numerator
+            m["profit"] += float(rp.get("profit") or 0)
+        for sym, m in merged.items():
+            mv = m["qty"] * (m["cost"] / m["qty"])
+            inst = all_inst.get(m["symbol"])
+            sec = "?"
+            if inst and inst.sector_id:
+                srow = await db.get(Sector, inst.sector_id)
+                sec = srow.name if srow else "?"
+            positions.append({
+                "symbol": m["symbol"],
+                "display_symbol": m["display"],
+                "sector": sec if inst else f"External ({a.source})",
+                "market_value": mv,
+                "quantity": m["qty"],
+                "avg_cost": m["cost"] / m["qty"],
+                "unrealized": m["profit"],
+                "daily_pnl": None,
+                "external": True,
+                "source": a.source,
+                "beta": 1.0,
+                "liquidity_days": 0,
+                "instrument_matched": inst is not None,
+            })
+        # account equity is capital at risk — nav, not position sum
+        cash += float(a.balance or 0)
+        equity_total = eq  # noqa: F841 — tracked below via ext_nav
 
-    nav = sum(p["market_value"] for p in positions) or 1
+    nav = (sum(p["market_value"] for p in positions
+               if not p.get("external"))
+           + sum(float(a.equity or 0) for a in ext_accounts)) or 1
 
     # latest valuation per held instrument → price vs intrinsic
     try:
@@ -142,7 +172,8 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
     return {
         "nav": nav, "cash": cash, "positions": positions,
         "unrealized_pnl": unrealized, "daily_pnl": daily,
-        "gross": nav / nav if nav else 1,
+        "gross": (sum(p["market_value"] for p in positions) / nav
+                  if nav else 1),
         "margin_used": 0,
         "avg_correlation": None,  # computed in center view
         "max_dd": None,
