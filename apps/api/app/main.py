@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.middleware import AuthGateMiddleware
+
 from app.config import get_settings
 from app.routers import (
     assistant, auth, backtest, command_center, committee, dataops, engines,
@@ -20,6 +22,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AuthGateMiddleware)
 
 app.include_router(health.router, tags=["system"])
 app.include_router(auth.router, prefix="/api/v1")
