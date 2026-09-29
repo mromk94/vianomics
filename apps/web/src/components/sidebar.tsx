@@ -101,7 +101,7 @@ export function Sidebar({
             onClick={async () => {
               try { await apiPost("/api/v1/auth/logout", {}); } catch {}
               setToken(null); setMe(null);
-              window.location.href = "/settings";
+              window.location.href = "/login";
             }}
             className="mb-2 w-full rounded-lg border border-border px-3 py-1.5 text-[11px] text-dim transition hover:border-neg/50 hover:text-neg"
           >
