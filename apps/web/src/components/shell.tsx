@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 
 import { ChatWidget } from "./chat-widget";
 import { CommandPalette } from "./command-palette";
@@ -9,6 +10,9 @@ import { Topbar } from "./topbar";
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const pathname = usePathname();
+  // /chart is a bare full-viewport surface for pop-out monitors
+  if (pathname === "/chart") return <>{children}</>;
   return (
     <div className="flex min-h-screen">
       <a
