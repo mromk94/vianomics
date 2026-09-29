@@ -100,10 +100,11 @@ export function CommandCenter() {
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [source, setSource] = useState("internal");
+  const [source, setSource] = useState<string | null>(null);
   const [extSources, setExtSources] = useState<{ source: string; label: string }[]>([]);
 
   const load = () => {
+    if (source === null) return;
     setLoading(true);
     setError(null);
     apiGet<Data>(`/api/v1/command-center?source=${source}`, 60000)
@@ -111,12 +112,15 @@ export function CommandCenter() {
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   };
+  // resolve which sources exist first — only then choose a default
+  // (connected accounts → "all"), so the portfolio never paints empty
   useEffect(() => {
     apiGet<{ source: string; label: string }[]>("/api/v1/external/sources")
       .then((xs) => {
         setExtSources(xs);
-        if (xs.length && source === "internal") setSource("all");
-      }).catch(() => {});
+        setSource((s) => s ?? (xs.length ? "all" : "internal"));
+      })
+      .catch(() => setSource((s) => s ?? "internal"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -148,7 +152,7 @@ export function CommandCenter() {
         demo={demo.size > 0}
         meta={data ? `Data as of ${fmtTime(data.generated_at)}` : undefined}
         actions={
-          <select value={source} onChange={(e) => setSource(e.target.value)}
+          <select value={source ?? "internal"} onChange={(e) => setSource(e.target.value)}
             className="rounded-lg border border-border bg-surface-solid px-2.5 py-1.5 text-[12px] text-text">
             <option value="internal">Internal portfolio</option>
             {extSources.map((x) => (
