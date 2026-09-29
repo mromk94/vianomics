@@ -36,6 +36,10 @@ export async function apiGet<T>(path: string, timeoutMs = 8000): Promise<T> {
       headers: authHeaders(),
     });
     if (!res.ok) {
+      if (res.status === 401 && path !== "/api/v1/auth/login") {
+        // dead session — drop it so guarded fetches stop 401ing
+        window.localStorage.removeItem("vaiip-token");
+      }
       throw new ApiError(res.status, `API ${res.status} on ${path}`);
     }
     return (await res.json()) as T;
@@ -59,6 +63,9 @@ export async function apiPost<T>(
       body: JSON.stringify(body),
     });
     if (!res.ok) {
+      if (res.status === 401 && path !== "/api/v1/auth/login") {
+        window.localStorage.removeItem("vaiip-token");
+      }
       const detail = await res.json().catch(() => null);
       const msg =
         typeof detail?.detail === "string"

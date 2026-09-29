@@ -157,7 +157,11 @@ export function MandatePage() {
         setMe(await apiGet<Me>("/api/v1/auth/me").catch(() => null));
       }
     } catch (e) {
-      setError((e as Error).message);
+      if (e instanceof ApiError && e.status === 401) {
+        setError(null);           // not an API outage — just signed out
+      } else {
+        setError((e as Error).message);
+      }
     } finally {
       setLoading(false);
     }
