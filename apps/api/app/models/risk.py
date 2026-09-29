@@ -43,3 +43,15 @@ class RiskCheck(Base, IdMixin, TimestampMixin):
     checked_at: Mapped[object] = mapped_column(DateTime(timezone=True),
                                                default=utcnow)
     checked_by: Mapped[str | None]
+
+
+class LimitConfig(Base, IdMixin, TimestampMixin):
+    """Versioned risk-limit config — operator-editable; check_order
+    reads the newest version. Every version immutable (audit)."""
+
+    __tablename__ = "limit_configs"
+
+    version: Mapped[int]
+    payload: Mapped[dict] = mapped_column(JSON)
+    created_by: Mapped[str | None]
+    note: Mapped[str | None]

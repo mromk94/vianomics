@@ -65,7 +65,9 @@ class HttpAdapter:
                 )
             return resp
         except httpx.HTTPError as e:
-            raise ProviderError(f"{self.key}: {e}") from e
+            raise ProviderError(
+                f"{self.key}: {type(e).__name__} {e or ''}".strip()
+            ) from e
         finally:
             if close:
                 await client.aclose()

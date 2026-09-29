@@ -79,6 +79,37 @@ export async function apiPost<T>(
   }
 }
 
+export async function apiPut<T>(
+  path: string,
+  body: unknown,
+  timeoutMs = 8000,
+): Promise<T> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_URL}${path}`, {
+      method: "PUT",
+      signal: ctrl.signal,
+      headers: { "content-type": "application/json", ...authHeaders() },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      if (res.status === 401 && path !== "/api/v1/auth/login") {
+        window.localStorage.removeItem("vaiip-token");
+      }
+      const detail = await res.json().catch(() => null);
+      const msg =
+        typeof detail?.detail === "string"
+          ? detail.detail
+          : `API ${res.status} on ${path}`;
+      throw new ApiError(res.status, msg);
+    }
+    return (await res.json()) as T;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function apiDelete<T>(path: string): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     method: "DELETE", headers: authHeaders(),

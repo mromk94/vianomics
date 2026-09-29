@@ -146,10 +146,12 @@ async def check_order(
         select(Sector).where(Sector.id == inst.sector_id))
     ).scalar_one_or_none() if inst.sector_id else None
     ctx = await _portfolio_ctx(db)
+    limits = await _active_limits(db)
     result = re_.check_order(
         {"symbol": inst.symbol, "side": body.side,
          "sector": sec.name if sec else None, "notional": body.notional},
-        ctx)
+        ctx, limits=limits)
+    result["limits_version"] = limits.version
     # persist audit — every check recorded
     rec = RiskCheck(
         symbol=inst.symbol, side=body.side, notional=body.notional,
@@ -374,3 +376,80 @@ async def checks(limit: int = 50, db: AsyncSession = Depends(get_db)):
          "checked_at": r.checked_at.isoformat() if r.checked_at else None}
         for r in rows
     ]
+
+
+# ── editable limit config (versioned, auditable) ──
+
+async def _active_limits(db: AsyncSession) -> re_.Limits:
+    from app.models.risk import LimitConfig
+    r = (await db.execute(
+        select(LimitConfig).order_by(LimitConfig.version.desc())
+        .limit(1))).scalars().first()
+    lim = re_.Limits(values=r.payload) if r else re_.Limits()
+    lim.version = r.version if r else 0
+    return lim
+
+
+@router.get("/limits")
+async def get_limits(db: AsyncSession = Depends(get_db)) -> dict:
+    from app.models.risk import LimitConfig
+    r = (await db.execute(
+        select(LimitConfig).order_by(LimitConfig.version.desc())
+        .limit(1))).scalars().first()
+    return {
+        "version": r.version if r else 0,
+        "limits": r.payload if r else dict(re_.DEFAULT_LIMITS),
+        "source": "configured" if r else "defaults",
+        "history": [] if r is None else [
+            {"version": x.version, "note": x.note,
+             "at": x.created_at.isoformat()}
+            for x in (await db.execute(
+                select(LimitConfig)
+                .order_by(LimitConfig.version.desc()).limit(10))
+            ).scalars().all()],
+    }
+
+
+class LimitsIn(BaseModel):
+    note: str | None = None
+    max_drawdown_pct: float | None = None
+    max_sector_pct: float | None = None
+    max_single_name_pct: float | None = None
+    min_sectors: int | None = None
+    max_correlation: float | None = None
+    min_cash_pct: float | None = None
+    risk_per_trade_pct: float | None = None
+    max_gross_leverage: float | None = None
+    vix_reduce_above: float | None = None
+    fg_block_new_above: float | None = None
+    vol_reduction_vol: float | None = None
+
+
+@router.put("/limits", status_code=201)
+async def put_limits(
+    body: LimitsIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require("admin:*")),
+) -> dict:
+    """New immutable version — the gate reads the latest always."""
+    from app.models.risk import LimitConfig
+    cur = await _active_limits(db)
+    payload = dict(cur.values)
+    updates = body.model_dump(exclude={"note"}, exclude_none=True)
+    payload.update(updates)
+    # sanity bounds — reject obviously broken configs
+    for k in ("max_drawdown_pct", "max_sector_pct",
+              "max_single_name_pct", "min_cash_pct"):
+        v = payload.get(k)
+        if v is not None and not (0 < float(v) <= 1):
+            raise HTTPException(400, f"{k} must be within (0, 1]")
+    last = (await db.execute(
+        select(func.max(LimitConfig.version)))).scalar() or 0
+    rec = LimitConfig(version=last + 1, payload=payload,
+                      created_by=user.id, note=body.note)
+    db.add(rec)
+    await audit(db, action="risk.limits_update", actor=user,
+                entity_type="limit_config", entity_id=rec.id,
+                detail=updates)
+    await db.commit()
+    return {"version": rec.version, "limits": payload}
