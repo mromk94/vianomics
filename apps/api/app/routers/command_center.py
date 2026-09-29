@@ -165,12 +165,49 @@ async def command_center(
     # portfolio / risk
     pf = await _portfolio_ctx(db)
     dims = re_.risk_dimensions(pf)
+
+    # VaR95 + MDD from real equity history (external accounts carry
+    # rolling snapshots; internal book has no nav history yet)
+    from app.models.portfolio import ExternalAccount
+    ext_accs = (await db.execute(
+        select(ExternalAccount).where(ExternalAccount.connected))
+    ).scalars().all()
+    stats = [re_.equity_stats(a.equity_history or [],
+                              float(a.equity) if a.equity else None)
+             for a in ext_accs]
+    if stats:
+        pf["max_dd"] = pf.get("max_dd") or min(
+            (x["mdd_pct"] for x in stats
+             if x["mdd_pct"] is not None), default=None)
+        pf["_var95"] = sum(x["var_95"] or 0 for x in stats) or None
+
+    # avg pairwise correlation across held symbols with bars
+    held = [p["symbol"] for p in pf["positions"] if not p.get("external")
+            or p.get("instrument_matched")]
+    held = [s_ for s_ in held if not s_.startswith("MT4 #")]
+    if len(held) >= 2:
+        try:
+            from app.services.quant_service import correlation_matrix
+            cm = await correlation_matrix(db, held)
+            vals = [v for i, row in enumerate(cm["matrix"])
+                    for j, v in enumerate(row)
+                    if i != j and v is not None]
+            pf["avg_correlation"] = (sum(vals) / len(vals)
+                                     if vals else None)
+        except Exception:
+            pass
     conc = dims.get("concentration", {})
     risk = RiskUtilization(
-        drawdown_pct=pf.get("max_dd"),
-        max_sector_pct=conc.get("max_sector_pct"),
-        max_position_pct=conc.get("max_single_name_pct"),
+        drawdown_pct=(pf.get("max_dd") * 100
+                      if pf.get("max_dd") is not None else None),
+        max_sector_pct=(conc.get("max_sector_pct") * 100
+                        if conc.get("max_sector_pct") is not None
+                        else None),
+        max_position_pct=(conc.get("max_single_name_pct") * 100
+                          if conc.get("max_single_name_pct") is not None
+                          else None),
         avg_correlation=pf.get("avg_correlation"),
+        var_95=pf.get("_var95"),
         stress_10pct=(dims.get("stress_tests", {})
                       .get(-0.1, {}).get("pnl")),
         warnings=[b["rule"] for b in
@@ -341,6 +378,62 @@ async def command_center(
         except Exception as e:
             import logging
             logging.warning("CC technical signals failed: %s", e)
+            await db.rollback()
+
+        # held-position exit checks — the book you actually own
+        try:
+            scan_map = {}
+            try:
+                from app.models.market import TechnicalScanResult
+                from app.models.instruments import Instrument as _Inst
+                for r, sym_ in (await db.execute(
+                        select(TechnicalScanResult, _Inst.symbol)
+                        .join(_Inst,
+                              TechnicalScanResult.instrument_id
+                              == _Inst.id))).all():
+                    scan_map.setdefault(sym_, r)
+            except Exception:
+                await db.rollback()
+            for hp in pf["positions"]:
+                sym_ = hp["symbol"]
+                mv = hp.get("market_value") or 0
+                nav_ = pf["nav"] or 1
+                # weight breach — every real holding, internal or ext
+                if mv / nav_ > 0.10:
+                    signals.append(TradeSignal(
+                        kind="risk",
+                        message=f"{sym_}: {mv/nav_*100:.0f}% of book"
+                                f" — above 10% name limit",
+                        danger=True))
+                # deep drawdown on position
+                unr = hp.get("unrealized")
+                if unr is not None and mv:
+                    if unr / mv < -0.08:
+                        signals.append(TradeSignal(
+                            kind="exit",
+                            message=f"{sym_}: unrealized "
+                                    f"{unr/mv*100:.0f}% — review "
+                                    f"thesis / stop discipline",
+                            danger=True))
+                # above intrinsic value → trim candidate
+                piv = hp.get("price_vs_iv")
+                if piv is not None and piv > 0:
+                    signals.append(TradeSignal(
+                        kind="exit",
+                        message=f"{sym_}: trading {piv*100:.0f}% above"
+                                f" IV — trim candidate",
+                        danger=False))
+                # stale technical decision for held name
+                sr = scan_map.get(sym_)
+                if sr and sr.decision in ("wait",):
+                    signals.append(TradeSignal(
+                        kind="technical",
+                        message=f"{sym_}: technical {sr.decision} "
+                                f"(holding, no add signal)",
+                        danger=False))
+        except Exception as e:
+            import logging
+            logging.warning("CC position signals failed: %s", e)
             await db.rollback()
 
     # watchlist: top Green Zone scores from latest screening run

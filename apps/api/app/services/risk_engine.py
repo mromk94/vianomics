@@ -12,6 +12,8 @@ SOW pyramid method (5 stages, long):
 """
 
 from dataclasses import dataclass, field
+
+from app.db.base import utcnow
 from decimal import Decimal
 from enum import Enum
 
@@ -427,3 +429,33 @@ def check_order(
         "engine": ENGINE_VERSION,
         "as_of": pf.get("as_of"),
     }
+
+
+def equity_stats(equity_history: list[dict],
+                 current_equity: float | None) -> dict:
+    """MDD + daily VaR95 + today's Δ from an equity history series —
+    real numbers from the account, not parametric guesses."""
+    eqs = [float(h["equity"]) for h in (equity_history or [])
+           if h.get("equity") is not None]
+    if current_equity:
+        eqs = eqs + [float(current_equity)]
+    out = {"mdd_pct": None, "var_95": None, "daily_pnl": None,
+           "n_points": len(eqs)}
+    if len(eqs) >= 2:
+        peak, mdd = eqs[0], 0.0
+        for e in eqs:
+            peak = max(peak, e)
+            mdd = min(mdd, e / peak - 1)
+        out["mdd_pct"] = round(mdd, 4)
+        rets = sorted(eqs[i] / eqs[i - 1] - 1
+                      for i in range(1, len(eqs)) if eqs[i - 1])
+        if rets:
+            out["var_95"] = round(rets[max(0, int(len(rets) * 0.05))]
+                                  * eqs[-1], 2)
+        today = utcnow().date().isoformat()
+        past = [h["equity"] for h in equity_history
+                if h.get("t", "")[:10] < today]
+        if past and current_equity is not None:
+            out["daily_pnl"] = round(
+                float(current_equity) - float(past[-1]), 2)
+    return out
