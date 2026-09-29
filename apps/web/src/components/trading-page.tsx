@@ -82,6 +82,27 @@ export function TradingPage() {
   const [orders, setOrders] = useState<ExecOrder[]>([]);
   const [exec, setExec] = useState<ExecStatus | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
+  const chartWrapRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  // ESC exits expanded chart view
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) =>
+      e.key === "Escape" && setExpanded(false);
+    document.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [expanded]);
+
+  const popOut = () =>
+    window.open(
+      `/chart?symbol=${encodeURIComponent(symbol)}`,
+      "vaiip-chart",
+      "width=1600,height=1000,menubar=no,toolbar=no,location=no,status=no");
 
   useEffect(() => {
     apiGet<ScanRow[]>("/api/v1/technical/scan").then(setScan).catch(() => {});
@@ -118,7 +139,7 @@ export function TradingPage() {
   useEffect(() => {
     if (!chartRef.current || bars.length === 0) return;
     const chart = createChart(chartRef.current, {
-      height: 420,
+      autoSize: true,
       layout: { background: { color: "transparent" }, textColor: "#64748b", fontSize: 11 },
       grid: { vertLines: { color: "#1e293b33" }, horzLines: { color: "#1e293b33" } },
       rightPriceScale: { borderColor: "#1e293b" },
@@ -195,8 +216,13 @@ export function TradingPage() {
         </div>
       )}
 
-      {/* chart */}
-      <SectionCard title={symbol} className="rise"
+      {/* chart — expands to overlay; wrap keeps iframe mounted so
+          expanded/fullscreen don't reload the widget */}
+      <div ref={chartWrapRef}
+        className={expanded
+          ? "fixed inset-0 z-[80] bg-[#0b0f1a]/98 p-4 md:p-6 flex flex-col"
+          : ""}>
+      <SectionCard title={symbol} className={`rise ${expanded ? "flex min-h-0 flex-1 flex-col" : ""}`}
         action={
           <div className="flex items-center gap-1">
             <button onClick={() => setTvMode((x) => !x)}
@@ -206,22 +232,42 @@ export function TradingPage() {
               <button key={t} onClick={() => setTf(t)}
                 className={`rounded-full px-2.5 py-1 text-[11px] transition ${tf === t ? "bg-accent text-[#0b0f1a] font-semibold" : "border border-border text-dim hover:text-text"}`}>{t}</button>
             ))}
+            <span className="mx-1 h-3 w-px bg-border" />
+            <button onClick={() => setExpanded((x) => !x)} title="Expand chart (Esc to close)"
+              className="rounded-full border border-border px-2.5 py-1 text-[11px] text-dim hover:text-text">
+              {expanded ? "↙ Min" : "⛶ Expand"}</button>
+            <button
+              onClick={() => {
+                const el = chartWrapRef.current;
+                if (!el) return;
+                if (document.fullscreenElement) document.exitFullscreen();
+                else el.requestFullscreen?.();
+              }}
+              title="Native fullscreen — good for screen share / multi-display"
+              className="rounded-full border border-border px-2.5 py-1 text-[11px] text-dim hover:text-text">
+              ▣ Fullscreen</button>
+            <button onClick={popOut} title="Open chart in its own window — drag to another display"
+              className="rounded-full border border-border px-2.5 py-1 text-[11px] text-dim hover:text-text">
+              ⧉ Pop out</button>
           </div>
         }>
         {tvMode ? (
           <iframe
             key={symbol}
             title={`TradingView ${symbol}`}
-            src={`https://www.tradingview.com/widgetembed/?symbol=${symbol}&interval=D&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1&hide_side_toolbar=0&allow_symbol_change=1&studies=%5B%22RSI%40tv-basicstudies%22%5D`}
-            className="h-[420px] w-full rounded-lg border-0"
+            src={`https://www.tradingview.com/widgetembed/?symbol=${symbol}&interval=D&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1&hide_side_toolbar=0&allow_symbol_change=1&studies=%5B%22RSI%40tv-basicstudies%22,%22MACD%40tv-basicstudies%22%5D&withindicators_access=1&withdetails=1`}
+            className={`w-full rounded-lg border-0 ${expanded ? "min-h-0 flex-1" : "h-[480px]"}`}
+            allow="fullscreen"
           />
         ) : (
-          <div ref={chartRef} className="w-full" />
+          <div ref={chartRef}
+            className={`w-full ${expanded ? "min-h-0 flex-1" : "h-[480px]"}`} />
         )}
         {bars.some((x) => x.provisional) && (
           <div className="mt-1 text-[10px] text-faint">last aggregated bar provisional (incomplete period) — excluded from signal math</div>
         )}
       </SectionCard>
+      </div>
 
       {/* branch panels */}
       <div className="rise rise-1 grid gap-3 lg:grid-cols-2">
