@@ -337,7 +337,8 @@ def check_order(
         notional = order["notional"]
         # single-name
         cur = sum(p["market_value"] for p in pf["positions"]
-                  if p["symbol"] == order["symbol"]) / nav
+                  if p["symbol"] == order["symbol"]
+                  and not p.get("external")) / nav
         new_w = (cur * nav + notional) / nav
         lim = L.get("max_single_name_pct")
         if new_w > lim:
@@ -346,7 +347,8 @@ def check_order(
                 remediation=f"reduce order ≤ {(lim - cur) * nav:,.0f} notional"))
         # sector
         sec_w = (sum(p["market_value"] for p in pf["positions"]
-                     if p.get("sector") == order.get("sector")) + notional) / nav
+                     if p.get("sector") == order.get("sector")
+                     and not p.get("external")) + notional) / nav
         lim = L.get("max_sector_pct")
         if sec_w > lim:
             breaches.append(Breach(
@@ -360,7 +362,8 @@ def check_order(
                 "min_cash", round(cash_after, 4), f">= {lim}",
                 remediation="reduce size or raise cash"))
         # sector count
-        secs = {p.get("sector") for p in pf["positions"]}
+        secs = {p.get("sector") for p in pf["positions"]
+                if not p.get("external")}
         secs.add(order.get("sector"))
         if len(secs) < L.get("min_sectors"):
             breaches.append(Breach(

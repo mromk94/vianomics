@@ -74,9 +74,39 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
                               * (px - float(pos.avg_cost or 0)),
                 "daily_pnl": (float(pos.quantity) * (px - float(prev))
                               if prev else None),
+                "source": "ledger",
                 "beta": None, "liquidity_days": None,
             })
         nav = sum(p["market_value"] for p in positions) or 1
+
+    # ── external accounts are first-class book positions ──
+    # the platform analyzes holdings wherever they live (MT4, Bamboo)
+    from app.models.portfolio import ExternalAccount
+    ext_accounts = (await db.execute(
+        select(ExternalAccount).where(ExternalAccount.connected))
+    ).scalars().all()
+    for a in ext_accounts:
+        eq = float(a.equity or 0)
+        if eq <= 0:
+            continue
+        positions.append({
+            "symbol": a.label,
+            "sector": f"External ({a.source})",
+            "market_value": eq,
+            "quantity": 1,
+            "avg_cost": float(a.balance or eq),
+            "unrealized": eq - float(a.balance or eq),
+            "daily_pnl": None,
+            "external": True,
+            "source": a.source,
+            "raw_positions": a.positions or [],
+            "beta": 1.0,          # conservative — no invented beta
+            "liquidity_days": 0,
+        })
+        cash += float(a.balance or 0) * 0  # balance ≠ free cash for
+        # margin accounts — equity already reflects it. keep honest.
+
+    nav = sum(p["market_value"] for p in positions) or 1
 
     # latest valuation per held instrument → price vs intrinsic
     try:
