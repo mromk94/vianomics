@@ -133,7 +133,7 @@ async def command_center(
         # no persisted run — compute live (same as /macro/current)
         try:
             from app.services import macro_regime as mr
-            c = await mr.classify(db, utcnow())
+            c = await mr.classify(db, datetime.now(UTC))
             rg_live = c
             regime = RegimeSnapshot(
                 economic_regime=c["econ_regime"],
@@ -295,7 +295,7 @@ async def command_center(
             cands = []
             for i_ in scan_insts:
                 try:
-                    sig = await te.evaluate(db, i_, utcnow())
+                    sig = await te.evaluate(db, i_, datetime.now(UTC))
                     mr_d = sig.get("mean_reversion", {})
                     tf_d = sig.get("trend_following", {})
                     best = max(
