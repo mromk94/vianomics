@@ -37,8 +37,9 @@ export async function apiGet<T>(path: string, timeoutMs = 8000): Promise<T> {
     });
     if (!res.ok) {
       if (res.status === 401 && path !== "/api/v1/auth/login") {
-        // dead session — drop it so guarded fetches stop 401ing
+        // dead session — drop it and bounce to /login
         window.localStorage.removeItem("vaiip-token");
+        window.dispatchEvent(new Event("vaiip:unauth"));
       }
       throw new ApiError(res.status, `API ${res.status} on ${path}`);
     }
@@ -65,6 +66,7 @@ export async function apiPost<T>(
     if (!res.ok) {
       if (res.status === 401 && path !== "/api/v1/auth/login") {
         window.localStorage.removeItem("vaiip-token");
+        window.dispatchEvent(new Event("vaiip:unauth"));
       }
       const detail = await res.json().catch(() => null);
       const msg =
@@ -96,6 +98,7 @@ export async function apiPut<T>(
     if (!res.ok) {
       if (res.status === 401 && path !== "/api/v1/auth/login") {
         window.localStorage.removeItem("vaiip-token");
+        window.dispatchEvent(new Event("vaiip:unauth"));
       }
       const detail = await res.json().catch(() => null);
       const msg =

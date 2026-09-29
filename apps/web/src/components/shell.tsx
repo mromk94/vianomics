@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 
 import { ChatWidget } from "./chat-widget";
 import { CommandPalette } from "./command-palette";
@@ -9,11 +9,38 @@ import { SymbolDrawer } from "./symbol-drawer";
 import { Sidebar } from "./sidebar";
 import { Topbar } from "./topbar";
 
+const PUBLIC_PATHS = new Set(["/login", "/chart"]);
+
 export function Shell({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
-  // /chart is a bare full-viewport surface for pop-out monitors
-  if (pathname === "/chart") return <>{children}</>;
+  const router = useRouter();
+  const isPublic = PUBLIC_PATHS.has(pathname);
+  const [authed, setAuthed] = useState<boolean | null>(null);
+
+  // auth gate — every module requires a session token
+  useEffect(() => {
+    if (isPublic) return;
+    const check = () => {
+      const t = window.localStorage.getItem("vaiip-token");
+      if (!t) router.replace("/login");
+      else setAuthed(true);
+    };
+    check();
+    window.addEventListener("vaiip:unauth", check);
+    return () => window.removeEventListener("vaiip:unauth", check);
+  }, [isPublic, router]);
+
+  // bare surfaces — no chrome, no gate
+  if (isPublic) return <>{children}</>;
+  // gate: render nothing while checking / redirecting
+  if (!authed) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#0b0f1a]">
+        <div className="size-6 animate-spin rounded-full border-2 border-border border-t-accent" />
+      </div>
+    );
+  }
   return (
     <div className="flex min-h-screen">
       <a

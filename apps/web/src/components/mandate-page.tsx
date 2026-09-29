@@ -262,7 +262,7 @@ export function MandatePage() {
           {me.permissions.join(", ")}{" "}
           <button
             className="text-accent hover:underline"
-            onClick={() => { setToken(null); setMe(null); setVersions([]); }}
+            onClick={() => { setToken(null); setMe(null); setVersions([]); window.location.href = "/login"; }}
           >
             sign out
           </button>
