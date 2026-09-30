@@ -1,4 +1,16 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// API base resolution: env var wins; on a deployed host without it we
+// fall back to the production API rather than localhost (prevents
+// "Cannot reach API" when a domain alias lacks the env var).
+function resolveApiUrl(): string {
+  const env = process.env.NEXT_PUBLIC_API_URL;
+  if (env) return env;
+  if (typeof window !== "undefined" &&
+      !["localhost", "127.0.0.1"].includes(window.location.hostname)) {
+    return "https://vianomics.onrender.com";
+  }
+  return "http://localhost:8000";
+}
+const API_URL = resolveApiUrl();
 
 export class ApiError extends Error {
   constructor(
