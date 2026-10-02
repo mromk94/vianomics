@@ -15,6 +15,11 @@ settings = get_settings()
 
 app = FastAPI(title=settings.app_name, version=settings.version)
 
+# Order matters: the LAST add_middleware runs outermost. AuthGate must sit
+# INSIDE CORS so its 401/503 rejections still carry CORS headers — otherwise
+# browsers report them as "Failed to fetch" (network error) instead of a
+# readable 401, breaking login/session-expiry handling cross-origin.
+app.add_middleware(AuthGateMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -22,7 +27,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(AuthGateMiddleware)
 
 app.include_router(health.router, tags=["system"])
 app.include_router(auth.router, prefix="/api/v1")
