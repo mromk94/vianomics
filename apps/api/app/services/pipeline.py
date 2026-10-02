@@ -80,6 +80,13 @@ async def run_pipeline(db: AsyncSession,
             log.warning("pipeline %s failed: %s", inst.symbol, e)
             results.append({"symbol": inst.symbol, "verdict": "error",
                             "error": str(e)[:200]})
+    # monitoring sweep rides along — stale external feeds, failed
+    # jobs, and risk denials alert from the same pass
+    try:
+        from app.services import monitoring as mon
+        await mon.run_checks(db)
+    except Exception:
+        log.warning("monitor sweep failed", exc_info=True)
     return {
         "as_of": utcnow().isoformat(),
         "universe_size": len(insts),
