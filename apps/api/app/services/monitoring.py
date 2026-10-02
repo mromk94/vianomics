@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.macro import RegimeRun
 from app.models.market import OhlcvBar
 from app.models.ops import Alert, Job, JobRun
-from app.models.portfolio import Position
+from app.models.portfolio import ExternalAccount, Position
 from app.models.execution import BrokerOrderRec
 from app.models.risk import PyramidTradeRec, RiskCheck
 from app.models.screening import ScreeningResult
@@ -168,6 +168,36 @@ async def run_checks(db: AsyncSession) -> dict:
                 observed=denied, required="<5",
                 action="review exposure"): n["portfolio"] += 1
 
+    # ── external feeds: a connected source that stopped pushing is a
+    # critical condition — every downstream number is a stale snapshot
+    # presented as live. MT4 pushes every ~60s, so >2h silent means
+    # the terminal/bridge is dead. ──
+    ext_accounts = (await db.execute(
+        select(ExternalAccount).where(ExternalAccount.connected))
+    ).scalars().all()
+    for a in ext_accounts:
+        s = a.synced_at
+        if s is not None and s.tzinfo is None:
+            s = s.replace(tzinfo=timezone.utc)
+        age_h = ((now - s).total_seconds() / 3600) if s else None
+        if age_h is None or age_h > 2:
+            if await emit_alert(
+                    db, severity="critical", source="monitor:external",
+                    message=(
+                        f"{a.label or a.source}: feed silent — last "
+                        f"sync " +
+                        (f"{age_h:.0f}h ago" if age_h is not None
+                         else "never") +
+                        " — portfolio shows last snapshot, not live "
+                        "state"),
+                    dedup_key=f"feed_stale:{a.source}",
+                    observed=(f"{age_h:.1f}h" if age_h is not None
+                              else "never"),
+                    required="<2h",
+                    action="check MT4 EA / bridge — terminal closed "
+                           "or push failing",
+                    fresh=False): n["data_quality"] += 1
+
     # ── auto-resolve: clear stale job_fail + regime_missing alerts ──
     latest_status = dict((await db.execute(
         select(Job.id, JobRun.status)
@@ -184,9 +214,22 @@ async def run_checks(db: AsyncSession) -> dict:
                                                 "acknowledged"]),
                                 Alert.source.in_(
                                     ["monitor:data",
-                                     "monitor:regime"])))).scalars():
+                                     "monitor:regime",
+                                     "monitor:external"])))).scalars():
         dk = (a.context or {}).get("dedup_key", "")
-        if dk.startswith("job_fail:"):
+        if dk.startswith("feed_stale:"):
+            src = dk.split(":", 1)[1]
+            acc = next(
+                (x for x in ext_accounts if x.source == src), None)
+            s = acc.synced_at if acc else None
+            if s is not None and s.tzinfo is None:
+                s = s.replace(tzinfo=timezone.utc)
+            if s and (now - s).total_seconds() <= 2 * 3600:
+                a.status = "resolved"
+                a.resolved_at = now
+                a.context = {**(a.context or {}),
+                             "resolution": "auto: feed resumed"}
+        elif dk.startswith("job_fail:"):
             job_key = dk.split(":", 1)[1]
             job = (await db.execute(
                 select(Job).where(Job.key == job_key))

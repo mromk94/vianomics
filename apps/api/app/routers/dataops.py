@@ -106,19 +106,24 @@ async def run_job_now(job_key: str,
                 "yahoo": YahooAdapter}
     parts = job_key.split(":")
     try:
-        if job_key == "technical:scan":
-            from app.services import technical_engine as te
+        if job_key in ("technical:scan", "monitor:scan"):
             from app.ingestion.upsert import get_or_create
             from app.models.ops import Job, JobRun
             from app.db.base import utcnow
             job, _ = await get_or_create(
-                db, Job, {"key": "technical:scan"},
+                db, Job, {"key": job_key},
                 {"kind": "analysis"})
             run = JobRun(job_id=job.id)
             db.add(run)
             await db.flush()
             try:
-                n = await te.run_scan(db)
+                if job_key == "technical:scan":
+                    from app.services import technical_engine as te
+                    n = await te.run_scan(db)
+                else:
+                    from app.services import monitoring as mon
+                    res = await mon.run_checks(db)
+                    n = sum(res.get("emitted", {}).values())
                 run.status, run.records_ok, run.finished_at = (
                     "success", n, utcnow())
             except Exception as e:
@@ -126,6 +131,23 @@ async def run_job_now(job_key: str,
                     "failed", str(e)[:200], utcnow())
             db.add(run)
             await db.commit()
+        elif job_key == "pipeline:universe":
+            # long-running (universe × ~35s) — fire-and-forget like
+            # backfill; progress visible via decision records
+            import asyncio
+            from app.db.session import SessionFactory
+            from app.services import pipeline as pl
+
+            async def _bg():
+                async with SessionFactory() as s:
+                    try:
+                        await pl.run_pipeline(s)
+                        await s.commit()
+                    except Exception:
+                        await s.rollback()
+            asyncio.create_task(_bg())
+            return {"status": "started",
+                    "note": "universe pipeline running in background"}
         elif job_key.startswith("ingest:edgar:facts:"):
             sym = parts[-1]
             if await _instr(db, sym) is None:
@@ -215,3 +237,10 @@ async def _backfill_all():
         except Exception:
             await db.rollback()
         cache.invalidate()
+        # monitoring sweep rides on every backfill — flags dead feeds
+        try:
+            from app.services import monitoring as mon
+            await mon.run_checks(db)
+            await db.commit()
+        except Exception:
+            await db.rollback()

@@ -106,12 +106,21 @@ export function CommandCenter() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [source, setSource] = useState<string | null>(null);
-  const [extSources, setExtSources] = useState<{ source: string; label: string }[]>([]);
+  const [extSources, setExtSources] = useState<
+    { source: string; label: string; stale: boolean;
+      synced_at: string | null }[]>([]);
+
+  const fetchSources = () =>
+    apiGet<{ source: string; label: string; stale: boolean;
+             synced_at: string | null }[]>("/api/v1/external/sources")
+      .then(setExtSources)
+      .catch(() => {});
 
   const load = () => {
     if (source === null) return;
     setLoading(true);
     setError(null);
+    fetchSources();   // refresh staleness alongside the snapshot
     apiGet<Data>(`/api/v1/command-center?source=${source}`, 60000)
       .then(setData)
       .catch((e) => setError(e.message))
@@ -120,7 +129,8 @@ export function CommandCenter() {
   // resolve which sources exist first — only then choose a default
   // (connected accounts → "all"), so the portfolio never paints empty
   useEffect(() => {
-    apiGet<{ source: string; label: string }[]>("/api/v1/external/sources")
+    apiGet<{ source: string; label: string; stale: boolean;
+             synced_at: string | null }[]>("/api/v1/external/sources")
       .then((xs) => {
         setExtSources(xs);
         setSource((s) => s ?? (xs.length ? "all" : "internal"));
@@ -130,6 +140,9 @@ export function CommandCenter() {
   }, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(load, [source]);
+
+  const staleFeeds = extSources.filter(
+    (x) => x.stale && (source === "all" || source === x.source));
 
   if (error) {
     return (
@@ -167,6 +180,22 @@ export function CommandCenter() {
         }
       />
       {loading && <SkeletonRows />}
+
+      {staleFeeds.length > 0 && (
+        <div className="rise glass border border-neg/50 bg-neg/10 px-4 py-2.5 text-[12px] flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="font-semibold text-neg">Stale feed</span>
+          {staleFeeds.map((x) => (
+            <span key={x.source} className="text-dim">
+              {x.label} — last synced{" "}
+              {x.synced_at ? fmtTime(x.synced_at) : "never"}
+            </span>
+          ))}
+          <span className="text-faint">
+            — figures below are the last known snapshot, not live. Check
+            the MT4 EA / bridge.
+          </span>
+        </div>
+      )}
 
       {data && (
         <>

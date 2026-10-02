@@ -78,3 +78,36 @@ async def test_missing_regime_is_alert_not_silence(db):
     ).scalar_one_or_none()
     assert row is not None
     assert "unknown" in row.message
+
+
+@pytest.mark.asyncio
+async def test_external_feed_silent_fires_critical(db):
+    from app.models.portfolio import ExternalAccount
+    db.add(ExternalAccount(
+        source="mt4", label="MT4 #1", connected=True,
+        synced_at=datetime.now(timezone.utc) - timedelta(hours=5)))
+    res = await mon.run_checks(db)
+    row = (await db.execute(select(Alert).where(
+        Alert.context.op("->>")("dedup_key") == "feed_stale:mt4"))
+    ).scalar_one()
+    assert row.severity == "critical"
+    assert "5h ago" in row.message
+
+
+@pytest.mark.asyncio
+async def test_external_feed_fresh_suppresses_and_resolves(db):
+    from app.models.portfolio import ExternalAccount
+    acc = ExternalAccount(
+        source="mt4", label="MT4 #1", connected=True,
+        synced_at=datetime.now(timezone.utc) - timedelta(hours=5))
+    db.add(acc)
+    await db.flush()
+    await mon.run_checks(db)
+    # feed resumes → existing alert auto-resolves, no new one
+    acc.synced_at = datetime.now(timezone.utc)
+    res = await mon.run_checks(db)
+    assert res["emitted"]["data_quality"] == 0
+    row = (await db.execute(select(Alert).where(
+        Alert.context.op("->>")("dedup_key") == "feed_stale:mt4"))
+    ).scalar_one()
+    assert row.status == "resolved"
