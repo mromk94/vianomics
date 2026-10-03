@@ -115,7 +115,8 @@ async def run_checks(db: AsyncSession) -> dict:
     if reg_at is None or (now - reg_at).total_seconds() > 20 * 3600:
         try:
             from app.services import macro_regime as mr
-            await mr.run_and_persist(db, now)
+            from app.providers.market import fetch_fear_greed
+            await mr.run_and_persist(db, now, fetch_fg=fetch_fear_greed)
         except Exception:
             pass
 

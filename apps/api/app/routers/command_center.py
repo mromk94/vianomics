@@ -137,7 +137,9 @@ async def command_center(
         # no persisted run — compute live (same as /macro/current)
         try:
             from app.services import macro_regime as mr
-            c = await mr.classify(db, datetime.now(UTC))
+            from app.providers.market import fetch_fear_greed
+            c = await mr.classify(db, datetime.now(UTC),
+                                  fetch_fg=fetch_fear_greed)
             rg_live = c
             f = c.get("features", {})
             def _fv(key: str) -> str:

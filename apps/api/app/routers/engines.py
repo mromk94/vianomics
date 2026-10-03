@@ -48,7 +48,8 @@ async def macro_run(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require("research:run")),
 ):
-    r = await mr.run_and_persist(db, utcnow())
+    from app.providers.market import fetch_fear_greed
+    r = await mr.run_and_persist(db, utcnow(), fetch_fg=fetch_fear_greed)
     await audit(db, action="macro.regime_run", actor=user,
                 entity_type="regime_run", entity_id=r.id)
     await db.commit()
@@ -64,7 +65,8 @@ async def macro_current(db: AsyncSession = Depends(get_db)):
     ).scalars().first()
     if r is None:
         # compute live, don't persist unauthenticated reads
-        c = await mr.classify(db, utcnow())
+        from app.providers.market import fetch_fear_greed
+        c = await mr.classify(db, utcnow(), fetch_fg=fetch_fear_greed)
         c["persisted"] = False
         return c
     # persisted run exists → serve it directly (one query). The old

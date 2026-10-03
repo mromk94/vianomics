@@ -245,7 +245,8 @@ def fear_greed_overlay(score: float | None) -> str | None:
     return "aggressive_risk_reduction"
 
 
-async def classify(db: AsyncSession, as_of: datetime) -> dict:
+async def classify(db: AsyncSession, as_of: datetime,
+                   fetch_fg=None) -> dict:
     """Full regime classification — feature set + rule hits recorded."""
     feats: dict[str, Any] = {}
     stale: list[str] = []
@@ -386,8 +387,10 @@ async def classify(db: AsyncSession, as_of: datetime) -> dict:
     else:
         hits.append("neutral:mixed signals")
 
-    # ── fear & greed proxy composite (documented) ──
-    # components (each 0-100): vix_inverse, spy_trend, breadth, hy_inverse
+    # ── fear & greed ──
+    # primary: CNN Fear & Greed Index (real API — the index itself).
+    # fallback: transparent proxy composite (vix_inverse, spy_trend,
+    # breadth, hy_inverse) — recorded so the source is never ambiguous.
     comps = {}
     if vix is not None:
         comps["vix_inverse"] = max(0.0, min(100.0, (40 - vix) / 40 * 100))
@@ -400,6 +403,21 @@ async def classify(db: AsyncSession, as_of: datetime) -> dict:
     if hy is not None:
         comps["hy_inverse"] = max(0.0, min(100.0, (10 - hy) / 10 * 100))
     fg = round(sum(comps.values()) / len(comps)) if comps else None
+    fg_source, fg_rating = "proxy", None
+
+    if fetch_fg is not None:
+        try:
+            real = await fetch_fg()
+        except Exception:
+            real = None
+        if real and real.get("score") is not None:
+            fg, fg_rating = round(real["score"]), real.get("rating")
+            comps = dict(real.get("components") or comps)
+            fg_source = "cnn"
+
+    feats["fear_greed"] = {
+        "value": fg, "source": fg_source, "rating": fg_rating,
+        "components": comps}
 
     return {
         "as_of": as_of.isoformat(),
@@ -408,6 +426,8 @@ async def classify(db: AsyncSession, as_of: datetime) -> dict:
         "market_regime": market,
         "fear_greed": fg,
         "fg_components": comps,
+        "fg_source": fg_source,
+        "fg_rating": fg_rating,
         "overlay": fear_greed_overlay(fg),
         "vix": vix,
         "vix_band": vix_band(vix),
@@ -421,7 +441,9 @@ async def classify(db: AsyncSession, as_of: datetime) -> dict:
         "notes": [
             "fredgraph values are latest-vintage; no ALFRED vintages without API key",
             "regime classification is an input to portfolio analysis, not a forecast",
-            "F&G is a transparent proxy composite (vix/spy/breadth/hy), not CNN index",
+            ("F&G = CNN Fear & Greed Index (dataviz.cnn.io)"
+             if fg_source == "cnn" else
+             "F&G = transparent proxy composite (vix/spy/breadth/hy) — CNN endpoint unreachable"),
         ],
     }
 
@@ -433,19 +455,27 @@ def run_to_dict(r: RegimeRun) -> dict:
     recomputed from the stored feature block (same formulas, pure
     Python, no extra queries)."""
     feats = r.features or {}
-    comps: dict[str, float] = {}
-    if r.vix is not None:
-        comps["vix_inverse"] = max(0.0, min(100.0, (40 - r.vix) / 40 * 100))
-    spy = feats.get("SPY_trend") or {}
-    if spy.get("above") is not None and spy.get("sma200"):
-        comps["spy_vs_sma200"] = max(0.0, min(
-            100.0, 50 + (spy["value"] / spy["sma200"] - 1) * 500))
-    b = (feats.get("breadth_50") or {}).get("value")
-    if b is not None:
-        comps["breadth"] = b * 100
-    hy = (feats.get("BAMLH0A0HYM2") or {}).get("value")
-    if hy is not None:
-        comps["hy_inverse"] = max(0.0, min(100.0, (10 - hy) / 10 * 100))
+    # prefer the components/source recorded at run time; reconstruct
+    # the proxy set only for runs persisted before this field existed
+    fg_feat = feats.get("fear_greed") or {}
+    comps = dict(fg_feat.get("components") or {})
+    fg_source = fg_feat.get("source")
+    if not comps:
+        fg_source = fg_source or "proxy"
+        if r.vix is not None:
+            comps["vix_inverse"] = max(
+                0.0, min(100.0, (40 - r.vix) / 40 * 100))
+        spy = feats.get("SPY_trend") or {}
+        if spy.get("above") is not None and spy.get("sma200"):
+            comps["spy_vs_sma200"] = max(0.0, min(
+                100.0, 50 + (spy["value"] / spy["sma200"] - 1) * 500))
+        b = (feats.get("breadth_50") or {}).get("value")
+        if b is not None:
+            comps["breadth"] = b * 100
+        hy = (feats.get("BAMLH0A0HYM2") or {}).get("value")
+        if hy is not None:
+            comps["hy_inverse"] = max(
+                0.0, min(100.0, (10 - hy) / 10 * 100))
     return {
         "as_of": r.as_of.isoformat() if r.as_of else None,
         "rules_version": r.rules_version,
@@ -453,6 +483,7 @@ def run_to_dict(r: RegimeRun) -> dict:
         "market_regime": r.market_regime,
         "fear_greed": r.fear_greed,
         "fg_components": comps,
+        "fg_source": fg_source,
         "overlay": r.overlay,
         "vix": r.vix,
         "vix_band": r.vix_band,
@@ -466,13 +497,19 @@ def run_to_dict(r: RegimeRun) -> dict:
         "notes": [
             "fredgraph values are latest-vintage; no ALFRED vintages without API key",
             "regime classification is an input to portfolio analysis, not a forecast",
-            "F&G is a transparent proxy composite (vix/spy/breadth/hy), not CNN index",
+            ("F&G = CNN Fear & Greed Index (dataviz.cnn.io)"
+             if fg_source == "cnn" else
+             "F&G = transparent proxy composite (vix/spy/breadth/hy) — CNN endpoint unreachable"),
         ],
     }
 
 
-async def run_and_persist(db: AsyncSession, as_of: datetime) -> RegimeRun:
-    c = await classify(db, as_of)
+async def run_and_persist(db: AsyncSession, as_of: datetime,
+                          fetch_fg=None) -> RegimeRun:
+    """Compute + persist a RegimeRun. fetch_fg=None → proxy composite
+    (test-hermetic); prod call sites pass providers.fetch_fear_greed
+    for the real CNN index."""
+    c = await classify(db, as_of, fetch_fg=fetch_fg)
     r = RegimeRun(
         as_of=as_of,
         rules_version=RULES_VERSION,

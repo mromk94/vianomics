@@ -179,3 +179,63 @@ async def test_regime_run_persisted_reproducible(db):
     assert r.rules_version == mr.RULES_VERSION
     assert r.features["VIXCLS"]["value"] == 16.0
     assert r.vix_band == "tighten_risk"
+
+
+# ── fear & greed: real CNN index + proxy fallback ──
+
+async def test_fg_uses_cnn_when_fetcher_succeeds(db):
+    """Injected CNN-shaped payload → fear_greed = real index score,
+    source recorded, components are CNN's 7 indicators."""
+    as_of = datetime(2025, 6, 1, tzinfo=UTC)
+    await _macro(db, "VIXCLS", [(as_of, 16.0)])
+    await db.commit()
+
+    async def fake_cnn():
+        return {"score": 31.4, "rating": "fear",
+                "components": {"put_call_options": 33.0,
+                               "junk_bond_demand": 44.2}}
+
+    c = await mr.classify(db, as_of, fetch_fg=fake_cnn)
+    assert c["fear_greed"] == 31
+    assert c["fg_source"] == "cnn"
+    assert c["fg_components"]["put_call_options"] == 33.0
+    assert c["features"]["fear_greed"]["source"] == "cnn"
+    assert "CNN" in c["notes"][-1]
+
+
+async def test_fg_proxy_fallback_when_fetcher_fails(db):
+    """Unreachable endpoint (fetcher returns None / raises) → the
+    transparent proxy composite, honestly labeled."""
+    as_of = datetime(2025, 6, 1, tzinfo=UTC)
+    await _macro(db, "VIXCLS", [(as_of, 16.0)])
+    await db.commit()
+
+    async def dead_cnn():
+        return None
+
+    async def boom_cnn():
+        raise ConnectionError("down")
+
+    for fetcher in (dead_cnn, boom_cnn):
+        c = await mr.classify(db, as_of, fetch_fg=fetcher)
+        assert c["fg_source"] == "proxy"
+        assert "vix_inverse" in c["fg_components"]
+        assert "unreachable" in c["notes"][-1]
+
+
+async def test_run_to_dict_surfaces_fg_source(db):
+    as_of = datetime(2025, 6, 1, tzinfo=UTC)
+    await _macro(db, "VIXCLS", [(as_of, 16.0)])
+    await db.commit()
+
+    async def fake_cnn():
+        return {"score": 55.0, "rating": "neutral",
+                "components": {"market_momentum_sp500": 60.0}}
+
+    r = await mr.run_and_persist(db, as_of, fetch_fg=fake_cnn)
+    await db.commit()
+    d = mr.run_to_dict(r)
+    assert d["fear_greed"] == 55
+    assert d["fg_source"] == "cnn"
+    assert d["fg_components"]["market_momentum_sp500"] == 60.0
+    assert d["persisted"] is True

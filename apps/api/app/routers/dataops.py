@@ -338,7 +338,9 @@ async def _backfill_all():
         try:
             from datetime import UTC, datetime
             from app.services import macro_regime as mr
-            await mr.run_and_persist(db, datetime.now(UTC))
+            from app.providers.market import fetch_fear_greed
+            await mr.run_and_persist(db, datetime.now(UTC),
+                                     fetch_fg=fetch_fear_greed)
             await db.commit()
         except Exception:
             await db.rollback()
