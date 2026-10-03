@@ -38,6 +38,7 @@ DEFAULT_LIMITS = {
     "vol_reduction_vol": 0.60,        # ann. vol → halve size
     # ── VAIIP new-docs risk hierarchy (workbook Settings sheet) ──
     "max_trade_risk_pct": 0.02,       # per-trade risk $ ≤ 2% equity
+    "max_asset_risk_pct": 0.05,       # per-asset open risk ≤ 5% equity
     "max_portfolio_open_risk_pct": 0.15,  # open stop risk ≤ 15% equity
     "max_strategy_risk_pct": 0.10,    # per-strategy open risk ≤ 10%
     "max_margin_utilisation_pct": 0.50,   # used margin ≤ 50% equity
@@ -278,10 +279,11 @@ def scenario_pnl(positions: list[dict], shock_pct: float,
     return {"shock": shock_pct, "pnl": pnl, "nav_after": total + pnl}
 
 
-def risk_dimensions(pf: dict) -> dict:
+def risk_dimensions(pf: dict, limits: "Limits | None" = None) -> dict:
     """pf: {nav, cash, positions:[{market_value, sector, beta, weight,
     liquidity_days}], margin_used, max_dd, avg_correlation,
     fcf_trend, price_vs_iv}"""
+    L = limits or Limits()
     pos = pf.get("positions", [])
     nav = pf.get("nav", 0) or 1
     sectors: dict[str, float] = {}
@@ -297,7 +299,7 @@ def risk_dimensions(pf: dict) -> dict:
 
     max_w = max((p["market_value"] / nav for p in pos), default=0)
     illiq = sum(p["market_value"] for p in pos
-                if p.get("liquidity_days", 0) > 5) / nav
+                if (p.get("liquidity_days") or 0) > 5) / nav
 
     def status(ok, degraded=False):
         return "ok" if ok else ("degraded" if degraded else "breach")
@@ -314,7 +316,7 @@ def risk_dimensions(pf: dict) -> dict:
             "sector_count": len(sectors),
             "sectors": sectors,
             "status": ("breach" if max_w
-                       > DEFAULT_LIMITS["max_single_name_pct"]
+                       > L.get("max_single_name_pct")
                        else "ok") if data_ok else "unknown"},
         "factor_correlation": {
             "avg_correlation": pf.get("avg_correlation"),
@@ -327,14 +329,14 @@ def risk_dimensions(pf: dict) -> dict:
             "margin_shock_pnl": scenario_pnl(pos, -0.20)["pnl"] *
             (pf.get("gross", 1.0)),
             "status": ("breach" if pf.get("gross", 1.0)
-                       > DEFAULT_LIMITS["max_gross_leverage"] * 1.01
+                       > L.get("max_gross_leverage") * 1.01
                        else "ok" if pf.get("gross", 1.0) <= 1.0
                        else "review")},
         "liquidity": {
             "illiquid_weight": illiq,
             "cash_pct": pf.get("cash", 0) / nav,
             "status": ("breach" if pf.get("cash", 0) / nav
-                       < DEFAULT_LIMITS["min_cash_pct"]
+                       < L.get("min_cash_pct")
                        else "ok") if data_ok else "unknown"},
         "volatility_structure": {
             "max_drawdown": pf.get("max_dd"),
@@ -365,6 +367,11 @@ def check_order(
     if order["side"] == "buy":
         notional = order["notional"]
         # ── new-docs hard limits (workbook Settings) ──
+        # stop validity — spec §24 hard rule
+        if order.get("stop_invalid"):
+            breaches.append(Breach(
+                "stop_invalid", None, "stop on the risk side of entry",
+                remediation="fix stop placement before submitting"))
         # portfolio open-stop risk + new trade risk ≤ limit
         open_risk = _d(pf.get("open_risk") or 0)
         trade_risk = _d(order.get("risk_dollars") or 0)
@@ -376,6 +383,32 @@ def check_order(
                 f"<= {float(_d(nav) * _d(lim)):,.0f}",
                 remediation="capacity exhausted — close or tighten "
                             "stops before adding risk"))
+        # single-asset open risk — spec §16 hierarchy
+        if trade_risk > 0:
+            asset_risk = sum(
+                _d(p.get("open_risk") or 0)
+                for p in pf["positions"]
+                if p["symbol"] == order["symbol"]) + trade_risk
+            lim = L.get("max_asset_risk_pct")
+            if (lim is not None
+                    and asset_risk > _d(nav) * _d(lim)):
+                breaches.append(Breach(
+                    "max_asset_risk", round(float(asset_risk), 2),
+                    f"<= {float(_d(nav) * _d(lim)):,.0f}",
+                    remediation="asset risk budget exhausted"))
+        # strategy open risk — spec §16 hierarchy
+        if order.get("strategy") and trade_risk > 0:
+            strat_risk = sum(
+                _d(p.get("open_risk") or 0)
+                for p in pf["positions"]
+                if p.get("strategy") == order["strategy"]) + trade_risk
+            lim = L.get("max_strategy_risk_pct")
+            if (lim is not None
+                    and strat_risk > _d(nav) * _d(lim)):
+                breaches.append(Breach(
+                    "max_strategy_risk", round(float(strat_risk), 2),
+                    f"<= {float(_d(nav) * _d(lim)):,.0f}",
+                    remediation="strategy risk budget exhausted"))
         # margin utilisation
         used_margin = _d(pf.get("margin_used") or 0)
         new_margin = _d(order.get("margin") or 0)
@@ -387,6 +420,14 @@ def check_order(
                 round(float(used_margin + new_margin), 2),
                 f"<= {float(_d(nav) * _d(lim)):,.0f}",
                 remediation="insufficient margin headroom"))
+        # insufficient available margin — spec §24 hard rule
+        free_margin = _d(nav) - used_margin
+        if new_margin > 0 and new_margin > free_margin:
+            breaches.append(Breach(
+                "insufficient_margin",
+                round(float(new_margin), 2),
+                f"<= free margin {float(free_margin):,.0f}",
+                remediation="order needs more margin than is free"))
         # max position count
         lim = L.get("max_positions")
         if lim is not None and order["symbol"] not in {
@@ -437,8 +478,6 @@ def check_order(
                 "min_sectors", len(secs), L.get("min_sectors"),
                 remediation="diversify before adding"))
         # leverage
-        gross_after = (sum(p["market_value"] for p in pf["positions"])
-                       + notional) / (nav + pf.get("cash", 0) - notional + notional)
         lim = L.get("max_gross_leverage")
         gross = (sum(p["market_value"] for p in pf["positions"]) + notional) / nav
         if gross > lim:
@@ -491,14 +530,28 @@ def check_order(
 
 def equity_stats(equity_history: list[dict],
                  current_equity: float | None) -> dict:
-    """MDD + daily VaR95 + today's Δ from an equity history series —
-    real numbers from the account, not parametric guesses."""
-    eqs = [float(h["equity"]) for h in (equity_history or [])
+    """Drawdown panel (spec §20/P8) + VaR95 + P&L deltas from a real
+    equity history series — not parametric guesses.
+    Emits: peak, current, current_dd, daily_dd, weekly_dd,
+    monthly_dd, mdd_pct, var_95, daily_pnl."""
+    pts = [(str(h.get("t") or ""), float(h["equity"]))
+           for h in (equity_history or [])
            if h.get("equity") is not None]
+    eqs = [e for _, e in pts]
     if current_equity:
         eqs = eqs + [float(current_equity)]
-    out = {"mdd_pct": None, "var_95": None, "daily_pnl": None,
+    out = {"peak_equity": None, "current_equity": None,
+           "current_dd_pct": None, "daily_dd_pct": None,
+           "weekly_dd_pct": None, "monthly_dd_pct": None,
+           "mdd_pct": None, "var_95": None, "daily_pnl": None,
            "n_points": len(eqs)}
+    if not eqs:
+        return out
+    out["current_equity"] = eqs[-1]
+    out["peak_equity"] = max(eqs)
+    if out["peak_equity"]:
+        out["current_dd_pct"] = round(
+            eqs[-1] / out["peak_equity"] - 1, 4)
     if len(eqs) >= 2:
         peak, mdd = eqs[0], 0.0
         for e in eqs:
@@ -516,6 +569,18 @@ def equity_stats(equity_history: list[dict],
         if past and current_equity is not None:
             out["daily_pnl"] = round(
                 float(current_equity) - float(past[-1]), 2)
+    # period drawdowns: peak-within-window → current (Panel 8)
+    if pts and current_equity:
+        from datetime import timedelta
+        now = utcnow()
+        for key, days in (("daily_dd_pct", 1), ("weekly_dd_pct", 7),
+                          ("monthly_dd_pct", 30)):
+            cutoff = (now - timedelta(days=days)).isoformat()
+            win = [e for t, e in pts if t >= cutoff]
+            win.append(float(current_equity))
+            pk = max(win)
+            if pk:
+                out[key] = round(float(current_equity) / pk - 1, 4)
     return out
 
 
@@ -598,8 +663,19 @@ def position_size_for_risk(equity, max_risk_pct, entry, stop,
 def trade_risk_sheet(*, entry, stop, qty, equity, contract_size=1,
                      margin_rate=0, target=None, fair_value=None,
                      spread=0, commission=0, financing=0,
-                     open_risk_before=0) -> dict:
+                     open_risk_before=0, current_price=None,
+                     direction="long",
+                     limits: "Limits | None" = None) -> dict:
     """The full pre-trade scorecard — workbook Trade Risk cols R–AB."""
+    L = limits or Limits()
+    missing = [k for k, v in (("entry", entry), ("stop", stop),
+                              ("qty", qty), ("equity", equity))
+               if v is None]
+    if missing:
+        return {"missing_inputs": missing}
+    stop_invalid = ((direction == "long" and _d(stop) >= _d(entry))
+                    or (direction == "short"
+                        and _d(stop) <= _d(entry)))
     notional = calculate_notional(entry, qty, contract_size)
     margin = calculate_margin(notional, margin_rate)
     risk = calculate_risk(entry, stop, qty, contract_size)
@@ -610,9 +686,10 @@ def trade_risk_sheet(*, entry, stop, qty, equity, contract_size=1,
                   - float(_d(commission)) - float(_d(financing))
                   if reward is not None else None)
     eq = _d(equity)
-    capacity = max(0.0, float(eq) * float(
-        DEFAULT_LIMITS["max_portfolio_open_risk_pct"]) - float(
+    lim = L.get("max_portfolio_open_risk_pct")
+    capacity = max(0.0, float(eq) * float(lim or 0) - float(
             open_risk_before)) if eq > 0 else 0.0
+    px = current_price if current_price is not None else entry
     return {
         "initial_notional": notional,
         "initial_margin": margin,
@@ -623,53 +700,61 @@ def trade_risk_sheet(*, entry, stop, qty, equity, contract_size=1,
         "rr": calculate_rr(reward, risk) if reward is not None else None,
         "mos_pct": calculate_mos(fair_value, entry)
         if fair_value else None,
-        "upside_pct": calculate_upside(fair_value, entry)
+        "upside_pct": calculate_upside(fair_value, px)
         if fair_value else None,
         "gross_leverage": float(_d(notional) / eq) if eq > 0 else None,
         "open_risk_before": float(open_risk_before),
         "risk_capacity_after": capacity,
+        "stop_invalid": stop_invalid,
     }
 
 
 def trade_risk_decision(sheet: dict, equity,
                         limits: "Limits | None" = None) -> dict:
-    """PASS / REVIEW / BLOCK per workbook col AC + spec §21/§30:
-      BLOCK  — trade risk > equity×max_trade_risk%, or
-               trade risk > remaining portfolio risk capacity, or
+    """INPUT / PASS / REVIEW / BLOCK per workbook col AC + spec
+    §21/§24/§30:
+      INPUT  — required input missing (workbook rule)
+      BLOCK  — stop invalid; trade risk > equity×max_trade_risk%;
+               trade risk > remaining portfolio risk capacity;
                projected margin utilisation > max
       REVIEW — R/R < min_rr (soft rule)
       PASS   — otherwise"""
     L = limits or Limits()
     eq = _d(equity) or D("1")
+
+    def _out(decision, reason, detail=""):
+        return {"decision": decision, "reason": reason,
+                "detail": detail, "reasons": [reason]}
+
+    if sheet.get("missing_inputs"):
+        missing = ", ".join(sheet["missing_inputs"])
+        return _out("INPUT", "required input missing",
+                    f"missing: {missing}")
+    if sheet.get("stop_invalid"):
+        return _out("BLOCK", "stop distance invalid",
+                    "stop on the wrong side of entry — hard rule")
     risk = _d(sheet["risk_dollars"])
-    reasons = []
     max_trade = eq * _d(L.get("max_trade_risk_pct"))
     if risk > max_trade:
-        return {"decision": "BLOCK",
-                "reason": "trade risk exceeds limit",
-                "detail": f"risk ${risk:.0f} > "
-                          f"{float(max_trade / eq):.1%} of equity"}
+        return _out("BLOCK", "trade risk exceeds limit",
+                    f"risk ${risk:.0f} > "
+                    f"{float(max_trade / eq):.1%} of equity")
     capacity = _d(sheet.get("risk_capacity_after") or 0)
     if risk > capacity:
-        return {"decision": "BLOCK",
-                "reason": "exceeds portfolio risk capacity",
-                "detail": f"risk ${risk:.0f} > remaining capacity "
-                          f"${capacity:.0f}"}
+        return _out("BLOCK", "exceeds portfolio risk capacity",
+                    f"risk ${risk:.0f} > remaining capacity "
+                    f"${capacity:.0f}")
     mu_lim = L.get("max_margin_utilisation_pct")
     margin = _d(sheet.get("initial_margin") or 0)
     if mu_lim is not None and eq > 0 and margin / eq > _d(mu_lim):
-        return {"decision": "BLOCK",
-                "reason": "margin utilisation exceeded",
-                "detail": f"initial margin {float(margin / eq):.1%} "
-                          f"of equity > {mu_lim:.0%}"}
+        return _out("BLOCK", "margin utilisation exceeded",
+                    f"initial margin {float(margin / eq):.1%} "
+                    f"of equity > {mu_lim:.0%}")
     rr = sheet.get("rr")
     if rr is not None and rr < float(L.get("min_rr") or 0):
-        return {"decision": "REVIEW", "reason": "R/R below minimum",
-                "detail": f"{rr:.2f}x < {L.get('min_rr')}x minimum"}
-    if sheet.get("stop_invalid"):
-        reasons.append("invalid stop distance")
-    return {"decision": "PASS",
-            "reason": "within configured trade-risk rules"}
+        return _out("REVIEW", "R/R below minimum",
+                    f"{rr:.2f}x < {L.get('min_rr')}x minimum")
+    return _out("PASS", "within configured trade-risk rules")
 
 
 # ── Position Ledger (workbook live-position cols) ──
@@ -677,7 +762,8 @@ def trade_risk_decision(sheet: dict, equity,
 def position_ledger_row(*, qty, avg_entry, current_price, contract_size=1,
                         margin_rate=0, direction="long",
                         stop=None, target=None, fair_value=None,
-                        equity=None, financing=0) -> dict:
+                        equity=None, realized_pnl=0, financing=0,
+                        commission=0, slippage=0) -> dict:
     """Live position risk accounting — workbook Position Ledger cols.
     Distinguishes initial risk / current open risk / locked-in profit
     (spec §11 — never conflated)."""
@@ -704,8 +790,11 @@ def position_ledger_row(*, qty, avg_entry, current_price, contract_size=1,
         "initial_margin": float(init_notional * _d(margin_rate)),
         "current_margin": float(cur_notional * _d(margin_rate)),
         "gross_pnl": float(gross_pnl),
+        "realized_pnl": float(_d(realized_pnl)),
         "financing": float(_d(financing)),
-        "net_pnl": float(gross_pnl + _d(financing)),
+        "net_pnl": float(gross_pnl + _d(realized_pnl)
+                         - _d(financing) - _d(commission)
+                         - _d(slippage)),
         "initial_risk": float(init_risk) if init_risk is not None else None,
         "open_risk": float(open_risk) if open_risk is not None else None,
         "unstopped": stop is None,
@@ -736,42 +825,68 @@ def portfolio_dashboard(positions: list[dict], equity, cash,
     net = sum((_d(p.get("notional") or 0)
                * (1 if (p.get("direction") or "long") == "long" else -1))
               for p in positions)
+    init_margin = sum(_d(p.get("initial_margin")
+                          if p.get("initial_margin") is not None
+                          else p.get("margin") or 0)
+                      for p in positions)
     margin = sum(_d(p.get("margin") or 0) for p in positions)
-    # open stop risk: stopped positions → loss-to-stop; unstopped →
-    # full notional (conservative — an unstopped position can go to 0)
+    maint_margin = sum(_d(p.get("maintenance_margin") or 0)
+                       for p in positions)
+    # spec Panel 5: Open Stop Risk = losses if all ACTIVE stops are
+    # reached. Unstopped positions are NOT in the sum — they are
+    # flagged separately (an unstopped position has no defined stop
+    # risk to measure, and must not silently cap the risk budget).
     open_stop = sum(_d(p.get("open_risk") or 0) for p in positions
                     if p.get("open_risk") is not None)
     unstopped = sum(_d(p.get("notional") or 0) for p in positions
                     if p.get("open_risk") is None)
-    open_risk = open_stop + unstopped
+    open_risk = open_stop
     net_pnl = sum(_d(p.get("net_pnl") or 0) for p in positions)
     reward = sum(_d(p.get("remaining_reward") or 0) for p in positions)
     by_strategy: dict[str, float] = {}
+    by_sector: dict[str, float] = {}
     for p in positions:
-        k = p.get("strategy") or "unassigned"
         r = p.get("open_risk")
-        by_strategy[k] = float(
-            _d(by_strategy.get(k, 0))
-            + (_d(r) if r is not None else _d(p.get("notional") or 0)))
+        contrib = _d(r) if r is not None else D("0")
+        k = p.get("strategy") or "unassigned"
+        by_strategy[k] = float(_d(by_strategy.get(k, 0)) + contrib)
+        ks = p.get("sector") or "?"
+        by_sector[ks] = float(_d(by_sector.get(ks, 0)) + contrib)
     risk_capacity = max(D("0"), eq * _d(L.get("max_portfolio_open_risk_pct"))
                         - open_risk)
     mu = margin / eq
     gl = gross / eq
     rp = open_risk / eq
+    mu_lim = _d(L.get("max_margin_utilisation_pct"))
     # workbook B19: REDUCE when open risk > limit, margin util > limit,
     # or gross leverage > limit
     status = "NORMAL"
     if (rp > _d(L.get("max_portfolio_open_risk_pct"))
-            or mu > _d(L.get("max_margin_utilisation_pct"))
-            or gl > _d(L.get("max_gross_leverage"))):
+            or mu > mu_lim or gl > _d(L.get("max_gross_leverage"))):
         status = "REDUCE"
+    elif unstopped > 0:
+        status = "WATCH"
+    warnings = []
+    if unstopped > 0:
+        warnings.append(
+            f"${float(unstopped):,.0f} notional has no active stop — "
+            "open stop risk understates true exposure")
+    pm_action = ("Reduce/review positions before adding risk"
+                 if status == "REDUCE"
+                 else "Set stops on unstopped positions"
+                 if status == "WATCH"
+                 else "Proceed subject to individual trade controls")
     return {
         "equity": float(eq),
         "gross_notional": float(gross),
         "net_notional": float(net),
         "gross_leverage": float(gl),
         "net_leverage": float(abs(net) / eq),
+        "initial_margin": float(init_margin),
         "current_margin": float(margin),
+        "maintenance_margin": float(maint_margin),
+        "free_margin": float(eq - margin),
+        "margin_headroom": float(eq * mu_lim - margin),
         "margin_utilisation": float(mu),
         "open_stop_risk": float(open_stop),
         "unstopped_notional": float(unstopped),
@@ -783,11 +898,10 @@ def portfolio_dashboard(positions: list[dict], equity, cash,
         else None,
         "risk_capacity": float(risk_capacity),
         "risk_by_strategy": by_strategy,
+        "risk_by_sector": by_sector,
         "status": status,
-        "pm_action": ("Reduce/review positions before adding risk"
-                      if status == "REDUCE"
-                      else "Proceed subject to individual trade "
-                           "controls"),
+        "warnings": warnings,
+        "pm_action": pm_action,
     }
 
 
@@ -887,9 +1001,11 @@ def _scope_match(p: dict, scope: str) -> bool:
     return False
 
 
-def named_stress(positions: list[dict], equity) -> list[dict]:
+def named_stress(positions: list[dict], equity,
+                 limits: "Limits | None" = None) -> list[dict]:
     """Deterministic scenario P&L — each returns loss, loss/equity,
     and the workbook escalation status (WATCH/REDUCE/HALT)."""
+    L = limits or Limits()
     eq = float(equity) or 1.0
     out = []
     for sc in NAMED_SCENARIOS:
@@ -901,11 +1017,11 @@ def named_stress(positions: list[dict], equity) -> list[dict]:
         loss = abs(pnl)
         loss_pct = loss / eq
         status = ("HALT" if loss_pct > float(
-                    DEFAULT_LIMITS["halt_drawdown_pct"])
+                    L.get("halt_drawdown_pct") or 1)
                   else "REDUCE" if loss_pct > float(
-                    DEFAULT_LIMITS["reduce_drawdown_pct"])
+                    L.get("reduce_drawdown_pct") or 1)
                   else "WATCH" if loss_pct > float(
-                    DEFAULT_LIMITS["warn_drawdown_pct"])
+                    L.get("warn_drawdown_pct") or 1)
                   else "OK")
         out.append({"scenario": sc["name"], "key": sc["key"],
                     "shock": sc["shock"], "scope": sc["scope"],
@@ -940,8 +1056,14 @@ def pm_decide(*, thesis, valuation, technical, risk_check,
       ENTER if VALID+ATTRACTIVE+CONFIRMED+PASS+PASS; else REVIEW.
     Spec §25 matrix adds position-aware states (ADD/HOLD/REDUCE).
     """
-    # hard rules first — risk veto cannot be overridden
+    # hard rules first — risk veto cannot be overridden.
+    # spec §25 matrix: a hard breach is BLOCK *before* the trade;
+    # on an existing position the same breach means de-risk → REDUCE.
     if risk_check == "BLOCK" or portfolio_check == "BLOCK":
+        if has_position:
+            return {"decision": "REDUCE",
+                    "reason": "portfolio risk limit breached — "
+                              "de-risk the position"}
         return {"decision": "BLOCK",
                 "reason": "hard risk/portfolio constraint breached"}
     if stop_breached:

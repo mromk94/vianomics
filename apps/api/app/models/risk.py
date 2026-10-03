@@ -65,6 +65,57 @@ class PmDecision(Base, IdMixin, TimestampMixin):
     decided_by: Mapped[str | None]
 
 
+class TradeIdea(Base, IdMixin, TimestampMixin):
+    """Formal trade object (spec §4/§33) — every trade idea becomes a
+    persisted record linking research → risk → execution → audit.
+    Created by /risk/pretrade; status tracks the gate decision."""
+
+    __tablename__ = "trade_ideas"
+    __table_args__ = (Index("ix_trade_ideas_instr", "instrument_id"),)
+
+    instrument_id: Mapped[str] = mapped_column(ForeignKey("instruments.id"))
+    risk_check_id: Mapped[str | None] = mapped_column(
+        ForeignKey("risk_checks.id"))
+    strategy: Mapped[str | None]
+    direction: Mapped[str] = mapped_column(default="long")  # long|short
+    entry_price: Mapped[float]
+    stop_price: Mapped[float]
+    target_price: Mapped[float | None]
+    fair_value: Mapped[float | None]
+    proposed_quantity: Mapped[float]
+    thesis: Mapped[str | None]
+    thesis_status: Mapped[str] = mapped_column(default="REVIEW")
+    # INPUT|PASS|REVIEW|BLOCK — the Trade Risk Sheet decision
+    status: Mapped[str] = mapped_column(default="REVIEW")
+    sheet: Mapped[dict] = mapped_column(JSON, default=dict)
+    engine_version: Mapped[str] = mapped_column(default="risk-pyramid/v2.0")
+    created_by: Mapped[str | None]
+
+
+class RiskSnapshot(Base, IdMixin, TimestampMixin):
+    """Periodic book-level risk snapshot (spec §33) — equity, exposure,
+    leverage, margin, open risk, stress loss, drawdown. Written by
+    monitor sweeps so the risk path is auditable over time."""
+
+    __tablename__ = "risk_snapshots"
+
+    equity: Mapped[float]
+    cash: Mapped[float | None]
+    gross_exposure: Mapped[float | None]
+    net_exposure: Mapped[float | None]
+    leverage: Mapped[float | None]
+    margin_used: Mapped[float | None]
+    margin_utilisation: Mapped[float | None]
+    open_risk: Mapped[float | None]
+    open_risk_pct: Mapped[float | None]
+    risk_capacity: Mapped[float | None]
+    drawdown_pct: Mapped[float | None]
+    var_95: Mapped[float | None]
+    stress_loss: Mapped[float | None]
+    status: Mapped[str | None]          # NORMAL|WATCH|REDUCE
+    engine_version: Mapped[str] = mapped_column(default="risk-pyramid/v2.0")
+
+
 class LimitConfig(Base, IdMixin, TimestampMixin):
     """Versioned risk-limit config — operator-editable; check_order
     reads the newest version. Every version immutable (audit)."""

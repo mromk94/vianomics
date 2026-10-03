@@ -137,7 +137,8 @@ async def pm_positions(db: AsyncSession = Depends(get_db)) -> dict:
     portfolio_check = ("BLOCK" if dash["status"] == "REDUCE"
                        and dash["margin_utilisation"] > float(
                            limits.get("max_margin_utilisation_pct") or 1)
-                       else "REVIEW" if dash["status"] == "REDUCE"
+                       else "REVIEW" if dash["status"] in
+                       ("REDUCE", "WATCH")
                        else "PASS")
 
     rows = []
