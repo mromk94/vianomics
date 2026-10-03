@@ -8,6 +8,7 @@ never the old 3%-of-price proxy.
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
 from app.models.instruments import Instrument
 from app.models.market import OhlcvBar
@@ -121,6 +122,67 @@ async def test_pyramid_preview_insufficient_bars(db):
         await pyramid_preview(PyramidPreviewIn(
             symbol="TST", equity=1e6, cash=1e6), db)
     assert e.value.status_code == 422
+
+
+# ── candidate seeding ──
+
+async def _seed_scan(db, inst, decision="entry_signal", close=129.0):
+    from app.models.market import TechnicalScanResult
+    db.add(TechnicalScanResult(
+        instrument_id=inst.id, decision=decision,
+        engine="trend_following", indicators={}, last_close=close,
+        data_fresh=True))
+    await db.flush()
+
+
+async def test_seed_creates_trade_eligible_candidate(db):
+    from app.models.portfolio import LedgerEntry, Portfolio
+    from app.services import pyramid_seed
+    from app.models.risk import PyramidTradeRec
+    inst = await _seed(db)
+    pf = Portfolio(name="main")
+    db.add(pf)
+    await db.flush()
+    db.add(LedgerEntry(portfolio_id=pf.id, amount=1_000_000,
+                       kind="deposit"))
+    await _seed_scan(db, inst)
+
+    res = await pyramid_seed.seed_candidates(db)
+    assert res["created"] == 1
+    rec = (await db.execute(
+        select(PyramidTradeRec).where(
+            PyramidTradeRec.instrument_id == inst.id))).scalar_one()
+    assert rec.state == "trade_eligible"
+    assert rec.stop == pytest.approx(129 - 6)    # 1.5 × ATR(4)
+    assert rec.target1 == pytest.approx(129 + 12)
+    assert rec.events[0]["event"] == "candidate"
+
+    # idempotent — second seed creates nothing
+    assert (await pyramid_seed.seed_candidates(db))["created"] == 0
+
+
+async def test_seed_expires_decayed_candidate(db):
+    from app.models.portfolio import LedgerEntry, Portfolio
+    from app.services import pyramid_seed
+    from app.models.risk import PyramidTradeRec
+    inst = await _seed(db)
+    pf = Portfolio(name="main")
+    db.add(pf)
+    await db.flush()
+    db.add(LedgerEntry(portfolio_id=pf.id, amount=1_000_000,
+                       kind="deposit"))
+    await _seed_scan(db, inst)
+    await pyramid_seed.seed_candidates(db)
+
+    # signal decays → candidate closes with an audit event
+    await _seed_scan(db, inst, decision="wait")
+    res = await pyramid_seed.seed_candidates(db)
+    assert res["expired"] == 1
+    rec = (await db.execute(
+        select(PyramidTradeRec).where(
+            PyramidTradeRec.instrument_id == inst.id))).scalar_one()
+    assert rec.state == "closed"
+    assert rec.events[-1]["event"] == "candidate_expired"
 
 
 async def test_pyramids_list_includes_atr(db):

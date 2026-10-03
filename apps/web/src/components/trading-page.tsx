@@ -10,6 +10,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { Sym, openSymbol } from "@/components/symbol-drawer";
+import { PyramidModal } from "@/components/pyramid-modal";
 import { SearchInput } from "@/components/ui/search-input";
 import { SectionCard } from "@/components/ui/section-card";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -86,6 +87,7 @@ export function TradingPage() {
   const [prev, setPrev] = useState<any | null>(null);
   const [pyrs, setPyrs] = useState<any[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+  const [pyrOpen, setPyrOpen] = useState(false);
   const chartRef = useRef<HTMLDivElement>(null);
   const chartWrapRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
@@ -137,23 +139,7 @@ export function TradingPage() {
       .then(setPrev).catch(() => setPrev(null));
   }, [symbol, tf, reloadTick]);
 
-  async function startPyramid() {
-    if (!prev) return;
-    try {
-      await apiPost("/api/v1/risk/pyramid", {
-        symbol,
-        entry: prev.inputs.entry,
-        atr: prev.atr.abs,
-        equity: prev.inputs.equity,
-        cash: prev.inputs.cash,
-        risk_pct: prev.inputs.risk_pct,
-      });
-      setNotice(null);
-      loadPyramids();
-    } catch (e) {
-      setNotice(e instanceof Error ? e.message : "create failed");
-    }
-  }
+  const openPyramidCalc = () => setPyrOpen(true);
 
   async function addSymbol() {
     if (!unknownSym) return;
@@ -358,12 +344,11 @@ export function TradingPage() {
 
         {/* ATR + trade risk sheet — docs Part 12, real computed ATR */}
         <SectionCard title="ATR & Trade Risk Sheet"
-          action={prev ? (
-            <button onClick={startPyramid}
+          action={
+            <button onClick={openPyramidCalc}
               className="rounded-full bg-accent px-3 py-1 text-[11px] font-semibold text-[#0b0f1a] hover:brightness-110">
               Start pyramid
-            </button>
-          ) : "inspection only — no order routing"}>
+            </button>}>
           {prev ? (
             <div className="space-y-2 text-[13px]">
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -409,7 +394,13 @@ export function TradingPage() {
 
       {/* Part 12 — pyramid trades */}
       <SectionCard title="Pyramid trades" className="rise"
-        action={<span className="text-[10px] text-faint">adaptive trailing — 1.5×ATR ratchet · 3×ATR adds · never loosen</span>}>
+        action={<span className="flex items-center gap-2">
+          <span className="text-[10px] text-faint">adaptive trailing — 1.5×ATR ratchet · 3×ATR adds · never loosen</span>
+          <button onClick={openPyramidCalc}
+            className="rounded-full border border-border px-2.5 py-0.5 text-[10px] text-dim hover:text-text">
+            + New pyramid
+          </button>
+        </span>}>
         {notice && <div className="mb-2 text-[12px] text-warn">{notice}</div>}
         {pyrs.length === 0 ? (
           <EmptyState title="No pyramid trades"
@@ -470,6 +461,9 @@ export function TradingPage() {
           </div>
         )}
       </SectionCard>
+
+      <PyramidModal open={pyrOpen} onClose={() => setPyrOpen(false)}
+        initial={symbol} onCreated={loadPyramids} />
     </div>
   );
 }

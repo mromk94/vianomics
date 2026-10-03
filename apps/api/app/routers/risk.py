@@ -879,6 +879,12 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
             {"id": r.id, "symbol": sym, "state": r.state,
              "entry": r.entry, "shares": r.shares, "stop": r.stop,
              "target1": r.target1,
+             "atr_initial": r.atr_initial,
+             "atr_current": (r.params or {}).get("atr_current"),
+             "signal_engine": (r.params or {}).get("signal_engine"),
+             "created_at": (r.created_at.isoformat()
+                            if r.created_at else None),
+             "events": (r.events or [])[-3:],
              "additions": r.additions} for r, sym in open_recs],
         "nav": ctx["nav"], "cash": ctx["cash"],
         "positions": ctx["positions"],
