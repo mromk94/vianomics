@@ -218,3 +218,91 @@ async def test_score_15_qualifies_but_risk_gates_standalone(db):
     # risk veto applies downstream (Part 14/16), tested via blocked path
     assert res_threshold["qualified"] is True
     assert res_threshold["verdict"] == "pass"
+
+
+# ── ETF / non-fundamental screening (macro + technical channels) ──
+
+async def _etf_fixture(db, sector_name, favored=True):
+    """Sector ETF with 200 daily bars, a SPY benchmark, a RegimeRun."""
+    from app.models.instruments import Sector
+    from app.models.macro import RegimeRun
+    from app.models.market import OhlcvBar
+    from datetime import timedelta
+
+    sec = Sector(name=sector_name)
+    db.add(sec)
+    await db.flush()
+    spy = Instrument(symbol="SPY", name="SPY", asset_class="etf")
+    etf = Instrument(symbol="XLK", name="Tech SPDR", asset_class="etf",
+                     sector_id=sec.id, avg_dollar_volume_30d=1e9)
+    db.add_all([spy, etf])
+    await db.flush()
+    # 200 bars: rising for ETF, flat for SPY → RS + trend both pass
+    for i in range(200):
+        d = ASOF - timedelta(days=200 - i)
+        db.add(OhlcvBar(instrument_id=etf.id, timeframe="1d", time=d,
+                        open=90 + i * 0.2, high=0, low=0,
+                        close=90 + i * 0.2, volume=1e6, source="yahoo"))
+        db.add(OhlcvBar(instrument_id=spy.id, timeframe="1d", time=d,
+                        open=100, high=0, low=0, close=100,
+                        volume=1e6, source="yahoo"))
+    prefs = {sector_name: "favored"} if favored else {"Energy": "favored"}
+    db.add(RegimeRun(
+        as_of=ASOF, rules_version="v1", econ_regime="expansion",
+        market_regime="risk_on", features={}, rule_hits=[],
+        sector_preferences=prefs))
+    await db.flush()
+    return etf
+
+
+async def test_etf_screen_passes_on_macro_technical(db):
+    etf = await _etf_fixture(db, "Information Technology")
+    res = await screen_instrument(
+        db, etf, POLICY_DEFAULTS, None, ASOF,
+        sector_name="Information Technology")
+    keys = {c["key"] for c in res["criteria"]}
+    assert keys == {"macro_sector_alignment", "relative_strength",
+                    "technical_setup", "liquidity"}
+    assert res["verdict"] == "pass"
+    assert res["qualified"] is True
+    assert res["score_fraction"] == 1.0
+
+
+async def test_etf_screen_reviews_when_sector_unfavored(db):
+    """Unfavored sector → macro thesis fails → REVIEW, not silent
+    pass (thesis channel is the ETF's fundamental channel)."""
+    etf = await _etf_fixture(db, "Information Technology",
+                             favored=False)
+    res = await screen_instrument(
+        db, etf, POLICY_DEFAULTS, None, ASOF,
+        sector_name="Information Technology")
+    assert res["verdict"] == "review"
+    assert res["qualified"] is False
+    assert res["score_fraction"] == 0.75   # 3/4 criteria still pass
+    macro = next(c for c in res["criteria"]
+                 if c["key"] == "macro_sector_alignment")
+    assert macro["status"] == "fail"
+    assert macro["evidence"]["econ_regime"] == "expansion"
+
+
+async def test_etf_insufficient_without_bars_or_regime(db):
+    etf = Instrument(symbol="GLD", name="Gold", asset_class="etf")
+    db.add(etf)
+    await db.flush()
+    res = await screen_instrument(
+        db, etf, POLICY_DEFAULTS, None, ASOF, sector_name=None)
+    assert res["verdict"] == "insufficient_data"
+    macro = next(c for c in res["criteria"]
+                 if c["key"] == "macro_sector_alignment")
+    assert macro["status"] == "insufficient_data"  # no regime run
+
+
+async def test_equity_path_unchanged_by_etf_branch(db):
+    """An equity with no fundamentals still lands insufficient_data
+    via the Green Zone, not the ETF path."""
+    eq = Instrument(symbol="ZZZZ", name="ZZ", asset_class="equity")
+    db.add(eq)
+    await db.flush()
+    res = await screen_instrument(db, eq, POLICY_DEFAULTS, None, ASOF)
+    assert res["verdict"] == "insufficient_data"
+    assert len(res["criteria"]) == 20
