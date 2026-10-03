@@ -22,11 +22,15 @@ from app.models.universe import (
 
 # Defaults for the 'eligible' tier — configurable via universe.rules.
 DEFAULT_RULES: dict[str, Any] = {
-    "asset_classes": ["equity"],
+    "asset_classes": ["equity", "etf"],
     "listing_status": ["active"],
     "min_market_cap": 300_000_000,
     "min_avg_dollar_volume": 5_000_000,
 }
+
+# Asset classes exempt from the market-cap gate — ETFs/indices have
+# AUM, not market cap, which we don't track. Liquidity still applies.
+NO_MCAP_CLASSES = {"etf", "index"}
 
 
 async def universe_by_name(db: AsyncSession, name: str, tenant_id: str = "default") -> Universe | None:
@@ -58,7 +62,8 @@ def eligibility_reasons(inst: Instrument, rules: dict[str, Any]) -> list[str]:
     if (inst.asset_class or "equity") not in rules.get("asset_classes", ["equity"]):
         reasons.append(f"asset_class={inst.asset_class} not in {rules['asset_classes']}")
     min_cap = rules.get("min_market_cap")
-    if min_cap is not None:
+    if min_cap is not None and (inst.asset_class or "equity") \
+            not in NO_MCAP_CLASSES:
         if inst.market_cap is None:
             reasons.append("market_cap unknown")
         elif float(inst.market_cap) < min_cap:

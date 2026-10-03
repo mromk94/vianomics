@@ -496,3 +496,95 @@ async def ingest_tiingo_bars(
     run.finished_at = utcnow()
     await mark_sync(session, provider, f"market:{symbol}", True)
     return run
+
+
+async def ingest_tiingo_intraday(
+    session: AsyncSession,
+    adapter,
+    symbol: str,
+    freq: str = "30min",
+    days: int = 10,
+) -> JobRun:
+    """Tiingo IEX intraday bars → ohlcv_bars (source='tiingo',
+    timeframe=freq e.g. '30min'). Also refreshes the symbol's
+    market_quotes row from the latest bar close — intraday is the
+    nearest thing to a live tape without a streaming feed."""
+    from datetime import timedelta
+    from app.models.market import MarketQuote, OhlcvBar
+
+    job, _ = await get_or_create(
+        session, Job,
+        {"key": f"ingest:tiingo:intraday:{symbol}:{freq}"},
+        {"kind": "ingestion"})
+    run = JobRun(job_id=job.id)
+    session.add(run)
+    await session.flush()
+    provider = await _provider(session, "tiingo")
+
+    inst = (
+        await session.execute(
+            select(Instrument).where(Instrument.symbol == symbol.upper())
+        )
+    ).scalar_one_or_none()
+    if inst is None:
+        run.status, run.error, run.finished_at = (
+            "failed", f"{symbol} not in security master", utcnow())
+        await mark_sync(session, provider, f"intraday:{symbol}", False,
+                        run.error)
+        return run
+
+    start = (date.today() - timedelta(days=days)).isoformat()
+    raw, status = await run_job(
+        session, job_run=run, provider_key="tiingo",
+        work=lambda: adapter.intraday(symbol, start, freq))
+    if raw is None:
+        run.finished_at = utcnow()
+        await mark_sync(session, provider, f"intraday:{symbol}", False,
+                        run.error)
+        return run
+
+    existing_times = {
+        (t if t.tzinfo else t.replace(tzinfo=UTC))
+        for (t,) in (await session.execute(
+            select(OhlcvBar.time).where(
+                OhlcvBar.instrument_id == inst.id,
+                OhlcvBar.timeframe == freq,
+                OhlcvBar.source == "tiingo",
+                OhlcvBar.adjusted.is_(False)))).all()
+    }
+    last_close = None
+    for r in raw:
+        t = _parse_dt(r["date"])
+        last_close = r.get("close")
+        if t not in existing_times:
+            session.add(OhlcvBar(
+                instrument_id=inst.id, timeframe=freq, time=t,
+                open=r["open"], high=r["high"], low=r["low"],
+                close=r["close"], volume=r.get("volume"),
+                adjusted=False, source="tiingo"))
+            existing_times.add(t)
+    await session.flush()
+
+    # last intraday bar → quote row (source='tiingo')
+    if last_close:
+        now = utcnow()
+        qrow = (await session.execute(
+            select(MarketQuote).where(
+                MarketQuote.source == "tiingo",
+                MarketQuote.symbol == symbol.upper()))
+        ).scalar_one_or_none()
+        if qrow is None:
+            qrow = MarketQuote(source="tiingo",
+                               symbol=symbol.upper(), ts=now)
+            session.add(qrow)
+        qrow.instrument_id = inst.id
+        qrow.mid = qrow.bid = qrow.ask = last_close
+        qrow.ts = now
+    await session.flush()
+
+    run.records_in = run.records_ok = len(raw)
+    run.records_quarantined = 0
+    run.status = "success"
+    run.finished_at = utcnow()
+    await mark_sync(session, provider, f"intraday:{symbol}", True)
+    return run

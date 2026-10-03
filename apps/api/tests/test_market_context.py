@@ -130,3 +130,110 @@ async def test_open_price_is_last_resort_mark(db):
     p = ctx["positions"][0]
     assert p["current_price"] == 3900.0
     assert p["mark_source"] == "open"
+
+
+async def test_sector_etfs_join_universes_and_sectors(db):
+    """Sector SPDRs get GICS sector_id + approved/eligible/global
+    memberships — they are tradeable screening-universe members."""
+    from app.models.instruments import Sector
+    from app.models.universe import Universe, UniverseMembership
+
+    sec = Sector(name="Information Technology")
+    db.add(sec)
+    for name, tier in (("global", "global"), ("eligible", "eligible"),
+                       ("approved", "approved")):
+        db.add(Universe(tenant_id="default", name=name, tier=tier))
+    await db.flush()
+
+    await mc.ensure_market_context(db)
+    xlk = (await db.execute(
+        select(Instrument).where(Instrument.symbol == "XLK"))
+    ).scalar_one()
+    assert xlk.sector_id == sec.id
+
+    memberships = (await db.execute(
+        select(Universe.tier)
+        .join(UniverseMembership,
+              UniverseMembership.universe_id == Universe.id)
+        .where(UniverseMembership.instrument_id == xlk.id,
+               UniverseMembership.status == "active"))
+    ).scalars().all()
+    assert set(memberships) == {"global", "eligible", "approved"}
+
+    # macro/index context is known (global) but not tradeable
+    spy = (await db.execute(
+        select(Instrument).where(Instrument.symbol == "SPY"))
+    ).scalar_one()
+    spy_tiers = (await db.execute(
+        select(Universe.tier)
+        .join(UniverseMembership,
+              UniverseMembership.universe_id == Universe.id)
+        .where(UniverseMembership.instrument_id == spy.id,
+               UniverseMembership.status == "active"))
+    ).scalars().all()
+    assert spy_tiers == ["global"]
+
+
+async def test_etf_exempt_from_market_cap_gate(db):
+    """ETFs have AUM not market cap — the mcap gate must not block
+    them; liquidity still applies."""
+    from app.services.universe import eligibility_reasons
+    etf = Instrument(symbol="XLK", asset_class="etf",
+                     listing_status="active", market_cap=None,
+                     avg_dollar_volume_30d=1e9)
+    assert eligibility_reasons(etf, {
+        "asset_classes": ["equity", "etf"],
+        "listing_status": ["active"],
+        "min_market_cap": 300_000_000,
+        "min_avg_dollar_volume": 5_000_000}) == []
+    # but thin liquidity still blocks
+    etf.avg_dollar_volume_30d = 100
+    assert any("adv30" in r for r in eligibility_reasons(etf, {
+        "asset_classes": ["equity", "etf"],
+        "listing_status": ["active"],
+        "min_market_cap": 300_000_000,
+        "min_avg_dollar_volume": 5_000_000}))
+
+
+async def test_tiingo_intraday_ingest(db):
+    """Mock Tiingo IEX → 30min bars + a market_quotes row from the
+    last close."""
+    from app.ingestion.jobs import ingest_tiingo_intraday
+
+    class FakeTiingo:
+        async def intraday(self, ticker, start, freq):
+            assert freq == "30min"
+            return [
+                {"date": "2026-09-28T14:30:00.000Z", "open": 100,
+                 "high": 101, "low": 99, "close": 100.5,
+                 "volume": 1000},
+                {"date": "2026-09-28T15:00:00.000Z", "open": 100.5,
+                 "high": 102, "low": 100, "close": 101.8,
+                 "volume": 1200},
+            ]
+
+    db.add(Instrument(symbol="XLK", name="Tech", asset_class="etf"))
+    await db.flush()
+    run = await ingest_tiingo_intraday(
+        db, FakeTiingo(), "XLK", freq="30min")
+    assert run.status == "success"
+    assert run.records_ok == 2
+
+    bars = (await db.execute(
+        select(OhlcvBar).where(OhlcvBar.timeframe == "30min"))
+    ).scalars().all()
+    assert len(bars) == 2
+    assert bars[0].source == "tiingo"
+
+    q = (await db.execute(
+        select(MarketQuote).where(MarketQuote.source == "tiingo"))
+    ).scalar_one()
+    assert q.symbol == "XLK"
+    assert float(q.mid) == pytest.approx(101.8)
+
+    # idempotent — second run adds no duplicates
+    await ingest_tiingo_intraday(db, FakeTiingo(), "XLK", freq="30min")
+    cnt = (await db.execute(
+        select(func.count(OhlcvBar.id))
+        .where(OhlcvBar.timeframe == "30min"))).scalar()
+    assert cnt == 2

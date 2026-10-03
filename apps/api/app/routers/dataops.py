@@ -180,6 +180,50 @@ async def run_job_now(job_key: str,
             run = await ing.ingest_fred_series(
                 db, adapters["fred"](api_key=key), parts[-1], parts[-1],
                 use_csv=not key)
+        elif job_key == "market:intraday":
+            # IEX intraday bars for every context instrument
+            from app.services.secrets import get_secret
+            import os
+            key = (await get_secret(db, "TIINGO_API_KEY")
+                   or os.environ.get("TIINGO_API_KEY"))
+            if not key:
+                return {"status": "failed",
+                        "error": "TIINGO_API_KEY not configured"}
+            from app.providers.market import TiingoAdapter
+            from app.services.market_context import CONTEXT_INSTRUMENTS
+            from app.ingestion.upsert import get_or_create
+            from app.models.ops import Job, JobRun
+            from app.db.base import utcnow
+            adapter = TiingoAdapter(api_key=key)
+            ok = 0
+            for sym in CONTEXT_INSTRUMENTS:
+                if sym.startswith("^"):
+                    continue  # IEX covers stocks/ETFs, not indices
+                r = await ing.ingest_tiingo_intraday(
+                    db, adapter, symbol=sym, freq="30min")
+                if r.status == "success":
+                    ok += 1
+                await db.commit()
+            job, _ = await get_or_create(
+                db, Job, {"key": job_key}, {"kind": "ingestion"})
+            run = JobRun(job_id=job.id, status="success",
+                         finished_at=utcnow(), records_ok=ok)
+            db.add(run)
+            await db.commit()
+        elif job_key.startswith("ingest:tiingo:intraday:"):
+            # ingest:tiingo:intraday:<sym>[:<freq>]
+            from app.services.secrets import get_secret
+            import os
+            key = (await get_secret(db, "TIINGO_API_KEY")
+                   or os.environ.get("TIINGO_API_KEY"))
+            if not key:
+                return {"status": "failed",
+                        "error": "TIINGO_API_KEY not configured"}
+            from app.providers.market import TiingoAdapter
+            sym = parts[3] if len(parts) > 3 else ""
+            freq = parts[4] if len(parts) > 4 else "30min"
+            run = await ing.ingest_tiingo_intraday(
+                db, TiingoAdapter(api_key=key), symbol=sym, freq=freq)
         elif job_key.startswith("ingest:tiingo:"):
             from app.services.secrets import get_secret
             import os
