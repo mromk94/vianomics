@@ -106,7 +106,7 @@ async def run_job_now(job_key: str,
                 "yahoo": YahooAdapter}
     parts = job_key.split(":")
     try:
-        if job_key in ("technical:scan", "monitor:scan"):
+        if job_key in ("technical:scan", "monitor:scan", "pyramid:seed"):
             from app.ingestion.upsert import get_or_create
             from app.models.ops import Job, JobRun
             from app.db.base import utcnow
@@ -120,6 +120,10 @@ async def run_job_now(job_key: str,
                 if job_key == "technical:scan":
                     from app.services import technical_engine as te
                     n = await te.run_scan(db)
+                elif job_key == "pyramid:seed":
+                    from app.services import pyramid_seed
+                    res = await pyramid_seed.seed_candidates(db)
+                    n = res["created"]
                 else:
                     from app.services import monitoring as mon
                     res = await mon.run_checks(db)
@@ -347,6 +351,11 @@ async def _backfill_all():
         try:
             from app.services import technical_engine as te
             await te.run_scan(db)
+        except Exception:
+            await db.rollback()
+        try:
+            from app.services import pyramid_seed
+            await pyramid_seed.seed_candidates(db)
         except Exception:
             await db.rollback()
         cache.invalidate()

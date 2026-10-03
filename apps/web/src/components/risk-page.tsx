@@ -25,7 +25,10 @@ interface Center {
   open_pyramid_trades: number;
   pyramid_trades: { id: string; symbol: string; state: string;
     entry: number; shares: number; stop: number; target1: number;
-    additions: number }[];
+    additions: number; atr_initial?: number | null;
+    atr_current?: number | null; signal_engine?: string | null;
+    created_at?: string | null;
+    events?: { t?: string; event?: string; reason?: string }[] }[];
   monitors: { symbol: string; weight: number;
     price_vs_iv: number | null; tests: Record<string, string>;
     actionable: Record<string, string> }[];
@@ -443,25 +446,41 @@ export function RiskPage() {
           </div>
 
           {/* pyramid state machine */}
-          <SectionCard title={`Pyramid trades (${c.open_pyramid_trades})`} className="rise rise-3" action="ATR state machine — Watchlist→Exit">
+          <SectionCard title={`Pyramid trades (${c.open_pyramid_trades})`} className="rise rise-3"
+            action="adaptive ATR state machine — eligible→position→trailing→exit">
             {!c.pyramid_trades?.length ? (
-              <EmptyState title="No open pyramid trades" hint="Created via POST /risk/pyramid when a setup fires." />
+              <EmptyState title="No pyramid candidates or trades"
+                hint="Trade-eligible pyramids appear when the technical scan fires entry_signal; promotion to Position 1 requires approval." />
             ) : (
               <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                {c.pyramid_trades.map((t) => (
-                  <div key={t.id} className="glass-tile p-3 text-[12px]">
-                    <div className="flex items-center justify-between">
-                      <Sym s={t.symbol} />
-                      <StatusBadge tone="info">{t.state}</StatusBadge>
+                {c.pyramid_trades.map((t) => {
+                  const eligible = t.state === "trade_eligible";
+                  const lastEv = t.events?.[t.events.length - 1]?.event;
+                  return (
+                    <div key={t.id} className="glass-tile p-3 text-[12px]">
+                      <div className="flex items-center justify-between">
+                        <Sym s={t.symbol} />
+                        <StatusBadge tone={eligible ? "warn" : t.state === "closed" ? "neg" : "pos"}>
+                          {eligible ? "eligible" : t.state}
+                        </StatusBadge>
+                      </div>
+                      <div className="num mt-1.5 grid grid-cols-3 gap-1 text-[11px]">
+                        <div><div className="text-[10px] text-faint">ENTRY</div>${fmtNum(t.entry, 2)}</div>
+                        <div><div className="text-[10px] text-faint">STOP 1.5×ATR</div><span className="text-neg">${fmtNum(t.stop, 2)}</span></div>
+                        <div><div className="text-[10px] text-faint">TGT 3×ATR</div><span className="text-pos">${fmtNum(t.target1, 2)}</span></div>
+                      </div>
+                      <div className="num mt-1 flex justify-between text-[11px] text-dim">
+                        <span>shares {t.shares}{t.additions > 0 ? ` · +${t.additions} adds` : ""}</span>
+                        <span className="text-faint">ATR {fmtNum(t.atr_current ?? t.atr_initial, 2)}</span>
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-faint">
+                        {t.signal_engine ? `${t.signal_engine} signal` : "manual"}
+                        {lastEv ? ` · ${lastEv}` : ""}
+                        {t.created_at ? ` · ${fmtTime(t.created_at)}` : ""}
+                      </div>
                     </div>
-                    <div className="num mt-1.5 grid grid-cols-3 gap-1 text-[11px]">
-                      <div><div className="text-[10px] text-faint">ENTRY</div>${fmtNum(t.entry, 2)}</div>
-                      <div><div className="text-[10px] text-faint">STOP</div><span className="text-neg">${fmtNum(t.stop, 2)}</span></div>
-                      <div><div className="text-[10px] text-faint">T1</div><span className="text-pos">${fmtNum(t.target1, 2)}</span></div>
-                    </div>
-                    <div className="num mt-1 text-[11px] text-dim">shares {t.shares} · +{t.additions} adds</div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </SectionCard>
