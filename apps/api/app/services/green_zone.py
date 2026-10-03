@@ -109,6 +109,16 @@ async def _series_all(db, inst_id, as_of, concepts) -> dict:
     }
 
 
+# Asset classes with no issuer fundamentals — their thesis comes from
+# the docs' Macro + Technical channels, not the Green Zone quality screen.
+NON_FUNDAMENTAL_CLASSES = {"etf", "index"}
+
+# Total criteria in the equity Green Zone — the mandate's
+# green_zone_pass_score is denominated against this. Non-equity
+# screening judges the same bar as a FRACTION of applicable criteria.
+EQUITY_SCREEN_CRITERIA = 20
+
+
 async def screen_instrument(
     db: AsyncSession,
     inst: Instrument,
@@ -120,6 +130,9 @@ async def screen_instrument(
     sector_name: str | None = None,
 ) -> dict:
     """Screen one instrument. Returns criteria + verdict dicts."""
+    if (inst.asset_class or "equity") in NON_FUNDAMENTAL_CLASSES:
+        return await _screen_non_equity(
+            db, inst, policy, mandate, as_of, sector_name)
 
     S = await _series_all(
         db, inst.id, as_of,
@@ -545,6 +558,166 @@ async def screen_instrument(
         "qualified": qualified,
         "blocked_reasons": blocked,
         "threshold": threshold,
+    }
+
+
+async def _screen_non_equity(
+    db: AsyncSession,
+    inst: Instrument,
+    policy: dict,
+    mandate,
+    as_of: datetime,
+    sector_name: str | None = None,
+) -> dict:
+    """ETF/index screening — the Green Zone's fundamental channel does
+    not exist for funds (no 10-K facts, no moat). Per the docs' CIO
+    summary (THESIS = Fundamental + Technical + Macro), the fund's
+    thesis comes from the two channels that DO apply:
+
+      Macro     — sector ∈ RegimeRun.sector_preferences
+                  (SECTOR_ROTATION map, SOW Part 11)
+      Technical — trend (SMA200) + 63d relative strength vs SPY
+      Liquidity — avg_dollar_volume_30d vs policy floor
+
+    The mandate's pass bar is judged as a FRACTION of applicable
+    criteria — same rigor, no fake fundamentals.
+    """
+    from app.models.macro import RegimeRun
+
+    crits: list[CritResult] = []
+
+    async def _closes(inst_id, limit):
+        rows = (await db.execute(
+            select(OhlcvBar.close)
+            .where(OhlcvBar.instrument_id == inst_id,
+                   OhlcvBar.timeframe == "1d",
+                   OhlcvBar.time <= as_of)
+            .order_by(OhlcvBar.time.desc())
+            .limit(limit))).scalars().all()
+        return [float(c) for c in rows]
+
+    window = int(policy["sma_window"])
+    closes = await _closes(inst.id, window)
+
+    # 1: macro sector alignment — the fund's thesis channel
+    run = (await db.execute(
+        select(RegimeRun).order_by(RegimeRun.as_of.desc()).limit(1))
+    ).scalar_one_or_none()
+    if run is None:
+        crits.append(_insuf(
+            "macro_sector_alignment", "Macro sector alignment",
+            "sector ∈ regime sector_preferences", ["regime run"]))
+    elif sector_name is None:
+        crits.append(CritResult(
+            "macro_sector_alignment", "Macro sector alignment",
+            "not_applicable", 0.0,
+            "sector ∈ regime sector_preferences",
+            {"note": "no GICS sector — broad/macro fund"}))
+    else:
+        favored = sector_name in (run.sector_preferences or {})
+        crits.append(CritResult(
+            "macro_sector_alignment", "Macro sector alignment",
+            "pass" if favored else "fail",
+            1.0 if favored else 0.0,
+            "sector ∈ regime sector_preferences",
+            {"sector": sector_name,
+             "econ_regime": run.econ_regime,
+             "favored": favored,
+             "preferences": run.sector_preferences}))
+
+    # 2: relative strength — 63d return ≥ SPY 63d return (rotation lead)
+    spy = (await db.execute(
+        select(Instrument.id).where(Instrument.symbol == "SPY"))
+    ).scalar_one_or_none()
+    spy_closes = await _closes(spy, 64) if spy else []
+    if len(closes) < 64 or len(spy_closes) < 64:
+        crits.append(_insuf(
+            "relative_strength", "Relative strength vs SPY",
+            "r63(ETF) ≥ r63(SPY)",
+            [f"bars ({len(closes)}/{len(spy_closes)})"]))
+    else:
+        r_etf = closes[0] / closes[63] - 1
+        r_spy = spy_closes[0] / spy_closes[63] - 1
+        ok = r_etf >= r_spy
+        crits.append(CritResult(
+            "relative_strength", "Relative strength vs SPY",
+            "pass" if ok else "fail",
+            1.0 if ok else 0.0,
+            "r63(ETF) ≥ r63(SPY)",
+            {"etf_r63": r_etf, "spy_r63": r_spy,
+             "spread": r_etf - r_spy}))
+
+    # 3: technical setup — close > SMA200 (same bar as equities)
+    if len(closes) < window // 2:
+        crits.append(_insuf("technical_setup", "Technical setup",
+                            "close > SMA200", [f"price bars ({len(closes)})"]))
+    else:
+        sma = sum(closes) / len(closes)
+        latest = closes[0]
+        ok = latest > sma
+        crits.append(CritResult(
+            "technical_setup", "Technical setup",
+            "pass" if ok else "fail",
+            1.0 if ok else 0.0,
+            f"close > SMA{window}",
+            {"close": latest, "sma": sma, "bars": len(closes)}))
+
+    # 4: liquidity — ADV30 ≥ universe floor
+    min_adv = float(policy.get("min_avg_dollar_volume", 5_000_000))
+    adv = inst.avg_dollar_volume_30d
+    if adv is None:
+        crits.append(_insuf("liquidity", "Liquidity",
+                            f"ADV30 ≥ {min_adv:,.0f}", ["avg_dollar_volume"]))
+    else:
+        ok = float(adv) >= min_adv
+        crits.append(CritResult(
+            "liquidity", "Liquidity",
+            "pass" if ok else "fail",
+            1.0 if ok else 0.0,
+            f"ADV30 ≥ {min_adv:,.0f}",
+            {"adv30": float(adv)}))
+
+    # ── aggregate — pass bar as a fraction of applicable criteria ──
+    applicable = [c for c in crits if c.status != "not_applicable"]
+    score = sum(c.score for c in crits)
+    max_pts = max(1, len(applicable))
+    threshold = mandate.green_zone_pass_score if mandate else 15
+    frac = score / max_pts
+    bar = threshold / EQUITY_SCREEN_CRITERIA
+    insufficient = sum(1 for c in applicable if c.status == "insufficient_data")
+    review_n = sum(1 for c in applicable if c.status == "review")
+
+    blocked: list[str] = []
+    if inst.listing_status != "active":
+        blocked.append(f"listing_status={inst.listing_status}")
+
+    macro = next((c for c in applicable
+                  if c.key == "macro_sector_alignment"), None)
+    thesis_ok = macro is None or macro.status == "pass"
+
+    if blocked:
+        verdict = "blocked_by_risk"
+    elif insufficient >= max(1, len(applicable) // 2):
+        verdict = "insufficient_data"
+    elif frac >= bar and review_n == 0 and thesis_ok:
+        verdict = "pass"
+    elif frac >= bar:
+        # score cleared but a thesis/macro or review criterion is
+        # unresolved — human confirmation path, never silent pass
+        verdict = "review"
+    else:
+        verdict = "fail"
+
+    return {
+        "criteria": [c.to_dict() for c in crits],
+        "score": score,
+        "applicable": len(applicable),
+        "verdict": verdict,
+        "qualified": verdict == "pass",
+        "blocked_reasons": blocked,
+        "threshold": threshold,
+        "score_fraction": frac,
+        "pass_fraction": bar,
     }
 
 
