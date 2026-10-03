@@ -1,7 +1,7 @@
 from datetime import date, datetime
 
 from sqlalchemy import (
-    Date, DateTime, ForeignKey, Numeric, String, UniqueConstraint,
+    JSON, Date, DateTime, ForeignKey, Numeric, String, UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -64,6 +64,8 @@ class Instrument(Base, IdMixin, TimestampMixin):
     margin_rate: Mapped[float | None] = mapped_column(Numeric(10, 6))
     maintenance_margin_rate: Mapped[float | None] = mapped_column(
         Numeric(10, 6))
+    # Exchange trading session — spec Instrument Master tradingHours
+    trading_hours: Mapped[dict | None] = mapped_column(JSON)
     # Eligibility inputs — populated by market-data ingestion
     market_cap: Mapped[float | None] = mapped_column(Numeric(24, 2))
     avg_dollar_volume_30d: Mapped[float | None] = mapped_column(Numeric(24, 2))

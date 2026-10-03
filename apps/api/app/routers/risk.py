@@ -16,7 +16,7 @@ from app.models.instruments import Instrument, Sector
 from app.models.macro import RegimeRun
 from app.models.market import OhlcvBar
 from app.models.portfolio import Position, Portfolio
-from app.models.risk import PyramidTradeRec, RiskCheck
+from app.models.risk import PyramidTradeRec, RiskCheck, TradeIdea
 from app.security import audit, require
 from app.services import quant as q
 from app.services import risk_engine as re_
@@ -67,6 +67,7 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
                 )).scalar()
             cs = float(inst.contract_size or 1)
             mv = float(pos.quantity) * px * cs
+            adv = float(inst.avg_dollar_volume_30d or 0)
             positions.append({
                 "symbol": inst.symbol, "sector": sec.name if sec else "?",
                 "market_value": mv, "quantity": float(pos.quantity),
@@ -91,9 +92,12 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
                 "daily_pnl": (float(pos.quantity) * (px - float(prev))
                               * cs if prev else None),
                 "source": "ledger",
-                "beta": None, "liquidity_days": None,
+                "beta": None,
+                # days-to-exit at 10% ADV participation (spec Panel 5
+                # liquidity risk) — None when no ADV data
+                "liquidity_days": (mv / (adv * 0.10)
+                                   if adv > 0 else None),
             })
-        nav = sum(p["market_value"] for p in positions) or 1
 
     # ── external accounts: each MT4/Bamboo position is a real
     # book position — the platform analyzes holdings wherever they
@@ -125,7 +129,8 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
             m["cost"] += qty * px              # VWAP numerator
             m["profit"] += float(rp.get("profit") or 0)
         ext_margin_rate = float(
-            re_.DEFAULT_LIMITS["external_margin_rate"])
+            (await _active_limits(db)).get("external_margin_rate")
+            or 0.20)
         for sym, m in merged.items():
             mv = m["qty"] * (m["cost"] / m["qty"])
             inst = all_inst.get(m["symbol"])
@@ -164,13 +169,17 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
                 "liquidity_days": 0,
                 "instrument_matched": inst is not None,
             })
-        # account equity is capital at risk — nav, not position sum
-        cash += float(a.balance or 0)
-        equity_total = eq  # noqa: F841 — tracked below via ext_nav
 
-    nav = (sum(p["market_value"] for p in positions
-               if not p.get("external"))
+    # Net Liquidating Equity (spec Panel 1):
+    #   equity = cash balance + position market values
+    # External accounts contribute their own broker-reported equity
+    # (balance + unrealised is already inside it — no double count).
+    ext_balance = sum(float(a.balance or 0) for a in ext_accounts)
+    nav = (cash
+           + sum(p["market_value"] for p in positions
+                 if not p.get("external"))
            + sum(float(a.equity or 0) for a in ext_accounts)) or 1
+    display_cash = cash + ext_balance
 
     # latest valuation per held instrument → price vs intrinsic
     try:
@@ -213,12 +222,16 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
         cs = p.get("contract_size") or 1
         px = p.get("current_price") or p["avg_cost"]
         if p.get("stop_price") is not None:
-            open_stop += abs(px - p["stop_price"]) * p["quantity"] * cs
+            r = abs(px - p["stop_price"]) * p["quantity"] * cs
+            p["open_risk"] = r
+            open_stop += r
         else:
-            # unstopped position → full notional is capital at risk
+            # spec Panel 5: no active stop → no computable stop risk;
+            # flagged separately, not silently added to the risk sum
+            p["open_risk"] = None
             unstopped += p["market_value"]
     return {
-        "nav": nav, "cash": cash, "positions": positions,
+        "nav": nav, "cash": display_cash, "positions": positions,
         "unrealized_pnl": unrealized, "daily_pnl": daily,
         "gross": (sum(p["market_value"] for p in positions) / nav
                   if nav else 1),
@@ -226,7 +239,7 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
         "margin_utilisation": margin_used / nav if nav else 0,
         "open_stop_risk": open_stop,
         "unstopped_notional": unstopped,
-        "open_risk": open_stop + unstopped,
+        "open_risk": open_stop,
         "avg_correlation": None,  # computed in center view
         "max_dd": None,
         "vix": regime.vix if regime else None,
@@ -243,6 +256,7 @@ class OrderIn(BaseModel):
     entry: float | None = None
     stop: float | None = None
     target: float | None = None
+    strategy: str | None = None
 
 
 @router.post("/check-order")
@@ -266,10 +280,15 @@ async def check_order(
     cs = float(inst.contract_size or 1)
     order = {"symbol": inst.symbol, "side": body.side,
              "sector": sec.name if sec else None,
-             "notional": body.notional}
+             "notional": body.notional,
+             "strategy": body.strategy}
     # trade-risk inputs → new-docs limits (open risk, margin, R/R)
     entry = body.entry or (body.notional / body.qty if body.qty else None)
     if entry and body.stop:
+        direction = "long" if body.side == "buy" else "short"
+        order["stop_invalid"] = (
+            direction == "long" and body.stop >= entry) or (
+            direction == "short" and body.stop <= entry)
         qty = body.qty or (body.notional / entry)
         order["risk_dollars"] = re_.calculate_risk(
             entry, body.stop, qty, cs)
@@ -281,11 +300,11 @@ async def check_order(
                 order["risk_dollars"])
     result = re_.check_order(order, ctx, limits=limits)
     result["limits_version"] = limits.version
-    # persist audit — every check recorded
+    # persist audit — every check recorded, with the ACTIVE limits
     rec = RiskCheck(
         symbol=inst.symbol, side=body.side, notional=body.notional,
         allowed=result["allowed"], breaches=result["breaches"],
-        limits_snapshot=dict(re_.DEFAULT_LIMITS),
+        limits_snapshot=dict(limits.values),
         engine_version=re_.ENGINE_VERSION, checked_by=user.id)
     db.add(rec)
     await audit(db, action="risk.check_order", actor=user,
@@ -307,6 +326,8 @@ class PreTradeIn(BaseModel):
     fair_value: float | None = None
     qty: float | None = None          # None → auto-size by risk budget
     strategy: str | None = None
+    thesis: str | None = None
+    thesis_status: str = "REVIEW"     # VALID|INVALID|REVIEW
     spread: float = 0
     commission: float = 0
     financing: float = 0
@@ -354,7 +375,8 @@ async def pretrade(
         target=body.target, fair_value=body.fair_value,
         spread=body.spread, commission=body.commission,
         financing=body.financing,
-        open_risk_before=ctx["open_risk"])
+        open_risk_before=ctx["open_risk"],
+        direction=body.direction, limits=limits)
     decision = re_.trade_risk_decision(sheet, equity, limits=limits)
 
     # portfolio gate on the proposed notional as well
@@ -362,15 +384,25 @@ async def pretrade(
         {"symbol": inst.symbol, "side": "buy",
          "sector": None, "notional": sheet["initial_notional"],
          "risk_dollars": sheet["risk_dollars"],
-         "margin": sheet["initial_margin"], "rr": sheet["rr"]},
+         "margin": sheet["initial_margin"], "rr": sheet["rr"],
+         "strategy": body.strategy},
         ctx, limits=limits)
-    if not gate["allowed"] and decision["decision"] != "BLOCK":
+    if not gate["allowed"] and decision["decision"] not in (
+            "BLOCK", "INPUT"):
         decision = {"decision": "BLOCK",
                     "reason": "portfolio gate breach",
+                    "reasons": ["portfolio gate breach"],
                     "detail": "; ".join(
                         f"{b['rule']} ({b['observed']} vs "
                         f"{b['required']})"
                         for b in gate["breaches"] if b["blocking"])}
+    if qty <= 0 and decision["decision"] not in ("BLOCK", "INPUT"):
+        decision = {"decision": "REVIEW",
+                    "reason": "risk budget sizes to zero",
+                    "reasons": ["risk budget sizes to zero"],
+                    "detail": "equity × max_trade_risk% ÷ risk-per-unit "
+                              "rounds to 0 — raise risk budget or "
+                              "tighten stop"}
 
     rec = RiskCheck(
         symbol=inst.symbol, side=body.direction,
@@ -380,13 +412,28 @@ async def pretrade(
         limits_snapshot=dict(limits.values),
         engine_version=re_.ENGINE_VERSION, checked_by=user.id)
     db.add(rec)
+    await db.flush()
+    # spec §4 — every trade idea persists as a formal Trade object,
+    # linking research → risk → execution → audit
+    trade = TradeIdea(
+        instrument_id=inst.id, risk_check_id=rec.id,
+        strategy=body.strategy, direction=body.direction,
+        entry_price=body.entry, stop_price=body.stop,
+        target_price=body.target, fair_value=body.fair_value,
+        proposed_quantity=qty, thesis=body.thesis,
+        thesis_status=body.thesis_status,
+        status=decision["decision"], sheet=sheet,
+        engine_version=re_.ENGINE_VERSION, created_by=user.id)
+    db.add(trade)
+    await db.flush()
     await audit(db, action="risk.pretrade", actor=user,
-                entity_type="risk_check", entity_id=rec.id,
+                entity_type="trade", entity_id=trade.id,
                 detail={"symbol": inst.symbol,
                         "decision": decision["decision"]})
     await db.commit()
 
     return {
+        "trade_id": trade.id,
         "symbol": inst.symbol, "direction": body.direction,
         "entry": body.entry, "stop": body.stop,
         "target": body.target, "fair_value": body.fair_value,
@@ -474,9 +521,37 @@ async def advance_pyramid(
         additions=rec.additions, leg_shares=leg_shares,
         atr_current=params.get("atr_current"),
         events=list(rec.events))
+
+    # spec §14/§25/§29 — a pyramid add is a controlled transaction:
+    # the extra leg must re-pass the portfolio risk test, never just
+    # because price moved in our favour.
+    add_ok = body.add_ok
+    gate = None
+    if (add_ok and t.target1 is not None
+            and body.price >= t.target1):
+        inst = await db.get(Instrument, rec.instrument_id)
+        cs = float(inst.contract_size or 1) if inst else 1.0
+        ctx = await _portfolio_ctx(db)
+        limits = await _active_limits(db)
+        leg_risk = abs(body.price - t.stop) * leg_shares * cs
+        gate = re_.check_order(
+            {"symbol": inst.symbol if inst else "?",
+             "side": "buy", "sector": None,
+             "notional": leg_shares * body.price * cs,
+             "risk_dollars": leg_risk},
+            ctx, limits=limits)
+        add_ok = gate["allowed"]
+        if not add_ok:
+            t.log("risk re-check FAILED — "
+                  + "; ".join(b["rule"] for b in gate["breaches"]
+                              if b.get("blocking")))
+
     result = re_.advance(
         t, body.price, body.current_atr or rec.atr_initial,
-        fill_price=body.fill_price, add_ok=body.add_ok)
+        fill_price=body.fill_price, add_ok=add_ok)
+    if gate is not None:
+        result["add_recheck"] = {"allowed": gate["allowed"],
+                                 "breaches": gate["breaches"]}
     rec.state = t.state.value
     rec.shares = t.shares
     rec.stop = t.stop
@@ -496,7 +571,8 @@ async def advance_pyramid(
 @router.get("/center")
 async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
     ctx = await _portfolio_ctx(db)
-    dims = re_.risk_dimensions(ctx)
+    limits = await _active_limits(db)
+    dims = re_.risk_dimensions(ctx, limits=limits)
 
     # avg pairwise correlation across positions
     syms = [p["symbol"] for p in ctx["positions"]]
@@ -506,7 +582,7 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
         vals = [v for i, row in enumerate(cm["matrix"])
                 for j, v in enumerate(row) if i != j and v is not None]
         ctx["avg_correlation"] = sum(vals) / len(vals) if vals else None
-        dims = re_.risk_dimensions(ctx)
+        dims = re_.risk_dimensions(ctx, limits=limits)
 
     # active blocks: re-run gate on hypothetical orders per limit
     blocks = []
@@ -575,14 +651,13 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
                 utcnow() - a.synced_at).total_seconds() > 900)})
 
     # ── new-docs portfolio dashboard block ──
-    limits = await _active_limits(db)
     dash_positions = [{
         "notional": p["market_value"],
         "margin": p["market_value"] * (p.get("margin_rate") or 0),
-        "open_risk": (abs((p.get("current_price") or p["avg_cost"])
-                         - p["stop_price"]) * p["quantity"]
-                      * (p.get("contract_size") or 1)
-                      if p.get("stop_price") is not None else None),
+        "maintenance_margin": (
+            p["market_value"] * p["maint_margin_rate"]
+            if p.get("maint_margin_rate") is not None else 0),
+        "open_risk": p.get("open_risk"),
         "net_pnl": p.get("unrealized") or 0,
         "remaining_reward": (abs(p["target_price"]
                                 - (p.get("current_price")
@@ -592,6 +667,7 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
                              if p.get("target_price") else 0),
         "direction": p.get("direction") or "long",
         "strategy": p.get("strategy"),
+        "sector": p.get("sector"),
     } for p in ctx["positions"]]
     dashboard = re_.portfolio_dashboard(
         dash_positions, ctx["nav"], ctx["cash"], limits=limits)
@@ -600,7 +676,8 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
         if a.get("mdd_pct") is not None:
             dd = min(dd if dd is not None else 0, a["mdd_pct"])
     escalation = re_.drawdown_escalation(dd or 0, limits=limits)
-    stress = re_.named_stress(ctx["positions"], ctx["nav"])
+    stress = re_.named_stress(ctx["positions"], ctx["nav"],
+                              limits=limits)
     # maintenance-margin buffer (Exposure doc)
     margin_cfg = None
     if ctx["positions"] and any(p.get("margin_rate")
@@ -639,13 +716,80 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
         "drawdown": {"max_dd": dd, "escalation": escalation},
         "named_stress": stress,
         "dimensions": dims,
-        "limits": limits,
+        "limits": dict(limits.values),
         "active_blocks": blocks,
         "open_pyramid_trades": open_trades,
         "vix": ctx["vix"], "fear_greed": ctx["fear_greed"],
         "engine": re_.ENGINE_VERSION,
         "as_of": ctx["as_of"],
     }
+
+
+@router.get("/portfolio")
+async def risk_portfolio(db: AsyncSession = Depends(get_db)) -> dict:
+    """Spec §28 — GET /risk/portfolio: the aggregate dashboard view
+    (notional/leverage/margin/open-risk/capacity/stress/DD)."""
+    ctx = await _portfolio_ctx(db)
+    limits = await _active_limits(db)
+    dash_positions = [{
+        "notional": p["market_value"],
+        "margin": p["market_value"] * (p.get("margin_rate") or 0),
+        "maintenance_margin": (
+            p["market_value"] * p["maint_margin_rate"]
+            if p.get("maint_margin_rate") is not None else 0),
+        "open_risk": p.get("open_risk"),
+        "net_pnl": p.get("unrealized") or 0,
+        "direction": p.get("direction") or "long",
+        "strategy": p.get("strategy"),
+        "sector": p.get("sector"),
+    } for p in ctx["positions"]]
+    dash = re_.portfolio_dashboard(
+        dash_positions, ctx["nav"], ctx["cash"], limits=limits)
+    return {
+        "dashboard": dash,
+        "named_stress": re_.named_stress(
+            ctx["positions"], ctx["nav"], limits=limits),
+        "limits_version": getattr(limits, "version", 0),
+        "engine": re_.ENGINE_VERSION,
+        "as_of": ctx["as_of"],
+    }
+
+
+@router.get("/trades")
+async def list_trades(limit: int = 50,
+                      db: AsyncSession = Depends(get_db)) -> list:
+    """Formal trade objects created by /risk/pretrade — the
+    research→risk→execution audit link (spec §4/§28)."""
+    rows = (await db.execute(
+        select(TradeIdea, Instrument.symbol)
+        .join(Instrument, TradeIdea.instrument_id == Instrument.id)
+        .order_by(TradeIdea.created_at.desc()).limit(limit))).all()
+    return [{"id": t.id, "symbol": sym, "direction": t.direction,
+             "strategy": t.strategy, "entry": t.entry_price,
+             "stop": t.stop_price, "target": t.target_price,
+             "fair_value": t.fair_value, "qty": t.proposed_quantity,
+             "status": t.status, "thesis_status": t.thesis_status,
+             "risk_check_id": t.risk_check_id,
+             "engine": t.engine_version,
+             "at": t.created_at.isoformat() if t.created_at else None}
+            for t, sym in rows]
+
+
+@router.get("/trades/{trade_id}")
+async def get_trade(trade_id: str,
+                    db: AsyncSession = Depends(get_db)) -> dict:
+    t = await db.get(TradeIdea, trade_id)
+    if t is None:
+        raise HTTPException(404, "trade not found")
+    return {"id": t.id, "direction": t.direction,
+            "strategy": t.strategy, "entry": t.entry_price,
+            "stop": t.stop_price, "target": t.target_price,
+            "fair_value": t.fair_value, "qty": t.proposed_quantity,
+            "status": t.status, "thesis": t.thesis,
+            "thesis_status": t.thesis_status, "sheet": t.sheet,
+            "risk_check_id": t.risk_check_id,
+            "engine": t.engine_version,
+            "at": t.created_at.isoformat() if t.created_at else None}
 
 
 @router.get("/checks")

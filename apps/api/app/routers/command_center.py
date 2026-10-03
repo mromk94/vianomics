@@ -164,7 +164,9 @@ async def command_center(
 
     # portfolio / risk
     pf = await _portfolio_ctx(db)
-    dims = re_.risk_dimensions(pf)
+    from app.routers.risk import _active_limits
+    cc_limits = await _active_limits(db)
+    dims = re_.risk_dimensions(pf, limits=cc_limits)
 
     # VaR95 + MDD from real equity history (external accounts carry
     # rolling snapshots; internal book has no nav history yet)

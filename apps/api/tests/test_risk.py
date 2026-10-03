@@ -318,8 +318,9 @@ def test_position_ledger_row_long():
 
 
 def test_portfolio_dashboard_workbook():
-    """3 stopped positions + 1 unstopped — unstopped counts full
-    notional as open risk (conservative spec choice)."""
+    """3 stopped positions + 1 unstopped — spec Panel 5: open stop
+    risk counts only losses-to-active-stops; unstopped notional is
+    flagged separately, never silently added to the risk budget."""
     pos = [
         {"notional": 10_000, "margin": 2_000, "open_risk": 1_000,
          "net_pnl": 500, "remaining_reward": 3_000, "direction": "long",
@@ -331,17 +332,19 @@ def test_portfolio_dashboard_workbook():
          "net_pnl": 0, "remaining_reward": 0, "direction": "long",
          "strategy": "swing"},
     ]
-    d = re_.portfolio_dashboard(pos, 50_000, 10_000)
+    d = re_.portfolio_dashboard(pos, 100_000, 40_000)
     assert d["gross_notional"] == pytest.approx(60_000)
-    assert d["gross_leverage"] == pytest.approx(1.2)
+    assert d["gross_leverage"] == pytest.approx(0.6)
     assert d["current_margin"] == pytest.approx(12_000)
-    assert d["margin_utilisation"] == pytest.approx(0.24)
+    assert d["margin_utilisation"] == pytest.approx(0.12)
     assert d["open_stop_risk"] == pytest.approx(3_000)
     assert d["unstopped_notional"] == pytest.approx(30_000)
-    assert d["open_risk"] == pytest.approx(33_000)
-    # open risk 33k > 15% of 50k (7.5k) → REDUCE
-    assert d["status"] == "REDUCE"
-    assert "risk_capacity" in d and d["risk_capacity"] == 0
+    # spec-literal: open risk = losses if active stops hit = $3k
+    assert d["open_risk"] == pytest.approx(3_000)
+    # 3k < 15% of 100k (15k), but unstopped book → WATCH + warning
+    assert d["status"] == "WATCH"
+    assert d["warnings"]
+    assert d["risk_capacity"] == pytest.approx(15_000 - 3_000)
     assert d["risk_by_strategy"]["rule1"] == pytest.approx(3_000)
 
 
@@ -393,10 +396,16 @@ def test_named_stress_scenarios():
 
 
 def test_pm_decide_matrix():
-    # hard veto first
+    # hard veto first — new idea BLOCKed pre-trade
     assert re_.pm_decide(thesis="VALID", valuation="ATTRACTIVE",
                          technical="CONFIRMED", risk_check="BLOCK",
                          portfolio_check="PASS")["decision"] == "BLOCK"
+    # spec §25 matrix: same hard breach on a HELD position → REDUCE,
+    # not BLOCK (you can't block what you already hold — you de-risk)
+    assert re_.pm_decide(thesis="VALID", valuation="ATTRACTIVE",
+                         technical="CONFIRMED", risk_check="PASS",
+                         portfolio_check="BLOCK",
+                         has_position=True)["decision"] == "REDUCE"
     # all green + no position → ENTER
     assert re_.pm_decide(thesis="VALID", valuation="ATTRACTIVE",
                          technical="CONFIRMED", risk_check="PASS",
@@ -425,3 +434,58 @@ def test_pm_decide_matrix():
     assert re_.pm_decide(thesis="REVIEW", valuation="REVIEW",
                          technical="WEAKENING", risk_check="REVIEW",
                          portfolio_check="PASS")["decision"] == "REVIEW"
+
+
+def test_check_order_new_hard_rules():
+    """spec §24 hard rules: stop_invalid, insufficient margin,
+    strategy risk, asset risk — all block."""
+    pf = {"nav": 100_000, "cash": 50_000,
+          "positions": [{"symbol": "AMD", "market_value": 10_000,
+                         "sector": "Tech", "open_risk": 4_000,
+                         "strategy": "swing"}],
+          "open_risk": 4_000, "margin_used": 10_000}
+    # stop on wrong side of entry → stop_invalid BLOCK
+    r = re_.check_order(
+        {"symbol": "NVDA", "side": "buy", "sector": "Tech",
+         "notional": 1_000, "stop_invalid": True}, pf)
+    rules = [b["rule"] for b in r["breaches"]]
+    assert "stop_invalid" in rules and not r["allowed"]
+    # margin required > free margin (equity − used = 90k) → BLOCK
+    r = re_.check_order(
+        {"symbol": "NVDA", "side": "buy", "sector": "Tech",
+         "notional": 1_000, "margin": 95_000}, pf)
+    assert "insufficient_margin" in [b["rule"] for b in r["breaches"]]
+    # asset open risk 4k + new 2k = 6k > 5% of 100k → max_asset_risk
+    r = re_.check_order(
+        {"symbol": "AMD", "side": "buy", "sector": "Tech",
+         "notional": 1_000, "risk_dollars": 2_000}, pf)
+    assert "max_asset_risk" in [b["rule"] for b in r["breaches"]]
+    # same-strategy risk 4k + 7k > 10% → max_strategy_risk
+    r = re_.check_order(
+        {"symbol": "NVDA", "side": "buy", "sector": "Tech",
+         "notional": 1_000, "risk_dollars": 7_000,
+         "strategy": "swing"}, pf)
+    assert "max_strategy_risk" in [b["rule"] for b in r["breaches"]]
+
+
+def test_trade_risk_decision_input_and_stop_invalid():
+    eq = 50_000
+    # missing input → INPUT (workbook rule)
+    s = re_.trade_risk_sheet(entry=None, stop=100, qty=10, equity=eq)
+    assert re_.trade_risk_decision(s, eq)["decision"] == "INPUT"
+    # long stop above entry → BLOCK (hard rule, not silent PASS)
+    s = re_.trade_risk_sheet(entry=100, stop=110, qty=10, equity=eq)
+    assert s["stop_invalid"] is True
+    assert re_.trade_risk_decision(s, eq)["decision"] == "BLOCK"
+
+
+def test_equity_stats_drawdown_panel():
+    """spec §20 Panel 8: peak/current/daily/weekly/monthly/max DD."""
+    hist = [{"t": "2025-09-01T00:00:00", "equity": 50_000},
+            {"t": "2025-09-20T00:00:00", "equity": 55_000},
+            {"t": "2025-10-01T00:00:00", "equity": 60_000}]
+    s = re_.equity_stats(hist, 57_000)
+    assert s["peak_equity"] == 60_000
+    assert s["current_dd_pct"] == pytest.approx(57_000/60_000 - 1)
+    assert s["mdd_pct"] is not None
+    assert "weekly_dd_pct" in s and "monthly_dd_pct" in s

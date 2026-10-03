@@ -39,16 +39,19 @@ interface Center {
   dashboard?: {
     equity: number; gross_notional: number; net_notional: number;
     gross_leverage: number; net_leverage: number;
-    current_margin: number; margin_utilisation: number;
+    initial_margin: number; current_margin: number;
+    maintenance_margin: number; free_margin: number;
+    margin_headroom: number; margin_utilisation: number;
     open_stop_risk: number; unstopped_notional: number;
     open_risk: number; open_risk_pct_equity: number;
     net_pnl: number; remaining_reward: number;
     portfolio_rr: number | null; risk_capacity: number;
     risk_by_strategy: Record<string, number>;
-    status: string; pm_action: string };
+    risk_by_sector: Record<string, number>;
+    status: string; warnings: string[]; pm_action: string };
   margin?: { used: number; utilisation: number;
-    call_buffer_check: { margin_call_first: boolean;
-      note: string } | null };
+    call_buffer_check: { margin_call_before_stop: boolean;
+      warning: string | null } | null };
   drawdown?: { max_dd: number | null;
     escalation: { drawdown: number; level: string;
       action: string } };
@@ -206,8 +209,11 @@ export function RiskPage() {
                 {c.dashboard.unstopped_notional > 0 && (
                   <span className="text-warn">${fmtNum(c.dashboard.unstopped_notional, 0)} notional unstopped</span>
                 )}
-                {c.margin?.call_buffer_check?.margin_call_first && (
-                  <span className="text-neg">margin call precedes stop — {c.margin.call_buffer_check.note}</span>
+                {(c.dashboard.warnings ?? []).map((w, i) => (
+                  <span key={i} className="text-warn">{w}</span>
+                ))}
+                {c.margin?.call_buffer_check?.margin_call_before_stop && (
+                  <span className="text-neg">{c.margin.call_buffer_check.warning}</span>
                 )}
                 {c.drawdown?.escalation && c.drawdown.escalation.level !== "NORMAL" && (
                   <span className="text-warn">→ {c.drawdown.escalation.action}</span>

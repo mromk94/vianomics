@@ -301,5 +301,44 @@ async def run_checks(db: AsyncSession) -> dict:
                         required=dr.numbers["iv"],
                         action="reduce/exit review"): n["valuation"] += 1
 
+    # ── risk snapshot (spec §33) — persist the book's risk state on
+    # every sweep so exposure/leverage/margin/open-risk is auditable
+    # over time, not just observable in the moment ──
+    try:
+        from app.models.risk import RiskSnapshot
+        from app.routers.risk import _active_limits, _portfolio_ctx
+        from app.services import risk_engine as re_
+        ctx = await _portfolio_ctx(db)
+        limits = await _active_limits(db)
+        dash = re_.portfolio_dashboard(
+            [{"notional": p["market_value"],
+              "margin": p["market_value"] * (p.get("margin_rate") or 0),
+              "open_risk": p.get("open_risk"),
+              "net_pnl": p.get("unrealized") or 0,
+              "direction": p.get("direction") or "long",
+              "strategy": p.get("strategy"),
+              "sector": p.get("sector")}
+             for p in ctx["positions"]],
+            ctx["nav"], ctx["cash"], limits=limits)
+        stress = re_.named_stress(ctx["positions"], ctx["nav"],
+                                  limits=limits)
+        worst_stress = max((s["loss"] for s in stress), default=0)
+        db.add(RiskSnapshot(
+            equity=dash["equity"], cash=ctx["cash"],
+            gross_exposure=dash["gross_notional"],
+            net_exposure=dash["net_notional"],
+            leverage=dash["gross_leverage"],
+            margin_used=dash["current_margin"],
+            margin_utilisation=dash["margin_utilisation"],
+            open_risk=dash["open_risk"],
+            open_risk_pct=dash["open_risk_pct_equity"],
+            risk_capacity=dash["risk_capacity"],
+            drawdown_pct=ctx.get("max_dd"),
+            stress_loss=worst_stress,
+            status=dash["status"],
+            engine_version=re_.ENGINE_VERSION))
+    except Exception:
+        pass  # snapshot failure must never break the monitor sweep
+
     return {"emitted": n, "monitor_version": MONITOR_VERSION,
             "at": now.isoformat()}
