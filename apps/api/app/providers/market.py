@@ -59,6 +59,22 @@ class TiingoAdapter(HttpAdapter):
         )
         return resp.json()
 
+    async def intraday(self, ticker: str, start_date: str,
+                       resample_freq: str = "30min") -> list[dict]:
+        """IEX intraday bars — /iex/{ticker}/prices resampled server-
+        side (1min|5min|15min|30min|1hour|4hour). Returns
+        [{date, open, high, low, close, volume}] recent ~30 days max."""
+        resp = await self._get(
+            f"{self.base_url}/iex/{ticker.lower()}/prices",
+            params={
+                "startDate": start_date,
+                "resampleFreq": resample_freq,
+                "columns": "date,open,high,low,close,volume",
+            },
+            headers=self._headers(),
+        )
+        return resp.json()
+
 
 def get_market_adapter() -> HttpAdapter:
     provider = os.environ.get("MARKET_PROVIDER", "tiingo")

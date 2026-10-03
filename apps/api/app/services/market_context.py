@@ -20,7 +20,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingestion.upsert import get_or_create
-from app.models.instruments import Instrument, InstrumentIdentifier
+from app.models.instruments import (
+    Instrument,
+    InstrumentIdentifier,
+    Sector,
+)
 from app.models.market import MarketQuote, OhlcvBar
 from app.providers.yahoo import YahooAdapter
 
@@ -70,10 +74,27 @@ SECTOR_ETF_MAP: dict[str, str] = {
 
 
 async def ensure_market_context(db: AsyncSession) -> int:
-    """Idempotently create the context instruments. Returns count
-    ensured."""
+    """Idempotently create the context instruments, wire sector
+    ETFs to their GICS sectors, and place them in the universe
+    hierarchy. Returns count ensured.
+
+    Universe placement:
+    - every context instrument → 'global' (known layer)
+    - sector SPDRs → 'eligible' + 'approved' — they are tradeable
+      market exposures, so the screener sees them. Fundamentals
+      criteria will report insufficient_data (ETFs have no 10-K
+      facts); technical criteria still score them honestly.
+    """
+    from app.models.universe import Universe
+    from app.services.universe import set_membership
+
+    sector_ids = dict(
+        (await db.execute(select(Sector.name, Sector.id))).all())
+    universes = dict(
+        (await db.execute(select(Universe.name, Universe.id))).all())
+
     n = 0
-    for sym, (name, cls, _grp) in CONTEXT_INSTRUMENTS.items():
+    for sym, (name, cls, grp) in CONTEXT_INSTRUMENTS.items():
         inst, _ = await get_or_create(
             db, Instrument, {"symbol": sym},
             {"name": name, "asset_class": cls, "currency": "USD",
@@ -81,11 +102,24 @@ async def ensure_market_context(db: AsyncSession) -> int:
         if inst is None:
             continue
         n += 1
+        if grp == "sector" and inst.sector_id is None:
+            inst.sector_id = sector_ids.get(SECTOR_ETF_MAP.get(sym))
         await get_or_create(
             db, InstrumentIdentifier,
             {"instrument_id": inst.id, "scheme": "ticker",
              "value": sym},
             {"is_primary": True})
+        if "global" in universes:
+            await set_membership(
+                db, universe_name="global", instrument=inst,
+                status="active", reason="market context")
+        if grp == "sector":
+            for uname in ("eligible", "approved"):
+                if uname in universes:
+                    await set_membership(
+                        db, universe_name=uname, instrument=inst,
+                        status="active",
+                        reason="sector ETF — tradeable market context")
     return n
 
 
