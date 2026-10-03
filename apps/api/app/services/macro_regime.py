@@ -127,6 +127,30 @@ def _change(vals: list[tuple[datetime, float]], periods: int = 2) -> float | Non
     return vals[-1][1] - vals[-1 - periods][1]
 
 
+async def _index_close(db: AsyncSession, symbol: str,
+                       as_of: datetime, limit: int = 1) -> list[float]:
+    """Latest daily closes for a context symbol (e.g. ^VIX) — the
+    Yahoo-bars fallback when a FRED series is absent/stale. PIT:
+    only bars with time ≤ as_of."""
+    inst = (
+        await db.execute(
+            select(Instrument).where(Instrument.symbol == symbol)
+        )
+    ).scalar_one_or_none()
+    if inst is None:
+        return []
+    rows = (
+        await db.execute(
+            select(OhlcvBar.close)
+            .where(OhlcvBar.instrument_id == inst.id,
+                   OhlcvBar.timeframe == "1d", OhlcvBar.time <= as_of)
+            .order_by(OhlcvBar.time.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    return [float(c) for c in reversed(rows)]
+
+
 async def _spy_bars(db: AsyncSession, as_of: datetime, limit=260) -> list[float]:
     inst = (
         await db.execute(
@@ -232,6 +256,17 @@ async def classify(db: AsyncSession, as_of: datetime) -> dict:
     hy, hy_w = await feat("BAMLH0A0HYM2", 4)
     yc, _ = await feat("T10Y2Y")
     vix, _ = await feat("VIXCLS")
+    if vix is None:
+        # FRED VIXCLS absent/stale → ^VIX daily bar (yahoo) — same
+        # underlying series, different transport. Recorded in feats.
+        vx = await _index_close(db, "^VIX", as_of)
+        if vx:
+            vix = vx[-1]
+            feats["VIXCLS"].update({
+                "value": vix, "fallback": "^VIX:yahoo",
+                "stale": False})
+            if "VIXCLS" in stale:
+                stale.remove("VIXCLS")
     un, un_w = await feat("UNRATE", 4)
     indpro, ip_w = await feat("INDPRO", 6)
     cpi, cpi_w = await feat("CPIAUCSL", 12)

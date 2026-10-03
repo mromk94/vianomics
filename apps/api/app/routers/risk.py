@@ -107,32 +107,55 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
         select(ExternalAccount).where(ExternalAccount.connected))
     ).scalars().all()
     if ext_accounts:
-        all_inst = {i.symbol: i for i in (await db.execute(
-            select(Instrument))).scalars().all()}
+        insts = (await db.execute(
+            select(Instrument))).scalars().all()
+        all_inst = {i.symbol: i for i in insts}
+        # alias resolution — ticker identifiers let "FB.OQ" → FB →
+        # META resolve to the canonical instrument
+        from app.models.instruments import InstrumentIdentifier
+        id_map = {i.id: i for i in insts}
+        for val, iid in (await db.execute(
+                select(InstrumentIdentifier.value,
+                       InstrumentIdentifier.instrument_id)
+                .where(InstrumentIdentifier.scheme == "ticker"))).all():
+            if iid in id_map and val.upper() not in all_inst:
+                all_inst[val.upper()] = id_map[iid]
+        # live tape — MT4 quotes pushed by the EA; fresher than the
+        # snapshot's open-price marks. Only trusted when recent.
+        from datetime import timedelta
+        from app.models.market import MarketQuote
+        qcut = utcnow() - timedelta(minutes=30)
+        live_quotes = {q.symbol.upper(): q for q in (await db.execute(
+            select(MarketQuote).where(
+                MarketQuote.ts >= qcut))).scalars().all()}
     for a in ext_accounts:
         eq = float(a.equity or 0)
         if eq <= 0:
             continue
-        # merge same-symbol rows into one position per account+symbol
+        # merge same-symbol+direction rows into one position
         merged: dict[str, dict] = {}
         for rp in (a.positions or []):
             sym = str(rp.get("symbol", "")).upper()
             base = sym.split(".")[0]           # AMD.OQ → AMD
             qty = float(rp.get("qty") or 0)
             px = float(rp.get("price") or 0)
+            side = str(rp.get("type") or "buy").lower()
             if qty <= 0 or px <= 0:
                 continue
-            m = merged.setdefault(sym, {
+            key = f"{sym}:{side}"
+            m = merged.setdefault(key, {
                 "symbol": base, "display": sym, "qty": 0.0,
-                "cost": 0.0, "profit": 0.0})
+                "cost": 0.0, "profit": 0.0, "side": side,
+                "bid": None, "ask": None})
             m["qty"] += qty
             m["cost"] += qty * px              # VWAP numerator
             m["profit"] += float(rp.get("profit") or 0)
+            m["bid"] = rp.get("bid") or m["bid"]
+            m["ask"] = rp.get("ask") or m["ask"]
         ext_margin_rate = float(
             (await _active_limits(db)).get("external_margin_rate")
             or 0.20)
         for sym, m in merged.items():
-            mv = m["qty"] * (m["cost"] / m["qty"])
             inst = all_inst.get(m["symbol"])
             sec = "?"
             if inst and inst.sector_id:
@@ -144,14 +167,36 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
             mrate = (float(inst.margin_rate)
                      if inst and inst.margin_rate is not None
                      else ext_margin_rate)
+            avg = m["cost"] / m["qty"]
+            # mark hierarchy: fresh MT4 quote → per-position pushed
+            # bid/ask → open price (last resort; flagged)
+            quote = live_quotes.get(m["display"]) or \
+                live_quotes.get(m["symbol"])
+            mark = None
+            if m["side"] == "sell":
+                mark = float(quote.ask) if quote and quote.ask \
+                    else float(m["ask"]) if m["ask"] else None
+                mark_src = "mt4" if quote and quote.ask else \
+                    "push" if m["ask"] else None
+            else:
+                mark = float(quote.bid) if quote and quote.bid \
+                    else float(m["bid"]) if m["bid"] else None
+                mark_src = "mt4" if quote and quote.bid else \
+                    "push" if m["bid"] else None
+            if not mark or mark <= 0:
+                mark, mark_src = avg, "open"
+            mv = m["qty"] * mark
+            unreal = m["profit"]
+            # direction carried through — the pushed `type` tells the
+            # book whether this is a long or short CFD leg
             positions.append({
                 "symbol": m["symbol"],
                 "display_symbol": m["display"],
                 "sector": sec if inst else f"External ({a.source})",
                 "market_value": mv * cs,
                 "quantity": m["qty"],
-                "avg_cost": m["cost"] / m["qty"],
-                "current_price": m["cost"] / m["qty"],
+                "avg_cost": avg,
+                "current_price": mark,
                 "contract_size": cs,
                 "margin_rate": mrate,
                 "maint_margin_rate": (
@@ -160,14 +205,20 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
                     else None),
                 "stop_price": None,   # broker pushes no stops
                 "target_price": None, "fair_value": None,
-                "strategy": None, "direction": "long",
-                "unrealized": m["profit"],
+                "strategy": None,
+                "direction": "short" if m["side"] == "sell" else "long",
+                "unrealized": unreal,
                 "daily_pnl": None,
                 "external": True,
                 "source": a.source,
                 "beta": 1.0,
                 "liquidity_days": 0,
                 "instrument_matched": inst is not None,
+                "mark_source": mark_src,
+                "mark_ts": quote.ts.isoformat() if quote else None,
+                "spread": (float(quote.ask) - float(quote.bid)
+                           if quote and quote.ask and quote.bid
+                           else None),
             })
 
     # Net Liquidating Equity (spec Panel 1):

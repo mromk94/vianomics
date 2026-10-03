@@ -380,6 +380,29 @@ export function CommandCenter() {
                   Overlays, not standalone trading signals.
                 </div>
               </div>
+              {/* market strip — indices, vol, rates, macro ETFs */}
+              {(data.market?.length ?? 0) > 0 && (
+                <div className="mb-3 space-y-1">
+                  {["index", "volatility", "rates", "macro"].map((g) => {
+                    const rows = data.market.filter((m) => m.group === g);
+                    if (!rows.length) return null;
+                    return (
+                      <div key={g} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+                        <span className="w-16 shrink-0 text-[10px] uppercase tracking-wider text-faint">{g}</span>
+                        {rows.map((m) => (
+                          <span key={m.symbol} className="flex items-baseline gap-1" title={`${m.name} · ${m.as_of}`}>
+                            <span className="text-dim">{m.symbol.replace("^", "")}</span>
+                            <span className="num">{fmtNum(m.close, 2)}</span>
+                            <span className={`num text-[10px] ${(m.day_pct ?? 0) >= 0 ? "text-pos" : "text-neg"}`}>
+                              {m.day_pct != null ? `${m.day_pct >= 0 ? "+" : ""}${fmtNum(m.day_pct, 2)}%` : ""}
+                            </span>
+                          </span>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               {data.calendar.length === 0 ? (
                 <EmptyState title="No upcoming releases" hint="Awaiting macro calendar ingestion." />
               ) : (

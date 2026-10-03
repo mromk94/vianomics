@@ -145,6 +145,8 @@ class CommandCenterResponse(BaseModel):
     agents: list[AgentVote] = Field(default_factory=list)
     sectors: list[SectorPerf] = Field(default_factory=list)
     calendar: list[CalendarEvent] = Field(default_factory=list)
+    # market-context strip — indices, vol, rates, macro & sector ETFs
+    market: list[dict] = Field(default_factory=list)
     signals: list[TradeSignal] = Field(default_factory=list)
     watchlist: list[WatchlistItem] = Field(default_factory=list)
     approvals: list[ApprovalItem] = Field(default_factory=list)

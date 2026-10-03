@@ -233,25 +233,38 @@ async def ingest_fred_series(
             "published_at": o.get("realtime_start") or o["date"],
         }
         for o in raw
-        if o.get("value") not in (None, ".")
+        if o.get("value") not in (None, "", ".")
     ]
 
+    # bulk dedupe — one query for existing (observed_at, published_at)
+    # keys, then add_all. Per-record get_or_create over a remote DB
+    # turns a 10K-row series into minutes of round-trips.
+    def _aware(dt):
+        return (dt.replace(tzinfo=UTC)
+                if dt is not None and dt.tzinfo is None else dt)
+
+    existing = {
+        (_aware(o.observed_at), _aware(o.published_at))
+        for o in (await session.execute(
+            select(MacroObservation)
+            .where(MacroObservation.series_id == series.id))
+        ).scalars().all()
+    }
+
     async def persist(sess: AsyncSession, rec: MacroIn):
-        await get_or_create(
-            sess,
-            MacroObservation,
-            {
-                "series_id": series.id,
-                "observed_at": _parse_dt(rec.observed_at)
-                if isinstance(rec.observed_at, str)
-                else rec.observed_at,
-                "published_at": _parse_dt(rec.published_at)
-                if isinstance(rec.published_at, str)
-                else rec.published_at,
-            },
-            {"value": rec.value, "source": "fred",
-             "source_ref": f"fred:{code}"},
-        )
+        obs_at = _aware(_parse_dt(rec.observed_at)
+                        if isinstance(rec.observed_at, str)
+                        else rec.observed_at)
+        pub_at = _aware(_parse_dt(rec.published_at)
+                        if isinstance(rec.published_at, str)
+                        else rec.published_at)
+        if (obs_at, pub_at) in existing:
+            return
+        sess.add(MacroObservation(
+            series_id=series.id, observed_at=obs_at,
+            published_at=pub_at, value=rec.value, source="fred",
+            source_ref=f"fred:{code}"))
+        existing.add((obs_at, pub_at))
 
     res = await ingest_records(
         session,
@@ -268,6 +281,77 @@ async def ingest_fred_series(
     run.status = "partial" if res.records_quarantined else "success"
     run.finished_at = utcnow()
     await mark_sync(session, provider, f"macro:{code}", True)
+    return run
+
+
+# release-name matchers → which FRED releases matter to the desk.
+# Substring match against release_name — tolerant to FRED renames.
+WATCH_RELEASES = [
+    "employment situation", "consumer price index",
+    "producer price index", "gross domestic product",
+    "industrial production", "consumer sentiment",
+    "retail sales", "federal open market",
+    "personal income", "housing starts",
+]
+
+
+async def ingest_fred_calendar(
+    session: AsyncSession,
+    adapter: ProviderAdapter,
+    days_ahead: int = 45,
+) -> JobRun | None:
+    """Upcoming macro releases → economic_releases. Needs a FRED key;
+    without one the job degrades silently (calendar is optional)."""
+    from datetime import timedelta
+    from app.models.market import EconomicRelease
+
+    job, _ = await get_or_create(
+        session, Job, {"key": "ingest:fred:calendar"},
+        {"kind": "ingestion"})
+    run = JobRun(job_id=job.id)
+    session.add(run)
+    await session.flush()
+    provider = await _provider(session, "fred")
+
+    today = date.today()
+    try:
+        raw = await adapter.release_dates(
+            today.isoformat(),
+            (today + timedelta(days=days_ahead)).isoformat())
+    except Exception as e:
+        run.status, run.error, run.finished_at = (
+            "failed", str(e)[:200], utcnow())
+        await mark_sync(session, provider, "macro:calendar", False,
+                        run.error)
+        return run
+    if raw is None:
+        run.status = "failed"
+        run.finished_at = utcnow()
+        return run
+
+    keep = [r for r in raw if any(
+        w in (r.get("release_name") or "").lower()
+        for w in WATCH_RELEASES)]
+    ok = 0
+    for r in keep:
+        rel_at = _parse_dt(r["date"])
+        exists = (await session.execute(
+            select(EconomicRelease.id).where(
+                EconomicRelease.title == r["release_name"],
+                EconomicRelease.release_at == rel_at))
+        ).scalar_one_or_none()
+        if exists is None:
+            session.add(EconomicRelease(
+                title=r["release_name"], release_at=rel_at,
+                source="fred"))
+            ok += 1
+    await session.flush()
+    run.records_in = len(keep)
+    run.records_ok = ok
+    run.records_quarantined = 0
+    run.status = "success"
+    run.finished_at = utcnow()
+    await mark_sync(session, provider, "macro:calendar", True)
     return run
 
 
@@ -316,32 +400,96 @@ async def ingest_stooq_bars(
         await mark_sync(session, provider, f"market:{symbol}", True)
         return run
 
+    # bulk dedupe — one query for existing bar times; per-row SELECTs
+    # over a remote DB turn a 500-bar ingest into minutes of latency
+    existing_times = {
+        t for (t,) in (await session.execute(
+            select(OhlcvBar.time).where(
+                OhlcvBar.instrument_id == inst.id,
+                OhlcvBar.timeframe == "1d",
+                OhlcvBar.source == "yahoo",
+                OhlcvBar.adjusted.is_(False)))).all()
+    }
     ok = 0
     for r in raw:
         t = r["observed_at"]
-        exists = (
-            await session.execute(
-                select(OhlcvBar.id).where(
-                    OhlcvBar.instrument_id == inst.id,
-                    OhlcvBar.timeframe == "1d",
-                    OhlcvBar.time == t,
-                    OhlcvBar.source == "yahoo",
-                    OhlcvBar.adjusted.is_(False),
-                )
-            )
-        ).scalar_one_or_none()
-        if exists is None:
+        if t not in existing_times:
             session.add(OhlcvBar(
                 instrument_id=inst.id, timeframe="1d", time=t,
                 open=r["open"], high=r["high"], low=r["low"],
                 close=r["close"], volume=r["volume"],
                 adjusted=False, source="yahoo",
             ))
-            ok += 1
-        else:
-            ok += 1  # already present — idempotent
+            existing_times.add(t)
+        ok += 1
     await session.flush()
 
+    run.records_in = run.records_ok = len(raw)
+    run.records_quarantined = 0
+    run.status = "success"
+    run.finished_at = utcnow()
+    await mark_sync(session, provider, f"market:{symbol}", True)
+    return run
+
+
+async def ingest_tiingo_bars(
+    session: AsyncSession,
+    adapter,
+    symbol: str,
+    start: str = "2015-01-01",
+) -> JobRun:
+    """Tiingo EOD bars → ohlcv_bars (source='tiingo', adjusted=False).
+    Idempotent on (instrument, timeframe, time, source, adjusted)."""
+    from app.models.market import OhlcvBar
+
+    job, _ = await get_or_create(
+        session, Job, {"key": f"ingest:tiingo:{symbol}"},
+        {"kind": "ingestion"})
+    run = JobRun(job_id=job.id)
+    session.add(run)
+    await session.flush()
+    provider = await _provider(session, "tiingo")
+
+    inst = (
+        await session.execute(
+            select(Instrument).where(Instrument.symbol == symbol.upper())
+        )
+    ).scalar_one_or_none()
+    if inst is None:
+        run.status, run.error, run.finished_at = (
+            "failed", f"{symbol} not in security master", utcnow())
+        await mark_sync(session, provider, f"market:{symbol}", False,
+                        run.error)
+        return run
+
+    today = date.today().isoformat()
+    raw, status = await run_job(
+        session, job_run=run, provider_key="tiingo",
+        work=lambda: adapter.eod(symbol, start, today))
+    if raw is None:
+        run.finished_at = utcnow()
+        await mark_sync(session, provider, f"market:{symbol}", False,
+                        run.error)
+        return run
+
+    existing_times = {
+        t for (t,) in (await session.execute(
+            select(OhlcvBar.time).where(
+                OhlcvBar.instrument_id == inst.id,
+                OhlcvBar.timeframe == "1d",
+                OhlcvBar.source == "tiingo",
+                OhlcvBar.adjusted.is_(False)))).all()
+    }
+    for r in raw:
+        t = _parse_dt(r["date"])
+        if t not in existing_times:
+            session.add(OhlcvBar(
+                instrument_id=inst.id, timeframe="1d", time=t,
+                open=r["open"], high=r["high"], low=r["low"],
+                close=r["close"], volume=r.get("volume"),
+                adjusted=False, source="tiingo"))
+            existing_times.add(t)
+    await session.flush()
     run.records_in = run.records_ok = len(raw)
     run.records_quarantined = 0
     run.status = "success"

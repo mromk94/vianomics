@@ -107,6 +107,18 @@ async def run_checks(db: AsyncSession) -> dict:
                 dedup_key="regime_missing",
                 action="run macro ingestion"): n["macro"] += 1
 
+    # keep the regime snapshot fresh — a persisted run older than a
+    # day means the desk is reading yesterday's market
+    reg_at = regime.as_of if regime else None
+    if reg_at is not None and reg_at.tzinfo is None:
+        reg_at = reg_at.replace(tzinfo=timezone.utc)
+    if reg_at is None or (now - reg_at).total_seconds() > 20 * 3600:
+        try:
+            from app.services import macro_regime as mr
+            await mr.run_and_persist(db, now)
+        except Exception:
+            pass
+
     # ── trading: open pyramid trades vs stops, stuck orders ──
     trades = (
         await db.execute(
