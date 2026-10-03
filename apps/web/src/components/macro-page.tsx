@@ -77,7 +77,7 @@ export function MacroPage() {
 
   const runRegime = async () => {
     try {
-      await apiPost("/api/v1/macro/run", {});
+      await apiPost("/api/v1/macro/run", {}, 90_000);
       setNotice(null);
       load();
     } catch (e) {
