@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
@@ -13,6 +13,7 @@ from app.schemas.command_center import (
     AgentVote,
     AlertItem,
     ApprovalItem,
+    CalendarEvent,
     CioBlock,
     CommandCenterResponse,
     DecisionItem,
@@ -531,68 +532,164 @@ async def command_center(
             agent=key, recommendation=o.recommendation or "?",
             score=int(o.score) if o.score is not None else None))
 
-    # sectors — real performance: mean 1D/1W return of universe
-    # instruments grouped by sector; regime-favored marked ★
+    # sectors — prefer the 11 SPDR sector ETFs (real market sectors);
+    # fall back to mean 1D/1W return of universe names grouped by
+    # sector when the ETFs aren't ingested yet
+    from app.services.market_context import CONTEXT_INSTRUMENTS, \
+        SECTOR_ETF_MAP
     sectors: list[SectorPerf] = []
     try:
-        sec_rows = (await db.execute(
-            select(Instrument.id, Instrument.symbol, Sector.name)
-            .outerjoin(Sector, Instrument.sector_id == Sector.id)
-            .where(Instrument.is_active))).all()
-        ids = [r[0] for r in sec_rows]
-        if ids:
-            from datetime import timedelta
+        etf_syms = list(SECTOR_ETF_MAP)
+        etf_rows = (await db.execute(
+            select(Instrument.id, Instrument.symbol)
+            .where(Instrument.symbol.in_(etf_syms)))).all()
+        if etf_rows:
             cutoff = datetime.now(UTC) - timedelta(days=10)
-            recent = (await db.execute(
+            etf_bars = (await db.execute(
                 select(OhlcvBar.instrument_id, OhlcvBar.time,
                        OhlcvBar.close)
-                .where(OhlcvBar.instrument_id.in_(ids),
+                .where(OhlcvBar.instrument_id.in_(
+                       [r[0] for r in etf_rows]),
                        OhlcvBar.timeframe == "1d",
                        OhlcvBar.time >= cutoff)
                 .order_by(OhlcvBar.time))).all()
             by_i: dict[str, list] = {}
-            for iid, t, c in recent:
+            for iid, t, c in etf_bars:
                 by_i.setdefault(iid, []).append((t, float(c)))
-            agg: dict[str, dict] = {}
-            for iid, sym, sname in sec_rows:
-                pts = by_i.get(iid, [])
-                if len(pts) < 2:
-                    continue
-                sec = sname or "Unclassified"
-                d = agg.setdefault(sec, {"n": 0, "d1": [], "w1": []})
-                d["n"] += 1
-                last, first = pts[-1][1], pts[0][1]
-                prev = pts[-2][1]
-                d["d1"].append((last - prev) / prev * 100)
-                d["w1"].append((last - first) / first * 100)
-            total = sum(d["n"] for d in agg.values()) or 1
             prefs = (rg.sector_preferences
                      if rg and getattr(rg, "sector_preferences",
                                        None) else {})
             favored = set(prefs.keys())
-            sectors = [
-                SectorPerf(
-                    sector=(name + (" ★" if name in favored else "")),
-                    weight_pct=round(d["n"] / total * 100, 1),
-                    day_pct=round(sum(d["d1"]) / len(d["d1"]), 2),
-                    week_pct=round(sum(d["w1"]) / len(d["w1"]), 2),
-                    momentum=min(100, int(abs(
-                        sum(d["w1"]) / len(d["w1"])) * 10)))
-                for name, d in sorted(
-                    agg.items(),
-                    key=lambda kv: -abs(sum(kv[1]["w1"])
-                                        / len(kv[1]["w1"])))
-            ][:10]
+            for iid, sym in etf_rows:
+                pts = by_i.get(iid, [])
+                if len(pts) < 2:
+                    continue
+                name = SECTOR_ETF_MAP[sym]
+                last, first, prev = pts[-1][1], pts[0][1], pts[-2][1]
+                w1 = (last - first) / first * 100
+                sectors.append(SectorPerf(
+                    sector=name + (" ★" if name in favored else ""),
+                    weight_pct=None,
+                    day_pct=round((last - prev) / prev * 100, 2),
+                    week_pct=round(w1, 2),
+                    momentum=min(100, int(abs(w1) * 10))))
+            sectors.sort(key=lambda s: -(s.week_pct or 0))
     except Exception as e:
         import logging
-        logging.warning("CC sectors failed: %s", e)
-        sectors = [SectorPerf(sector=f"_debug:{e}"[:60])]
+        logging.warning("CC sector-etf perf failed: %s", e)
+    if not sectors:
+        try:
+            sec_rows = (await db.execute(
+                select(Instrument.id, Instrument.symbol, Sector.name)
+                .outerjoin(Sector, Instrument.sector_id == Sector.id)
+                .where(Instrument.is_active))).all()
+            ids = [r[0] for r in sec_rows]
+            if ids:
+                cutoff = datetime.now(UTC) - timedelta(days=10)
+                recent = (await db.execute(
+                    select(OhlcvBar.instrument_id, OhlcvBar.time,
+                           OhlcvBar.close)
+                    .where(OhlcvBar.instrument_id.in_(ids),
+                           OhlcvBar.timeframe == "1d",
+                           OhlcvBar.time >= cutoff)
+                    .order_by(OhlcvBar.time))).all()
+                by_i: dict[str, list] = {}
+                for iid, t, c in recent:
+                    by_i.setdefault(iid, []).append((t, float(c)))
+                agg: dict[str, dict] = {}
+                for iid, sym, sname in sec_rows:
+                    pts = by_i.get(iid, [])
+                    if len(pts) < 2:
+                        continue
+                    sec = sname or "Unclassified"
+                    d = agg.setdefault(sec, {"n": 0, "d1": [], "w1": []})
+                    d["n"] += 1
+                    last, first = pts[-1][1], pts[0][1]
+                    prev = pts[-2][1]
+                    d["d1"].append((last - prev) / prev * 100)
+                    d["w1"].append((last - first) / first * 100)
+                total = sum(d["n"] for d in agg.values()) or 1
+                prefs = (rg.sector_preferences
+                         if rg and getattr(rg, "sector_preferences",
+                                           None) else {})
+                favored = set(prefs.keys())
+                sectors = [
+                    SectorPerf(
+                        sector=(name + (" ★" if name in favored else "")),
+                        weight_pct=round(d["n"] / total * 100, 1),
+                        day_pct=round(sum(d["d1"]) / len(d["d1"]), 2),
+                        week_pct=round(sum(d["w1"]) / len(d["w1"]), 2),
+                        momentum=min(100, int(abs(
+                            sum(d["w1"]) / len(d["w1"])) * 10)))
+                    for name, d in sorted(
+                        agg.items(),
+                        key=lambda kv: -abs(sum(kv[1]["w1"])
+                                            / len(kv[1]["w1"])))
+                ][:10]
+        except Exception as e:
+            import logging
+            logging.warning("CC sectors failed: %s", e)
+            sectors = [SectorPerf(sector=f"_debug:{e}"[:60])]
     if not sectors:
         pref_score = {"favored": 80.0, "neutral": 50.0, "avoid": 20.0}
         sectors = [SectorPerf(sector=s,
                               momentum=pref_score.get(str(w), 50.0))
                    for s, w in (rg.sector_preferences.items() if rg
                                 else [])] if rg else []
+
+    # macro calendar — economic_releases populated by
+    # ingest:fred:calendar (rides on backfill)
+    from app.models.market import EconomicRelease
+    rels = (await db.execute(
+        select(EconomicRelease)
+        .where(EconomicRelease.release_at >=
+               datetime.now(UTC) - timedelta(days=1))
+        .order_by(EconomicRelease.release_at).limit(8))
+    ).scalars().all()
+    calendar = [CalendarEvent(title=r.title,
+                              at=r.release_at.isoformat(),
+                              detail=r.source) for r in rels]
+
+    # market context strip — indices, vol, rates, macro ETFs; the
+    # tape the desk is actually watching
+    market_strip: list[dict] = []
+    ctx_syms = list(CONTEXT_INSTRUMENTS)
+    ctx_rows = (await db.execute(
+        select(Instrument.id, Instrument.symbol, Instrument.name,
+               Instrument.asset_class)
+        .where(Instrument.symbol.in_(ctx_syms)))).all()
+    if ctx_rows:
+        c_bars = (await db.execute(
+            select(OhlcvBar.instrument_id, OhlcvBar.time,
+                   OhlcvBar.close)
+            .where(OhlcvBar.instrument_id.in_(
+                   [r[0] for r in ctx_rows]),
+                   OhlcvBar.timeframe == "1d",
+                   OhlcvBar.time >=
+                   datetime.now(UTC) - timedelta(days=10))
+            .order_by(OhlcvBar.time))).all()
+        by_i2: dict[str, list] = {}
+        for iid, t, cl in c_bars:
+            by_i2.setdefault(iid, []).append((t, float(cl)))
+        grp = {s: CONTEXT_INSTRUMENTS[s][2] for s in ctx_syms}
+        for iid, sym, nm, _acls in ctx_rows:
+            pts = by_i2.get(iid, [])
+            if not pts:
+                continue
+            last, first = pts[-1][1], pts[0][1]
+            prev = pts[-2][1] if len(pts) > 1 else first
+            market_strip.append({
+                "symbol": sym, "name": nm, "group": grp.get(sym, ""),
+                "close": last,
+                "day_pct": round((last - prev) / prev * 100, 2)
+                if prev else None,
+                "week_pct": round((last - first) / first * 100, 2)
+                if first else None,
+                "as_of": pts[-1][0].isoformat()[:10]})
+        grp_rank = {"index": 0, "volatility": 1, "rates": 2,
+                    "macro": 3, "sector": 4}
+        market_strip.sort(
+            key=lambda x: (grp_rank.get(x["group"], 9), x["symbol"]))
 
     resp = CommandCenterResponse(
         generated_at=datetime.now(UTC).isoformat(),
@@ -603,6 +700,8 @@ async def command_center(
         cio=cio,
         agents=agents,
         sectors=sectors,
+        calendar=calendar,
+        market=market_strip,
         alerts=alerts,
         approvals=approvals,
         decisions=decisions,

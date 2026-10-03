@@ -37,3 +37,31 @@ class YahooAdapter:
                 "volume": q["volume"][i] or 0,
             })
         return out
+
+    async def fetch_quote(self, symbol: str) -> dict | None:
+        """Chart-API meta → quote snapshot. Uses the same free endpoint
+        as bars — the v7 quote API needs a crumb/cookie, the chart meta
+        does not. Fields present vary by session state (regular vs
+        extended hours)."""
+        async with httpx.AsyncClient(timeout=20, headers=UA) as c:
+            r = await c.get(f"{BASE}/{symbol.upper()}",
+                            params={"range": "5d", "interval": "1d"})
+            r.raise_for_status()
+        result = (r.json().get("chart") or {}).get("result") or []
+        if not result:
+            return None
+        meta = result[0].get("meta") or {}
+        price = meta.get("regularMarketPrice")
+        bid = meta.get("bid") or price
+        ask = meta.get("ask") or price
+        return {
+            "mid": price,
+            "bid": bid,
+            "ask": ask,
+            "prev_close": meta.get("previousClose")
+            or meta.get("chartPreviousClose"),
+            "day_open": meta.get("regularMarketOpen")
+            or meta.get("currentTradingPeriod", {})
+                      .get("regular", {}).get("open"),
+            "market_state": meta.get("marketState"),
+        }

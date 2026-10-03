@@ -89,3 +89,34 @@ class FredAdapter(HttpAdapter):
             for r in rows
             if r.get(code) not in (None, ".")
         ]
+
+    async def release_dates(self, start: str, end: str,
+                            limit: int = 1000) -> list[dict]:
+        """Upcoming release calendar — /releases/dates windowed to
+        [start, end]. Requires the API key (all /fred/* endpoints do).
+        Paginates: the daily-frequency releases alone overflow one
+        page, which silently truncated future macro events.
+        Returns [{release_id, release_name, date}]."""
+        out: list[dict] = []
+        offset = 0
+        while True:
+            resp = await self._get(
+                f"{self.base_url}/releases/dates",
+                params={
+                    "api_key": self._require_key(),
+                    "file_type": "json",
+                    "realtime_start": start,
+                    "realtime_end": end,
+                    "include_release_dates_with_no_data": "true",
+                    "order_by": "release_date",
+                    "sort_order": "asc",
+                    "limit": limit,
+                    "offset": offset,
+                },
+            )
+            batch = (resp.json().get("release_dates") or [])
+            out.extend(batch)
+            if len(batch) < limit:
+                break
+            offset += limit
+        return out

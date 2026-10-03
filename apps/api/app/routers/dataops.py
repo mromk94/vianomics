@@ -148,14 +148,49 @@ async def run_job_now(job_key: str,
             asyncio.create_task(_bg())
             return {"status": "started",
                     "note": "universe pipeline running in background"}
+        elif job_key in ("market:context", "market:quotes"):
+            # context seed (indices/sector ETFs) + quote refresh
+            from app.services import market_context as mc
+            n1 = await mc.ensure_market_context(db)
+            n2 = await mc.refresh_quotes(db) if job_key == \
+                "market:quotes" else 0
+            await db.commit()
+            return {"status": "success",
+                    "records_ok": n1 + n2}
+        elif job_key == "ingest:fred:calendar":
+            from app.services.secrets import get_secret
+            import os
+            key = (await get_secret(db, "FRED_API_KEY")
+                   or os.environ.get("FRED_API_KEY"))
+            run = await ing.ingest_fred_calendar(
+                db, adapters["fred"](api_key=key))
+            if run is None:
+                return {"status": "skipped",
+                        "error": "no FRED_API_KEY configured"}
         elif job_key.startswith("ingest:edgar:facts:"):
             sym = parts[-1]
             if await _instr(db, sym) is None:
                 return {"status": "failed", "error": f"{sym} not in universe"}
             run = await ing.ingest_edgar_facts(db, adapters["edgar"](), sym)
         elif job_key.startswith("ingest:fred:"):
+            from app.services.secrets import get_secret
+            import os
+            key = (await get_secret(db, "FRED_API_KEY")
+                   or os.environ.get("FRED_API_KEY"))
             run = await ing.ingest_fred_series(
-                db, adapters["fred"](), parts[-1], parts[-1])
+                db, adapters["fred"](api_key=key), parts[-1], parts[-1],
+                use_csv=not key)
+        elif job_key.startswith("ingest:tiingo:"):
+            from app.services.secrets import get_secret
+            import os
+            key = (await get_secret(db, "TIINGO_API_KEY")
+                   or os.environ.get("TIINGO_API_KEY"))
+            if not key:
+                return {"status": "failed",
+                        "error": "TIINGO_API_KEY not configured"}
+            from app.providers.market import TiingoAdapter
+            run = await ing.ingest_tiingo_bars(
+                db, TiingoAdapter(api_key=key), parts[-1])
         elif job_key.startswith("ingest:yahoo:") or \
                 job_key.startswith("ingest:stooq:"):
             run = await ing.ingest_stooq_bars(db, adapters["yahoo"](), parts[-1])
@@ -198,6 +233,14 @@ async def _backfill_all():
     from app.services import cache
 
     async with SessionFactory() as db:
+        # market context first — indices/sector/macro ETFs power the
+        # regime engine, sector rotation and Market Intelligence
+        try:
+            from app.services import market_context as mc
+            await mc.ensure_market_context(db)
+            await db.commit()
+        except Exception:
+            await db.rollback()
         insts = (await db.execute(select(Instrument))).scalars().all()
         ya = YahooAdapter()
         for inst in insts:
@@ -206,6 +249,8 @@ async def _backfill_all():
                 await db.commit()
             except Exception:
                 await db.rollback()
+        # per-series isolation — one bad series never kills the rest
+        # of the macro calendar (the 9/28 partial-ingest failure mode)
         try:
             from app.providers.fred import FredAdapter
             from app.services.macro_regime import FRED_SERIES
@@ -220,6 +265,13 @@ async def _backfill_all():
                     await db.commit()
                 except Exception:
                     await db.rollback()
+            # macro release calendar — FRED key when configured
+            try:
+                from app.ingestion.jobs import ingest_fred_calendar
+                await ingest_fred_calendar(db, fred)
+                await db.commit()
+            except Exception:
+                await db.rollback()
         except Exception:
             pass
         # EDGAR is public — a polite UA is baked into HttpAdapter
@@ -231,6 +283,21 @@ async def _backfill_all():
                 await db.commit()
             except Exception:
                 await db.rollback()
+        # derived state: ADV, live quotes for context, regime snapshot
+        try:
+            from app.services import market_context as mc
+            await mc.update_adv(db)
+            await mc.refresh_quotes(db)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+        try:
+            from datetime import UTC, datetime
+            from app.services import macro_regime as mr
+            await mr.run_and_persist(db, datetime.now(UTC))
+            await db.commit()
+        except Exception:
+            await db.rollback()
         try:
             from app.services import technical_engine as te
             await te.run_scan(db)

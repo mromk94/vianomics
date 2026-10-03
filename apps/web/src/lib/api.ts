@@ -195,6 +195,11 @@ export interface CommandCenter {
     momentum: number | null;
   }[];
   calendar: { title: string; at: string; detail: string | null }[];
+  market: {
+    symbol: string; name: string; group: string;
+    close: number; day_pct: number | null; week_pct: number | null;
+    as_of: string;
+  }[];
   signals: { kind: string; message: string; danger: boolean }[];
   watchlist: {
     ticker: string;

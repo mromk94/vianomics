@@ -28,7 +28,9 @@ class Mt4PushIn(BaseModel):
     balance: float | None = None
     equity: float | None = None
     currency: str = Field(default="USD", max_length=3)
-    positions: list[dict] = []          # [{symbol, qty, price, profit}]
+    positions: list[dict] = []          # [{symbol, qty, price, profit, bid?, ask?, stop?, target?}]
+    quotes: list[dict] = []             # [{symbol, bid, ask, ts?}] —
+                                        # MT4 Market Watch live tape
 
 
 @router.post("/mt4/push", status_code=202)
@@ -49,8 +51,49 @@ async def mt4_push(body: Mt4PushIn, db: AsyncSession = Depends(get_db)):
     acc.synced_at = utcnow()
     acc.connected = True
     db.add(acc)
+
+    # live tape — MT4 is a market-data source until real brokers
+    # connect: upsert Market Watch quotes into market_quotes so the
+    # book can be marked to live bid/ask, not the open price
+    nq = 0
+    if body.quotes:
+        from datetime import datetime
+        from app.models.instruments import Instrument
+        from app.models.market import MarketQuote
+        now = utcnow()
+        # symbol → instrument resolution (best-effort; provider-native
+        # symbol is kept so unmatched symbols still mark positions)
+        inst_map = dict(
+            (await db.execute(
+                select(Instrument.symbol, Instrument.id))).all())
+        existing = {q.symbol: q for q in (await db.execute(
+            select(MarketQuote).where(MarketQuote.source == "mt4"))
+        ).scalars().all()}
+        for q in body.quotes:
+            sym = str(q.get("symbol") or "").strip().upper()
+            bid, ask = q.get("bid"), q.get("ask")
+            if not sym or bid is None:
+                continue
+            row = existing.get(sym)
+            if row is None:
+                row = MarketQuote(source="mt4", symbol=sym, ts=now)
+                db.add(row)
+                existing[sym] = row
+            row.instrument_id = inst_map.get(sym)
+            row.bid, row.ask = bid, ask
+            row.mid = ((float(bid) + float(ask)) / 2
+                       if ask is not None else float(bid))
+            raw_ts = q.get("ts")
+            try:
+                row.ts = (datetime.fromisoformat(
+                    str(raw_ts).replace("Z", "+00:00"))
+                    if raw_ts else now)
+            except (ValueError, TypeError):
+                row.ts = now
+            nq += 1
     await db.commit()
-    return {"accepted": True, "positions": len(body.positions)}
+    return {"accepted": True, "positions": len(body.positions),
+            "quotes": nq}
 
 
 @router.get("/sources")

@@ -75,6 +75,36 @@ class EconomicRelease(Base, IdMixin, TimestampMixin):
     source: Mapped[str]
 
 
+class MarketQuote(Base, IdMixin, TimestampMixin):
+    """Latest quote per symbol per source — the live-tape primitive.
+
+    Rows are upserted (never appended): one row per
+    (source, symbol). Sources: 'mt4' (EA Market Watch push, live
+    bid/ask), 'yahoo' (chart-meta regularMarketPrice refresh), future
+    brokers. Downstream readers check `ts` freshness before trusting
+    a mark — a stale quote row is surfaced as stale, never deleted
+    so the last-known value remains visible.
+    """
+
+    __tablename__ = "market_quotes"
+    __table_args__ = (
+        UniqueConstraint("source", "symbol"),
+        Index("ix_quotes_symbol", "symbol"),
+    )
+
+    source: Mapped[str]                      # mt4|yahoo|tiingo|…
+    symbol: Mapped[str]                      # provider-native symbol
+    instrument_id: Mapped[str | None] = mapped_column(
+        ForeignKey("instruments.id", ondelete="SET NULL"), index=True)
+    bid: Mapped[float | None] = mapped_column(Numeric(24, 8))
+    ask: Mapped[float | None] = mapped_column(Numeric(24, 8))
+    mid: Mapped[float | None] = mapped_column(Numeric(24, 8))
+    day_open: Mapped[float | None] = mapped_column(Numeric(24, 8))
+    prev_close: Mapped[float | None] = mapped_column(Numeric(24, 8))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                         index=True)
+
+
 class TechnicalScanResult(Base, IdMixin, TimestampMixin):
     """Persisted technical-engine verdict per instrument — produced by
     the `technical:scan` job, consumed by CC + Trading Desk."""

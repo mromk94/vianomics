@@ -28,6 +28,7 @@ from app.models.market import (
     EconomicRelease,
     MacroObservation,
     MacroSeries,
+    MarketQuote,
     OhlcvBar,
 )
 from app.models.ops import ModelConfig, NotificationChannel, RuntimeFlag, Alert, Job, JobRun, QuarantinedRecord, SecretStore, SyncStatus
