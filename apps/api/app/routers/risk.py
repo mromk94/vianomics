@@ -525,10 +525,13 @@ async def create_pyramid(
     ).scalar_one_or_none()
     if inst is None:
         raise HTTPException(404, f"{body.symbol} not found")
+    adv = body.adv_shares
+    if adv is None and inst.avg_dollar_volume_30d and body.entry:
+        adv = float(inst.avg_dollar_volume_30d) / body.entry
     t = re_.create_pyramid(
         inst.symbol, body.equity, body.entry, body.atr, body.cash,
         risk_pct=body.risk_pct, t2_policy=body.t2_policy,
-        adv_shares=body.adv_shares)
+        adv_shares=adv)
     rec = PyramidTradeRec(
         instrument_id=inst.id, state=t.state.value, entry=t.entry,
         atr_initial=t.atr_initial, shares=t.shares, stop=t.stop,
@@ -615,6 +618,127 @@ async def advance_pyramid(
     await db.commit()
     return {"state": rec.state, "shares": rec.shares, "stop": rec.stop,
             "events": rec.events, "result": result}
+
+
+# ── ATR output sheet + pyramid preview ──
+
+@router.get("/atr/{symbol}")
+async def atr_output(symbol: str,
+                     db: AsyncSession = Depends(get_db)) -> dict:
+    """The docs' 'ATR Output' sheet — SMA14(TR) in absolute + % terms,
+    horizon windows (6d→576d, 12w→156w, 6m→60m), and the pyramid
+    stop/target the state machine would place at the last close."""
+    from app.services import atr as atr_svc
+    rep = await atr_svc.atr_report(db, symbol)
+    if rep is None:
+        raise HTTPException(404, f"{symbol} not in security master")
+    return rep
+
+
+@router.get("/pyramids")
+async def list_pyramids(db: AsyncSession = Depends(get_db)) -> list[dict]:
+    """All pyramid trades (open + closed), newest first — the Pyramid
+    Trades section's data source."""
+    rows = (await db.execute(
+        select(PyramidTradeRec, Instrument.symbol)
+        .join(Instrument, PyramidTradeRec.instrument_id == Instrument.id)
+        .order_by(PyramidTradeRec.created_at.desc())
+    )).all()
+    return [
+        {"id": r.id, "symbol": sym, "state": r.state,
+         "entry": r.entry, "shares": r.shares, "stop": r.stop,
+         "target1": r.target1, "atr_initial": r.atr_initial,
+         "atr_current": (r.params or {}).get("atr_current"),
+         "additions": r.additions,
+         "engine_version": r.engine_version,
+         "created_at": r.created_at.isoformat() if r.created_at else None,
+         "events": r.events or []}
+        for r, sym in rows]
+
+
+class PyramidPreviewIn(BaseModel):
+    symbol: str
+    risk_pct: float = Field(0.005, gt=0, le=0.05)
+    entry: float | None = Field(None, gt=0)     # default: last close
+    equity: float | None = Field(None, gt=0)    # default: live NAV
+    cash: float | None = None                   # default: live cash
+
+
+@router.post("/pyramid/preview")
+async def pyramid_preview(
+    body: PyramidPreviewIn,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The docs' Trade Risk Sheet for a pyramid — REAL ATR from stored
+    bars (never the old 3% proxy), position sizing by max-risk %,
+    leg ladder, margin estimate. Preview only — creates nothing."""
+    from app.services import atr as atr_svc
+
+    inst = (await db.execute(
+        select(Instrument).where(Instrument.symbol == body.symbol.upper()))
+    ).scalar_one_or_none()
+    if inst is None:
+        raise HTTPException(404, f"{body.symbol} not in security master")
+    rep = await atr_svc.atr_report(db, inst.symbol)
+    if rep.get("insufficient") or not rep["daily"]["atr_abs"]:
+        raise HTTPException(
+            422, f"insufficient bar history for ATR "
+                 f"({rep.get('bars', 0)} bars)")
+
+    ctx = await _portfolio_ctx(db)
+    equity = body.equity or ctx["nav"]
+    cash = body.cash if body.cash is not None else ctx["cash"]
+    entry = body.entry or rep["close"]
+    if equity <= 0:
+        raise HTTPException(
+            422, "no portfolio equity — pass `equity` explicitly")
+    atr_abs = rep["daily"]["atr_abs"]
+    adv_shares = (float(inst.avg_dollar_volume_30d) / entry
+                  if inst.avg_dollar_volume_30d and entry else None)
+
+    sz = re_.initial_sizing(
+        equity, body.risk_pct, entry, atr_abs, cash,
+        adv_shares=adv_shares)
+
+    # leg ladder — each target hit adds a standard leg at 3×ATR steps
+    legs = [{"leg": 1, "fill": entry, "shares": sz["shares"],
+             "cumulative": sz["shares"]}]
+    px = entry
+    for n in range(2, 5):
+        px = px + 3 * atr_abs
+        legs.append({"leg": n, "fill": px, "shares": sz["shares"],
+                     "cumulative": sz["shares"] * n})
+
+    cs = float(inst.contract_size or 1)
+    margin_rate = float(inst.margin_rate or 0)
+    return {
+        "symbol": inst.symbol,
+        "as_of": rep["as_of"],
+        "atr": {"abs": atr_abs, "pct": rep["daily"]["atr_pct"],
+                "weekly_pct": rep["weekly"]["atr_pct"]},
+        "inputs": {"entry": entry, "equity": equity, "cash": cash,
+                   "risk_pct": body.risk_pct},
+        "sheet": {
+            "stop": sz["stop_price"],
+            "stop_distance": sz["stop_distance"],
+            "target": entry + 3 * atr_abs,
+            "risk_per_share": entry - sz["stop_price"],
+            "dollar_risk": sz["dollar_risk"],
+            "shares": sz["shares"],
+            "shares_raw": sz["shares_raw"],
+            "binding": sz["binding"],
+            "notional": sz["notional"] * cs,
+            "margin_required": sz["notional"] * cs * margin_rate,
+            "rr": 3.0 / 1.5,
+            "open_risk_pct": (sz["dollar_risk"] / equity
+                              if equity else None),
+        },
+        "legs": legs,
+        "vol_regime": rep["pyramid"]["vol_regime"],
+        "windows": rep["daily"]["windows"],
+        "note": "preview only — no trade created; 'Start pyramid' "
+                "persists a STATE-2 pyramid with these levels",
+    }
 
 
 # ── Risk Center ──

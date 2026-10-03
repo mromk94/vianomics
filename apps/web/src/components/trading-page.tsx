@@ -82,6 +82,10 @@ export function TradingPage() {
   const [adding, setAdding] = useState(false);
   const [orders, setOrders] = useState<ExecOrder[]>([]);
   const [exec, setExec] = useState<ExecStatus | null>(null);
+  const [atrRep, setAtrRep] = useState<any | null>(null);
+  const [prev, setPrev] = useState<any | null>(null);
+  const [pyrs, setPyrs] = useState<any[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
   const chartRef = useRef<HTMLDivElement>(null);
   const chartWrapRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
@@ -105,10 +109,14 @@ export function TradingPage() {
       "vaiip-chart",
       "width=1600,height=1000,menubar=no,toolbar=no,location=no,status=no");
 
+  const loadPyramids = () =>
+    apiGet<any[]>("/api/v1/risk/pyramids").then(setPyrs).catch(() => {});
+
   useEffect(() => {
     apiGet<ScanRow[]>("/api/v1/technical/scan").then(setScan).catch(() => {});
     apiGet<ExecOrder[]>("/api/v1/execution/orders").then(setOrders).catch(() => {});
     apiGet<ExecStatus>("/api/v1/execution/status").then(setExec).catch(() => {});
+    loadPyramids();
   }, []);
 
   const [reloadTick, setReloadTick] = useState(0);
@@ -122,7 +130,30 @@ export function TradingPage() {
         if (String(e.message).includes("404")) setUnknownSym(symbol);
         else setError(e.message);
       });
+    // real ATR + pyramid risk sheet (docs Part 12) — replaces the
+    // old 3%-of-price proxy
+    apiGet(`/api/v1/risk/atr/${symbol}`).then(setAtrRep).catch(() => setAtrRep(null));
+    apiPost("/api/v1/risk/pyramid/preview", { symbol })
+      .then(setPrev).catch(() => setPrev(null));
   }, [symbol, tf, reloadTick]);
+
+  async function startPyramid() {
+    if (!prev) return;
+    try {
+      await apiPost("/api/v1/risk/pyramid", {
+        symbol,
+        entry: prev.inputs.entry,
+        atr: prev.atr.abs,
+        equity: prev.inputs.equity,
+        cash: prev.inputs.cash,
+        risk_pct: prev.inputs.risk_pct,
+      });
+      setNotice(null);
+      loadPyramids();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "create failed");
+    }
+  }
 
   async function addSymbol() {
     if (!unknownSym) return;
@@ -193,7 +224,7 @@ export function TradingPage() {
   ];
 
   // trade setup preview (inspection only)
-  const atrProxy = sig && sig.last_close ? sig.last_close * 0.03 : null;
+
 
   return (
     <div className="space-y-4">
@@ -325,41 +356,83 @@ export function TradingPage() {
           ) : <EmptyState title="No signal" />}
         </SectionCard>
 
-        {/* trade setup preview */}
-        <SectionCard title="Trade setup preview" action="inspection only — no order routing">
-          {sig?.last_close && atrProxy ? (() => {
-            const entry = sig.last_close;
-            const stop = entry - atrProxy;
-            const t1 = entry + 3 * atrProxy;
-            const rr = ((t1 - entry) / (entry - stop)).toFixed(1);
-            return (
-              <div className="space-y-2 text-[13px]">
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  {[
-                    ["Entry (last)", `$${fmtNum(entry, 2)}`],
-                    ["Stop (−1×ATR≈3%)", `$${fmtNum(stop, 2)}`],
-                    ["Target (+3×ATR)", `$${fmtNum(t1, 2)}`],
-                    ["R : R", `${rr} : 1`],
-                  ].map(([l, v]) => (
-                    <div key={l} className="glass-tile px-3 py-2">
-                      <div className="text-[10px] text-dim uppercase">{l}</div>
-                      <div className="num mt-0.5 font-semibold">{v}</div>
-                    </div>
-                  ))}
-                </div>
-                <p className="text-[11px] text-faint">
-                  Sizing follows Part 12 pyramid rules ($Risk → 1.5×ATR); this card is a preview only — no order is staged or routed.
-                  ATR proxy = 3% of price until Part 12 lands.
-                </p>
+        {/* ATR + trade risk sheet — docs Part 12, real computed ATR */}
+        <SectionCard title="ATR & Trade Risk Sheet"
+          action={prev ? (
+            <button onClick={startPyramid}
+              className="rounded-full bg-accent px-3 py-1 text-[11px] font-semibold text-[#0b0f1a] hover:brightness-110">
+              Start pyramid
+            </button>
+          ) : "inspection only — no order routing"}>
+          {prev ? (
+            <div className="space-y-2 text-[13px]">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {[
+                  ["ATR14", `${fmtNum(prev.atr.abs, 2)} (${((prev.atr.pct ?? 0) * 100).toFixed(2)}%)`],
+                  ["Entry (last)", `$${fmtNum(prev.inputs.entry, 2)}`],
+                  ["Stop (−1.5×ATR)", `$${fmtNum(prev.sheet.stop, 2)}`],
+                  ["Target (+3×ATR)", `$${fmtNum(prev.sheet.target, 2)}`],
+                  ["$ Risk", `$${fmtNum(prev.sheet.dollar_risk, 0)} (${(prev.inputs.risk_pct * 100).toFixed(2)}%)`],
+                  ["Shares", `${prev.sheet.shares} (${prev.sheet.binding})`],
+                  ["Notional", `$${fmtNum(prev.sheet.notional, 0)}`],
+                  ["Vol regime", prev.vol_regime],
+                ].map(([l, v]) => (
+                  <div key={l as string} className="glass-tile px-3 py-2">
+                    <div className="text-[10px] text-dim uppercase">{l}</div>
+                    <div className="num mt-0.5 font-semibold">{v}</div>
+                  </div>
+                ))}
               </div>
-            );
-          })() : <EmptyState title="No price data" />}
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-faint">
+                <span>legs: {prev.legs.map((l: any) => `T${l.leg} $${fmtNum(l.fill, 0)}`).join(" · ")}</span>
+                <span>adv-bound by {prev.sheet.binding}</span>
+                {prev.sheet.margin_required > 0 &&
+                  <span>margin ${fmtNum(prev.sheet.margin_required, 0)}</span>}
+              </div>
+              <p className="text-[11px] text-faint">
+                Part 12 adaptive pyramid — sizing = max-risk $ ÷ 1.5×ATR;
+                stop ratchets on every bar close (never loosens). Preview
+                only — no order is staged or routed.
+              </p>
+            </div>
+          ) : atrRep?.insufficient ? (
+            <EmptyState title="Insufficient bars"
+              hint={`${symbol} has ${atrRep.bars} daily bars — ATR needs ≥15.`} />
+          ) : <EmptyState title="No ATR data" hint="Ingest daily bars for this symbol first." />}
         </SectionCard>
       </div>
 
       {/* scan table */}
       <SectionCard title="Universe scan" className="rise rise-2">
         <DataTable columns={scanCols} rows={scan} rowKey={(r) => r.symbol} />
+      </SectionCard>
+
+      {/* Part 12 — pyramid trades */}
+      <SectionCard title="Pyramid trades" className="rise"
+        action={<span className="text-[10px] text-faint">adaptive trailing — 1.5×ATR ratchet · 3×ATR adds · never loosen</span>}>
+        {notice && <div className="mb-2 text-[12px] text-warn">{notice}</div>}
+        {pyrs.length === 0 ? (
+          <EmptyState title="No pyramid trades"
+            hint="Size an entry in the ATR sheet above, then start a pyramid." />
+        ) : (
+          <DataTable
+            columns={[
+              { key: "s", header: "Symbol", render: (r: any) => <Sym s={r.symbol} /> },
+              { key: "st", header: "State", render: (r) => (
+                <StatusBadge tone={r.state === "stopped" ? "neg" : r.state === "initial" ? "info" : "pos"}>
+                  {r.state}
+                </StatusBadge>) },
+              { key: "lg", header: "Legs", align: "right", render: (r) => <span className="num">{1 + r.additions}</span> },
+              { key: "sh", header: "Shares", align: "right", render: (r) => <span className="num">{r.shares}</span> },
+              { key: "e", header: "Entry", align: "right", render: (r) => <span className="num">${fmtNum(r.entry, 2)}</span> },
+              { key: "sp", header: "Trail stop", align: "right", render: (r) => <span className="num text-warn">${fmtNum(r.stop, 2)}</span> },
+              { key: "tg", header: "Target", align: "right", render: (r) => <span className="num text-pos">${fmtNum(r.target1, 2)}</span> },
+              { key: "at", header: "ATR", align: "right", render: (r) => <span className="num text-faint">{fmtNum(r.atr_current ?? r.atr_initial, 3)}</span> },
+              { key: "c", header: "Opened", render: (r) => <span className="num text-[11px] text-faint">{fmtTime(r.created_at)}</span> },
+            ]}
+            rows={pyrs} rowKey={(r) => r.id}
+          />
+        )}
       </SectionCard>
 
       {/* Part 30 — execution blotter */}
