@@ -68,23 +68,28 @@ STALE_AFTER_DAYS = {
 
 
 async def _latest_obs(
-    db: AsyncSession, code: str, as_of: datetime
+    db: AsyncSession, code: str, as_of: datetime,
+    series_map: dict | None = None,
 ) -> tuple[float | None, datetime | None]:
     """Latest observation whose publication ≤ as_of (PIT)."""
-    series = (
-        await db.execute(
-            select(MacroSeries).where(
-                MacroSeries.source == "fred", MacroSeries.code == code
+    if series_map is not None:
+        series_id = series_map.get(code)
+    else:
+        series = (
+            await db.execute(
+                select(MacroSeries).where(
+                    MacroSeries.source == "fred", MacroSeries.code == code
+                )
             )
-        )
-    ).scalar_one_or_none()
-    if series is None:
+        ).scalar_one_or_none()
+        series_id = series.id if series else None
+    if series_id is None:
         return None, None
     obs = (
         await db.execute(
             select(MacroObservation)
             .where(
-                MacroObservation.series_id == series.id,
+                MacroObservation.series_id == series_id,
                 MacroObservation.observed_at <= as_of,
             )
             .order_by(MacroObservation.observed_at.desc())
@@ -96,22 +101,27 @@ async def _latest_obs(
 
 
 async def _series_window(
-    db: AsyncSession, code: str, as_of: datetime, n: int = 4
+    db: AsyncSession, code: str, as_of: datetime, n: int = 4,
+    series_map: dict | None = None,
 ) -> list[tuple[datetime, float]]:
-    series = (
-        await db.execute(
-            select(MacroSeries).where(
-                MacroSeries.source == "fred", MacroSeries.code == code
+    if series_map is not None:
+        series_id = series_map.get(code)
+    else:
+        series = (
+            await db.execute(
+                select(MacroSeries).where(
+                    MacroSeries.source == "fred", MacroSeries.code == code
+                )
             )
-        )
-    ).scalar_one_or_none()
-    if series is None:
+        ).scalar_one_or_none()
+        series_id = series.id if series else None
+    if series_id is None:
         return []
     rows = (
         await db.execute(
             select(MacroObservation)
             .where(
-                MacroObservation.series_id == series.id,
+                MacroObservation.series_id == series_id,
                 MacroObservation.observed_at <= as_of,
             )
             .order_by(MacroObservation.observed_at.desc())
@@ -172,7 +182,9 @@ async def _spy_bars(db: AsyncSession, as_of: datetime, limit=260) -> list[float]
 
 
 async def _breadth(db: AsyncSession, as_of: datetime) -> float | None:
-    """% of approved-universe tickers above their own SMA50."""
+    """% of approved-universe tickers above their own SMA50.
+    Single grouped query — one remote round-trip instead of one
+    per member (matters over the prod pooler's latency)."""
     u = await universe_by_name(db, "approved")
     if u is None:
         return None
@@ -184,20 +196,23 @@ async def _breadth(db: AsyncSession, as_of: datetime) -> float | None:
             )
         )
     ).scalars().all()
-    flags = []
-    for iid in ids:
-        rows = (
-            await db.execute(
-                select(OhlcvBar.close)
-                .where(OhlcvBar.instrument_id == iid,
-                       OhlcvBar.timeframe == "1d",
-                       OhlcvBar.time <= as_of)
-                .order_by(OhlcvBar.time.desc())
-                .limit(50)
-            )
-        ).scalars().all()
-        if len(rows) >= 50:
-            flags.append(rows[0] > sum(float(r) for r in rows) / 50)
+    if not ids:
+        return None
+    rows = (
+        await db.execute(
+            select(OhlcvBar.instrument_id, OhlcvBar.close)
+            .where(OhlcvBar.instrument_id.in_(ids),
+                   OhlcvBar.timeframe == "1d",
+                   OhlcvBar.time <= as_of)
+            .order_by(OhlcvBar.instrument_id, OhlcvBar.time.desc()))
+    ).all()
+    closes: dict = {}
+    for iid, c in rows:
+        grp = closes.setdefault(iid, [])
+        if len(grp) < 50:
+            grp.append(float(c))
+    flags = [v[0] > sum(v) / len(v) for v in closes.values()
+             if len(v) >= 50]
     return sum(flags) / len(flags) if flags else None
 
 
@@ -236,11 +251,42 @@ async def classify(db: AsyncSession, as_of: datetime) -> dict:
     stale: list[str] = []
     hits: list[str] = []
 
+    # one query for all FRED series rows + ONE window query for the
+    # last ≤13 observations of every series — 28 per-series round-
+    # trips over the prod pooler (~55s) collapsed to 2 (~3s)
+    series_map = {
+        s.code: s.id for s in (await db.execute(
+            select(MacroSeries).where(MacroSeries.source == "fred"))
+        ).scalars().all()
+    }
+    obs_by_code: dict[str, list[tuple[datetime, float]]] = \
+        {c: [] for c in series_map}
+    if series_map:
+        from sqlalchemy import func as sa_func
+        rn = sa_func.row_number().over(
+            partition_by=MacroObservation.series_id,
+            order_by=MacroObservation.observed_at.desc()).label("rn")
+        sub = (
+            select(MacroObservation.series_id,
+                   MacroObservation.observed_at,
+                   MacroObservation.value, rn)
+            .where(MacroObservation.series_id.in_(series_map.values()),
+                   MacroObservation.observed_at <= as_of)
+        ).subquery()
+        id_to_code = {v: k for k, v in series_map.items()}
+        for sid, o_at, val in (await db.execute(
+                select(sub.c.series_id, sub.c.observed_at, sub.c.value)
+                .where(sub.c.rn <= 13)
+                .order_by(sub.c.series_id,
+                          sub.c.observed_at.desc()))).all():
+            obs_by_code[id_to_code[sid]].append((o_at, float(val)))
+
     async def feat(code: str, n: int = 2):
-        v, at = await _latest_obs(db, code, as_of)
+        obs = obs_by_code.get(code, [])
+        v, at = (obs[0][1], obs[0][0]) if obs else (None, None)
         if at is not None and at.tzinfo is None:
             at = at.replace(tzinfo=UTC)  # SQLite stores naive
-        win = await _series_window(db, code, as_of, n=n + 1)
+        win = [(o_at, val) for o_at, val in reversed(obs[:n + 1])]
         stale_days = STALE_AFTER_DAYS.get(code, 45)
         is_stale = at is None or (as_of - at) > timedelta(days=stale_days)
         if is_stale:
@@ -372,6 +418,51 @@ async def classify(db: AsyncSession, as_of: datetime) -> dict:
             s: "favored" for s in SECTOR_ROTATION.get(econ, [])
         },
         "sector_rotation_map": SECTOR_ROTATION,
+        "notes": [
+            "fredgraph values are latest-vintage; no ALFRED vintages without API key",
+            "regime classification is an input to portfolio analysis, not a forecast",
+            "F&G is a transparent proxy composite (vix/spy/breadth/hy), not CNN index",
+        ],
+    }
+
+
+def run_to_dict(r: RegimeRun) -> dict:
+    """Reconstruct the classify() response from a persisted RegimeRun —
+    serving endpoints use this so reads cost ONE query instead of
+    re-running ~40 remote queries per page load. fg_components is
+    recomputed from the stored feature block (same formulas, pure
+    Python, no extra queries)."""
+    feats = r.features or {}
+    comps: dict[str, float] = {}
+    if r.vix is not None:
+        comps["vix_inverse"] = max(0.0, min(100.0, (40 - r.vix) / 40 * 100))
+    spy = feats.get("SPY_trend") or {}
+    if spy.get("above") is not None and spy.get("sma200"):
+        comps["spy_vs_sma200"] = max(0.0, min(
+            100.0, 50 + (spy["value"] / spy["sma200"] - 1) * 500))
+    b = (feats.get("breadth_50") or {}).get("value")
+    if b is not None:
+        comps["breadth"] = b * 100
+    hy = (feats.get("BAMLH0A0HYM2") or {}).get("value")
+    if hy is not None:
+        comps["hy_inverse"] = max(0.0, min(100.0, (10 - hy) / 10 * 100))
+    return {
+        "as_of": r.as_of.isoformat() if r.as_of else None,
+        "rules_version": r.rules_version,
+        "econ_regime": r.econ_regime,
+        "market_regime": r.market_regime,
+        "fear_greed": r.fear_greed,
+        "fg_components": comps,
+        "overlay": r.overlay,
+        "vix": r.vix,
+        "vix_band": r.vix_band,
+        "features": feats,
+        "rule_hits": r.rule_hits,
+        "stale_inputs": r.stale_inputs,
+        "sector_preferences": r.sector_preferences,
+        "sector_rotation_map": SECTOR_ROTATION,
+        "persisted": True,
+        "run_id": r.id,
         "notes": [
             "fredgraph values are latest-vintage; no ALFRED vintages without API key",
             "regime classification is an input to portfolio analysis, not a forecast",

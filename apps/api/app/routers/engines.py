@@ -67,10 +67,10 @@ async def macro_current(db: AsyncSession = Depends(get_db)):
         c = await mr.classify(db, utcnow())
         c["persisted"] = False
         return c
-    c = await mr.classify(db, r.as_of)
-    c["persisted"] = True
-    c["run_id"] = r.id
-    return c
+    # persisted run exists → serve it directly (one query). The old
+    # behavior re-ran classify on every read — ~40 remote round-trips
+    # over the prod pooler, past the frontend's 8s abort timeout.
+    return mr.run_to_dict(r)
 
 
 @router.get("/macro/history")
