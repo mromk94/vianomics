@@ -53,6 +53,17 @@ class Instrument(Base, IdMixin, TimestampMixin):
     delisted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+    # Contract specification (VAIIP Instrument Master — never
+    # hard-code contractSize=1). Equity defaults: CS=1, tick 0.01.
+    contract_size: Mapped[float] = mapped_column(
+        Numeric(24, 8), default=1.0)
+    tick_size: Mapped[float | None] = mapped_column(Numeric(24, 8))
+    tick_value: Mapped[float | None] = mapped_column(Numeric(24, 8))
+    # Broker margin: fraction of notional required as collateral.
+    # 0 or NULL = cash instrument (no margin); 0.20 = 5x max leverage.
+    margin_rate: Mapped[float | None] = mapped_column(Numeric(10, 6))
+    maintenance_margin_rate: Mapped[float | None] = mapped_column(
+        Numeric(10, 6))
     # Eligibility inputs — populated by market-data ingestion
     market_cap: Mapped[float | None] = mapped_column(Numeric(24, 2))
     avg_dollar_volume_30d: Mapped[float | None] = mapped_column(Numeric(24, 2))

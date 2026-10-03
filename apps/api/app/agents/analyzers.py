@@ -66,7 +66,7 @@ def valuation(ctx: dict) -> dict:
     has = iv is not None
     sens = v.get("sensitivity")
     r.update({
-        "engine_refs": ["rule1-dcf/v1.0"],
+        "engine_refs": ["rule1-dcf/v2.0"],
         "data_quality": "high" if has else "insufficient",
         "recommendation": "buy" if (mos and mos > 0.25) else
                           "wait" if has else "insufficient_data",
@@ -101,7 +101,7 @@ def rule_one(ctx: dict) -> dict:
                 if k != "all_pass" and x.get("pass"))
     r = _base("rule_one", ctx["symbol"])
     r.update({
-        "engine_refs": ["rule1-dcf/v1.0"],
+        "engine_refs": ["rule1-dcf/v2.0"],
         "data_quality": "high" if npass >= 4 else "medium",
         "recommendation": "pass" if five.get("all_pass") else "wait",
         "score": npass * 20,
@@ -196,7 +196,7 @@ def risk_manager(ctx: dict) -> dict:
     blocked = bool(blocking) or not gate.get("allowed", True)
     r = _base("risk", ctx["symbol"])
     r.update({
-        "engine_refs": ["risk-pyramid/v1.0"],
+        "engine_refs": ["risk-pyramid/v2.0"],
         "data_quality": "high",
         "recommendation": "block" if blocked else "pass",
         "score": 0 if blocked else 80,
@@ -227,7 +227,7 @@ def portfolio_manager(ctx: dict) -> dict:
     r = _base("pm", ctx["symbol"])
     opp_cost = "marginal existing holding comparison — no positions loaded"
     r.update({
-        "engine_refs": ["risk-pyramid/v1.0", "rule1-dcf/v1.0"],
+        "engine_refs": ["risk-pyramid/v2.0", "rule1-dcf/v2.0"],
         "data_quality": "medium",
         "recommendation": "pass" if (mos or 0) > 0.2 and
                           gate.get("allowed") else "wait",

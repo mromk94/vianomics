@@ -326,6 +326,6 @@ async def run_committee(
             "committee": "committee/v1.0",
             "technical": te.PARAMS_VERSION,
             "risk": re_.ENGINE_VERSION,
-            "valuation": "rule1-dcf/v1.0",
+            "valuation": "rule1-dcf/v2.0",
         },
     }

@@ -19,7 +19,7 @@ def _ticket(db_id="tk1", approved=True, **over):
         status="approved" if approved else "proposed",
         params_hash=params_hash("buy", 100, None, 90, 140),
         risk_snapshot={}, exposure_before={}, exposure_after={},
-        risk_policy_version="risk-pyramid/v1.0")
+        risk_policy_version="risk-pyramid/v2.0")
     for k, v in over.items():
         setattr(t, k, v)
     return t
