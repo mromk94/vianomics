@@ -22,7 +22,7 @@ class PyramidTradeRec(Base, IdMixin, TimestampMixin):
     target1: Mapped[float]
     t2_policy: Mapped[str]
     additions: Mapped[int] = mapped_column(default=0)
-    engine_version: Mapped[str] = mapped_column(default="risk-pyramid/v1.0")
+    engine_version: Mapped[str] = mapped_column(default="risk-pyramid/v2.0")
     events: Mapped[list] = mapped_column(JSON, default=list)
     params: Mapped[dict] = mapped_column(JSON, default=dict)
 
@@ -43,6 +43,26 @@ class RiskCheck(Base, IdMixin, TimestampMixin):
     checked_at: Mapped[object] = mapped_column(DateTime(timezone=True),
                                                default=utcnow)
     checked_by: Mapped[str | None]
+
+
+class PmDecision(Base, IdMixin, TimestampMixin):
+    """PM Decision Engine audit — every ENTER/ADD/HOLD/REDUCE/EXIT/
+    BLOCK/REVIEW with the full input snapshot and book context
+    (spec §27 DecisionAudit)."""
+
+    __tablename__ = "pm_decisions"
+
+    symbol: Mapped[str]
+    decision: Mapped[str]                # ENTER|ADD|HOLD|REDUCE|EXIT|BLOCK|REVIEW
+    reason: Mapped[str]
+    inputs: Mapped[dict] = mapped_column(JSON)   # thesis/valuation/technical/risk/portfolio checks
+    equity: Mapped[float | None]
+    exposure: Mapped[float | None]
+    open_risk: Mapped[float | None]
+    leverage: Mapped[float | None]
+    rr: Mapped[float | None]
+    engine_version: Mapped[str] = mapped_column(default="risk-pyramid/v2.0")
+    decided_by: Mapped[str | None]
 
 
 class LimitConfig(Base, IdMixin, TimestampMixin):

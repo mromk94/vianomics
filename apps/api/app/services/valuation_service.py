@@ -75,9 +75,16 @@ async def gather_inputs(
         "shares": sh,
         "equity": equity,
         "net_debt": float(D(str(debt or 0)) - D(str(cash or 0))),
+        "cash": float(cash) if cash is not None else 0.0,
+        "debt": float(debt) if debt is not None else 0.0,
+        "ni_latest": last_two(ni)[1],
+        "revenue_latest": last_two(rev)[1],
+        "bvps": (float(D(str(equity)) / D(str(sh)))
+                 if equity is not None and sh else None),
         "growth": {
             "revenue": float(_cagr(rev)) if _cagr(rev) else None,
             "eps": None,  # EPS series requires share-adjusted EPS obs
+            "ni": float(_cagr(ni)) if _cagr(ni) else None,
             "equity": float(_cagr(eq_s)) if _cagr(eq_s) else None,
             "fcf": float(_cagr(fcf_vals)) if _cagr(fcf_vals) else None,
         },
@@ -154,9 +161,25 @@ async def run_valuation(
                 terminal_growth, anchors["net_debt"], anchors["shares"])
             outputs["mos"] = ve.margin_of_safety(
                 price, outputs["dcf"]["per_share"])
+            outputs["discount_premium"] = ve.discount_premium(
+                price, outputs["dcf"]["per_share"])
         except ValueError as e:
             outputs["dcf"] = {"error": str(e)}
             missing.append("dcf")
+        # multi-stage DCF (doc-canonical): stage 1 = caller growth,
+        # stage 2 = 50% fade, stage 3 = terminal growth — the CPRT
+        # workbook "stage" terminal (PV of every year, no Gordon TV)
+        try:
+            g2 = growth * 0.5
+            stages = ([(5, growth), (5, g2),
+                       (years - 10, terminal_growth)]
+                      if years > 10 else [(years, growth)])
+            outputs["dcf_multistage"] = ve.dcf_multistage(
+                anchors["fcf"], stages, discount_rate,
+                anchors["cash"], anchors["debt"], anchors["shares"],
+                terminal_method="stage")
+        except ValueError as e:
+            outputs["dcf_multistage"] = {"error": str(e)}
         # reverse DCF
         try:
             outputs["reverse_dcf"] = ve.reverse_dcf(
@@ -174,6 +197,48 @@ async def run_valuation(
     else:
         outputs["dcf"] = {"error": "no positive base FCF"}
         outputs["missing"] = missing + ["dcf — FCF ≤ 0 or missing"]
+
+    # financials: DNI (NI base) + P/B intrinsic — doc method
+    # selection for banks/finance cos
+    if anchors["archetype"] == "financial":
+        if anchors["ni_latest"] and anchors["ni_latest"] > 0 \
+                and anchors["shares"]:
+            try:
+                g2 = growth * 0.5
+                stages = ([(5, growth), (5, g2),
+                           (years - 10, terminal_growth)]
+                          if years > 10 else [(years, growth)])
+                outputs["dni"] = ve.dni(
+                    anchors["ni_latest"], stages, discount_rate,
+                    anchors["cash"], anchors["debt"],
+                    anchors["shares"], terminal_method="stage")
+            except ValueError as e:
+                outputs["dni"] = {"error": str(e)}
+        if anchors["bvps"]:
+            try:
+                outputs["pb_intrinsic"] = ve.pb_intrinsic(
+                    anchors["bvps"], fair_pb=1.10)
+            except ValueError as e:
+                outputs["pb_intrinsic"] = {"error": str(e)}
+
+    # quick checks — PEG (consistent earnings growth) / PSG
+    # (unprofitable hyper-growth)
+    eps = anchors["eps"]
+    ni_g = anchors["growth"]["ni"]
+    if eps and eps > 0 and ni_g and ni_g > 0:
+        try:
+            outputs["peg"] = ve.peg(price / eps, ni_g * 100)
+        except (ValueError, ZeroDivisionError):
+            pass
+    rev = anchors["revenue_latest"]
+    if rev and rev > 0 and anchors["shares"] \
+            and anchors["growth"]["revenue"]:
+        try:
+            mcap = price * anchors["shares"]
+            outputs["psg"] = ve.psg(
+                mcap / rev, anchors["growth"]["revenue"] * 100)
+        except (ValueError, ZeroDivisionError):
+            pass
 
     # sector-specific extras
     outputs["sector_valuation"] = sector_val.compute(

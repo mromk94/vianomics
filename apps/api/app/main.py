@@ -7,7 +7,7 @@ from app.config import get_settings
 from app.routers import (
     assistant, auth, backtest, command_center, committee, dataops, engines,
     execution, feedback, health, mandate, market, monitoring, portfolio,
-    external_portfolio, research, risk, screener, technical,
+    external_portfolio, pm, research, risk, screener, technical,
     universe, valuation, webhooks, symbol, news,)
 from app.routers import settings as settings_router
 
@@ -39,6 +39,7 @@ app.include_router(valuation.router, prefix="/api/v1")
 app.include_router(engines.router, prefix="/api/v1")
 app.include_router(technical.router, prefix="/api/v1")
 app.include_router(risk.router, prefix="/api/v1")
+app.include_router(pm.router, prefix="/api/v1")
 app.include_router(committee.router, prefix="/api/v1")
 app.include_router(monitoring.router, prefix="/api/v1")
 app.include_router(execution.router, prefix="/api/v1")

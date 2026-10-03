@@ -36,8 +36,42 @@ interface Center {
     mdd_pct: number | null; var_95: number | null;
     daily_pnl: number | null; synced_at: string | null;
     stale: boolean }[];
+  dashboard?: {
+    equity: number; gross_notional: number; net_notional: number;
+    gross_leverage: number; net_leverage: number;
+    current_margin: number; margin_utilisation: number;
+    open_stop_risk: number; unstopped_notional: number;
+    open_risk: number; open_risk_pct_equity: number;
+    net_pnl: number; remaining_reward: number;
+    portfolio_rr: number | null; risk_capacity: number;
+    risk_by_strategy: Record<string, number>;
+    status: string; pm_action: string };
+  margin?: { used: number; utilisation: number;
+    call_buffer_check: { margin_call_first: boolean;
+      note: string } | null };
+  drawdown?: { max_dd: number | null;
+    escalation: { drawdown: number; level: string;
+      action: string } };
+  named_stress?: { scenario: string; key: string; shock: number;
+    scope: string; pnl: number; loss: number;
+    loss_pct_equity: number; status: string }[];
   vix: number | null; fear_greed: number | null;
   engine: string; as_of: string;
+}
+
+interface PmRow {
+  symbol: string; display_symbol?: string | null;
+  source?: string | null; weight: number;
+  checks: Record<string, string>;
+  pm_decision: string; reason: string;
+  open_risk: number; unstopped: boolean;
+}
+
+interface PmBook {
+  positions: PmRow[];
+  portfolio: { status: string; pm_action: string;
+    risk_capacity: number; open_risk: number;
+    margin_utilisation: number };
 }
 
 interface Check {
@@ -60,8 +94,19 @@ const DIM_TONE: Record<string, "pos" | "warn" | "neg" | "info"> = {
   ok: "pos", review: "warn", degraded: "warn", breach: "neg", unknown: "info",
 };
 
+const PM_TONE: Record<string, "pos" | "warn" | "neg" | "info"> = {
+  ENTER: "pos", ADD: "pos", HOLD: "info", REVIEW: "warn",
+  REDUCE: "warn", EXIT: "neg", BLOCK: "neg",
+};
+
+const DD_TONE: Record<string, "pos" | "warn" | "neg" | "info"> = {
+  NORMAL: "pos", WATCH: "warn", RISK_REDUCTION: "warn",
+  TRADING_HALT: "neg",
+};
+
 export function RiskPage() {
   const [c, setC] = useState<Center | null>(null);
+  const [pm, setPm] = useState<PmBook | null>(null);
   const [checks, setChecks] = useState<Check[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -81,6 +126,8 @@ export function RiskPage() {
     ]).then(([cc, ch, lc]) => { setC(cc); setChecks(ch); setLimitsCfg(lc); })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
+    apiGet<PmBook>("/api/v1/pm/positions")
+      .then(setPm).catch(() => setPm(null));
   };
   useEffect(load, []);
 
@@ -123,6 +170,52 @@ export function RiskPage() {
 
       {c && (
         <>
+          {/* portfolio dashboard — Trade Risk Sheet → Ledger → Dashboard → PM */}
+          {c.dashboard && (
+            <SectionCard title="Portfolio risk dashboard" className="rise"
+              action={
+                <div className="flex items-center gap-2">
+                  {c.drawdown?.escalation && (
+                    <StatusBadge tone={DD_TONE[c.drawdown.escalation.level] ?? "info"}>
+                      DD {c.drawdown.escalation.level.replace(/_/g, " ")}
+                    </StatusBadge>
+                  )}
+                  <StatusBadge tone={c.dashboard.status === "NORMAL" ? "pos" : c.dashboard.status === "REDUCE" ? "neg" : "warn"}>
+                    {c.dashboard.status}
+                  </StatusBadge>
+                </div>
+              }>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-7">
+                {([
+                  ["Gross lev.", `${c.dashboard.gross_leverage.toFixed(2)}×`, c.dashboard.gross_leverage > 1 ? "text-warn" : ""],
+                  ["Margin util.", `${(c.dashboard.margin_utilisation * 100).toFixed(1)}%`, c.dashboard.margin_utilisation > 0.5 ? "text-neg" : c.dashboard.margin_utilisation > 0.3 ? "text-warn" : ""],
+                  ["Open risk", c.dashboard.open_risk_pct_equity != null ? `${(c.dashboard.open_risk_pct_equity * 100).toFixed(1)}%` : "—", ""],
+                  ["Risk capacity", `$${fmtNum(c.dashboard.risk_capacity, 0)}`, c.dashboard.risk_capacity <= 0 ? "text-neg" : "text-pos"],
+                  ["Stop risk", `$${fmtNum(c.dashboard.open_stop_risk, 0)}`, ""],
+                  ["Reward left", `$${fmtNum(c.dashboard.remaining_reward, 0)}`, "text-pos"],
+                  ["Port. R/R", c.dashboard.portfolio_rr != null ? `${c.dashboard.portfolio_rr.toFixed(1)}` : "—", ""],
+                ] as [string, string, string][]).map(([label, val, tone]) => (
+                  <div key={label} className="glass-tile px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wider text-faint">{label}</div>
+                    <div className={`num mt-0.5 text-[15px] font-semibold ${tone}`}>{val}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-dim">
+                <span>PM action: <b className="text-text">{c.dashboard.pm_action}</b></span>
+                {c.dashboard.unstopped_notional > 0 && (
+                  <span className="text-warn">${fmtNum(c.dashboard.unstopped_notional, 0)} notional unstopped</span>
+                )}
+                {c.margin?.call_buffer_check?.margin_call_first && (
+                  <span className="text-neg">margin call precedes stop — {c.margin.call_buffer_check.note}</span>
+                )}
+                {c.drawdown?.escalation && c.drawdown.escalation.level !== "NORMAL" && (
+                  <span className="text-warn">→ {c.drawdown.escalation.action}</span>
+                )}
+              </div>
+            </SectionCard>
+          )}
+
           {/* 7 dimensions */}
           <SectionCard title="Seven risk dimensions" className="rise">
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -152,7 +245,25 @@ export function RiskPage() {
           <div className="rise rise-1 grid gap-3 lg:grid-cols-2">
             {/* stress tests */}
             <SectionCard title="Stress tests">
-              {Object.keys(c.dimensions.stress_tests ?? {}).length ? (
+              {(c.named_stress?.length ?? 0) > 0 ? (
+                <div className="max-h-52 space-y-1 overflow-y-auto pr-1">
+                  {c.named_stress!.map((s) => (
+                    <div key={s.key} className="flex items-center justify-between rounded-lg border border-border/60 px-2.5 py-1.5 text-[12px]">
+                      <div className="min-w-0">
+                        <div className="truncate text-text">{s.scenario}</div>
+                        <div className="num text-[10px] text-faint">{(s.shock * 100).toFixed(0)}% {s.scope}</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="text-right">
+                          <div className="num text-neg">−${fmtNum(s.loss, 0)}</div>
+                          <div className="num text-[10px] text-faint">{(s.loss_pct_equity * 100).toFixed(1)}% eq</div>
+                        </div>
+                        <StatusBadge tone={s.status === "OK" ? "pos" : s.status === "WATCH" ? "warn" : "neg"}>{s.status}</StatusBadge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : Object.keys(c.dimensions.stress_tests ?? {}).length ? (
                 <DataTable
                   columns={stressCols}
                   rows={Object.entries(c.dimensions.stress_tests).map(([s, v]: [string, any]) => ({ shock: s, ...v }))}
@@ -263,24 +374,37 @@ export function RiskPage() {
               {c.positions.length === 0 ? (
                 <EmptyState title="No internal positions" hint="Internal book empty — MT4/external equity shown above." />
               ) : (
+                <>
                 <div className="max-h-64 overflow-y-auto">
                   <table className="w-full text-[12px]">
                     <thead><tr className="border-b border-border text-left text-[10px] tracking-wider text-dim uppercase">
-                      <th className="py-1">Symbol</th><th>Sector</th><th className="text-right">Value</th><th className="text-right">Unreal.</th><th className="text-right">vs IV</th>
+                      <th className="py-1">Symbol</th><th>Sector</th><th className="text-right">Value</th><th className="text-right">Unreal.</th><th className="text-right">vs IV</th><th className="text-right">PM</th>
                     </tr></thead>
                     <tbody>
-                      {c.positions.map((pp) => (
+                      {c.positions.map((pp) => {
+                        const p = pm?.positions.find((r) => r.symbol === pp.symbol || r.display_symbol === pp.symbol);
+                        return (
                         <tr key={pp.symbol} className="border-b border-border/50 last:border-0">
-                          <td className="py-1.5"><Sym s={pp.symbol} /></td>
+                          <td className="py-1.5"><Sym s={pp.symbol} />{p?.unstopped && <span className="ml-1 text-[9px] text-warn" title="no stop set">unstopped</span>}</td>
                           <td className="text-dim">{pp.sector}</td>
                           <td className="num text-right">${fmtNum(pp.market_value, 0)}</td>
                           <td className={`num text-right ${(pp.unrealized ?? 0) >= 0 ? "text-pos" : "text-neg"}`}>{pp.unrealized != null ? `${pp.unrealized >= 0 ? "+" : ""}$${fmtNum(pp.unrealized, 0)}` : "—"}</td>
                           <td className={`num text-right ${(pp.price_vs_iv ?? 0) > 0 ? "text-neg" : "text-pos"}`}>{pp.price_vs_iv != null ? `${pp.price_vs_iv >= 0 ? "+" : ""}${(pp.price_vs_iv * 100).toFixed(0)}%` : "—"}</td>
+                          <td className="text-right">{p ? <StatusBadge tone={PM_TONE[p.pm_decision] ?? "info"}>{p.pm_decision}</StatusBadge> : <span className="text-faint">—</span>}</td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
+                {pm && pm.positions.some((x) => x.reason) && (
+                  <div className="mt-2 space-y-0.5 border-t border-border pt-1.5 text-[10px] text-dim">
+                    {pm.positions.filter((x) => x.reason && x.pm_decision !== "HOLD").map((x) => (
+                      <div key={x.symbol}><b className="text-text">{x.display_symbol ?? x.symbol}</b>: {x.reason}</div>
+                    ))}
+                  </div>
+                )}
+                </>
               )}
             </SectionCard>
 

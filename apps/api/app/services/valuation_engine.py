@@ -21,7 +21,7 @@ runs stay reproducible.
 from decimal import Decimal
 
 D = Decimal
-METHODOLOGY_VERSION = "rule1-dcf/v1.0"
+METHODOLOGY_VERSION = "rule1-dcf/v2.0"
 
 
 def _d(v) -> Decimal:
@@ -206,3 +206,175 @@ def margin_of_safety(price, intrinsic_value) -> dict:
     d = (iv - p) / iv
     return {"price": float(p), "intrinsic_value": float(iv),
             "discount": float(d), "underpriced": d > 0}
+
+
+# ── Discount rate: CAPM + beta lookup tables (DCF Methods doc) ────
+
+def capm_discount_rate(risk_free, beta, market_risk_premium) -> float:
+    """Cost of equity = rf + β × ERP — doc Part 1.
+    Example: 4.72% + 1.23 × 4.3% = 10.01%."""
+    rf, b, erp = _d(risk_free), _d(beta), _d(market_risk_premium)
+    return float(rf + b * erp)
+
+
+# Doc "DCF Calculator & Stock Valuation" — discount-rate lookup by
+# beta. US: rf 0.64%, ERP 5.00% · China/HK: rf 0.60%, ERP 6.60%.
+_BETA_TABLES = {
+    "US": [(0.80, 0.046), (1.00, 0.056), (1.10, 0.061), (1.20, 0.066),
+           (1.30, 0.071), (1.40, 0.076), (1.50, 0.081),
+           (float("inf"), 0.086)],
+    "CNHK": [(0.80, 0.059), (1.00, 0.070), (1.10, 0.079), (1.20, 0.090),
+             (1.30, 0.092), (1.40, 0.100), (1.50, 0.105),
+             (float("inf"), 0.110)],
+}
+
+
+def discount_rate_for_beta(beta, market: str = "US") -> float:
+    """Beta → discount rate via the doc's lookup table (US or CNHK)."""
+    table = _BETA_TABLES.get(market.upper())
+    if table is None:
+        raise ValueError(f"unknown market {market!r} — use US|CNHK")
+    b = float(beta)
+    for ceiling, rate in table:
+        if b <= ceiling or ceiling == float("inf"):
+            return rate
+    return table[-1][1]
+
+
+# ── Multi-stage DCF / DNI (DCF Methods + CPRT workbook) ───────────
+
+def dcf_multistage(
+    base_cf,
+    stages: list[tuple[int, float]],
+    discount_rate,
+    cash,
+    debt,
+    shares,
+    terminal_method: str = "stage",
+    terminal_growth=None,
+) -> dict:
+    """Multi-stage DCF — the doc/workbook canonical form.
+
+    stages: [(n_years, growth), ...] e.g. [(5, .33), (5, .50), (10, .04)]
+      terminal_method="stage"  → last stage IS the terminal window
+                               (CPRT 20-yr sheet: sum PV of all years)
+      terminal_method="gordon" → Gordon TV appended after last stage
+    Equity bridge per doc: PV + cash − debt; ÷ shares.
+    """
+    if terminal_method not in ("stage", "gordon"):
+        raise ValueError("terminal_method must be 'stage' or 'gordon'")
+    cf, r, c_, d_, sh = map(_d, (base_cf, discount_rate, cash, debt,
+                               shares))
+    if sh <= 0:
+        raise ValueError("shares outstanding must be > 0")
+    if not stages:
+        raise ValueError("at least one growth stage required")
+    if r <= 0:
+        raise ValueError("discount rate must be > 0")
+
+    year = 0
+    pv_total = D(0)
+    stage_breakdown = []
+    cur = cf
+    for i, (n, g) in enumerate(stages):
+        n = int(n)
+        if n < 1:
+            raise ValueError("stage years must be ≥ 1")
+        g = _d(g)
+        pv_stage = D(0)
+        for _ in range(n):
+            year += 1
+            cur = cur * (1 + g)
+            pv = cur / (1 + r) ** year
+            pv_stage += pv
+        pv_total += pv_stage
+        stage_breakdown.append({
+            "stage": i + 1, "years": n, "growth": float(g),
+            "end_cf": float(cur), "pv": float(pv_stage)})
+
+    tv = pv_tv = D(0)
+    if terminal_method == "gordon":
+        gt = _d(terminal_growth if terminal_growth is not None else 0)
+        if r <= gt:
+            raise ValueError(
+                "discount rate must exceed terminal growth — "
+                "else TV diverges")
+        tv = cur * (1 + gt) / (r - gt)
+        pv_tv = tv / (1 + r) ** year
+        pv_total += pv_tv
+
+    equity_val = pv_total + c_ - d_
+    per_share = equity_val / sh
+    return {
+        "pv_flows": float(pv_total - pv_tv),
+        "terminal_value": float(tv) if terminal_method == "gordon"
+        else None,
+        "pv_terminal_value": float(pv_tv)
+        if terminal_method == "gordon" else None,
+        "stages": stage_breakdown,
+        "cash": float(c_), "debt": float(d_),
+        "equity_value": float(equity_val),
+        "per_share": float(per_share),
+        "assumptions": {
+            "base_cf": float(cf), "discount_rate": float(r),
+            "years": year, "terminal_method": terminal_method,
+        },
+    }
+
+
+def dni(base_net_income, stages, discount_rate, cash, debt, shares,
+        **kw) -> dict:
+    """Discounted Net Income — same mechanics as multi-stage DCF on
+    net income. Doc: for financial stocks where NI grows more
+    consistently than operating cash flow."""
+    out = dcf_multistage(base_net_income, stages, discount_rate,
+                         cash, debt, shares, **kw)
+    out["method"] = "dni"
+    return out
+
+
+def pb_intrinsic(bvps, fair_pb) -> dict:
+    """Banks: IV = BVPS × fair P/B (doc: fair band 1.00–1.20)."""
+    bv, m = _d(bvps), _d(fair_pb)
+    if bv <= 0:
+        raise ValueError("book value per share must be > 0")
+    return {"bvps": float(bv), "fair_pb": float(m),
+            "per_share": float(bv * m)}
+
+
+# ── Quick-check ratios (doc: PEG + PSG) ───────────────────────────
+
+def peg(pe, earnings_growth_pct) -> dict:
+    """PEG = PE ÷ earnings-growth% — doc: <1 undervalued, <1.5 OK."""
+    p, g = _d(pe), _d(earnings_growth_pct)
+    if g <= 0:
+        raise ValueError("earnings growth must be > 0 — PEG only "
+                         "valid when earnings consistently increase")
+    v = p / g
+    return {"peg": float(v), "pe": float(p), "growth_pct": float(g),
+            "signal": ("undervalued" if v < 1
+                       else "acceptable" if v <= D("1.5")
+                       else "overvalued")}
+
+
+def psg(price_to_sales, revenue_growth_pct) -> dict:
+    """PSG = P/S ÷ revenue-growth% — doc fair value 0.20."""
+    ps, g = _d(price_to_sales), _d(revenue_growth_pct)
+    if g <= 0:
+        raise ValueError("revenue growth must be > 0")
+    v = ps / g
+    return {"psg": float(v), "p_to_s": float(ps),
+            "revenue_growth_pct": float(g),
+            "signal": "fair_or_cheap" if v <= D("0.20")
+            else "overvalued"}
+
+
+def discount_premium(price, intrinsic_value) -> dict:
+    """Doc convention: (price − IV)/IV — negative = discount."""
+    p, iv = _d(price), _d(intrinsic_value)
+    if iv <= 0:
+        raise ValueError("intrinsic value must be > 0")
+    v = (p - iv) / iv
+    return {"price": float(p), "intrinsic_value": float(iv),
+            "premium_pct": float(v),
+            "at_discount": v < 0}

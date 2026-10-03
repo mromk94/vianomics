@@ -112,7 +112,7 @@ def evaluate_tree(ctx: dict, now: str | None = None) -> dict:
         f"{npass}/5 numbers pass" if five else "no five-numbers",
         {"npass": npass, "sticker": (v.get("rule1") or {}).get("sticker_price"),
          "buy_price": (v.get("rule1") or {}).get("buy_price")},
-        "rule1-dcf/v1.0")
+        "rule1-dcf/v2.0")
 
     # 5. MOS
     mos = (v.get("mos") or {}).get("discount")
@@ -122,7 +122,7 @@ def evaluate_tree(ctx: dict, now: str | None = None) -> dict:
         "pass" if mos >= req else "wait",
         f"MOS {mos*100:.0f}% vs required {req*100:.0f}%" if mos is not None
         else "no IV",
-        {"mos": mos, "required": req}, "rule1-dcf/v1.0")
+        {"mos": mos, "required": req}, "rule1-dcf/v2.0")
 
     # 6. quant
     q = ctx.get("quant") or {}
@@ -169,7 +169,7 @@ def evaluate_tree(ctx: dict, now: str | None = None) -> dict:
         ("risk gate: " + ", ".join(b["rule"] for b in blocking)) if blocking
         else "ATR present" if atr_ok else "no ATR",
         {**gate9_in, "breaches": [b["rule"] for b in blocking]},
-        "risk-pyramid/v1.0")
+        "risk-pyramid/v2.0")
 
     # halt check — downstream gates reflect the halt kind:
     # 'blocked' propagates as blocked; 'fail' as not_applicable
@@ -185,7 +185,7 @@ def evaluate_tree(ctx: dict, now: str | None = None) -> dict:
         add("portfolio_fit",
             "pass" if gate_ok else "blocked",
             "limits satisfied" if gate_ok else "order gate denies",
-            {"allowed": gate_ok}, "risk-pyramid/v1.0")
+            {"allowed": gate_ok}, "risk-pyramid/v2.0")
 
     # 11. CIO — set by orchestrator after synthesis
     cio = ctx.get("cio_verdict")

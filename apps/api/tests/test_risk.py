@@ -49,51 +49,54 @@ def _trade(**kw):
 
 
 def test_pyramid_full_lifecycle_trailing():
-    t = _trade(t2_policy="trailing")
+    """Revised adaptive protocol: 1.5×ATR ratchet stop maintained at
+    every close; equal-size leg added at each 3×ATR target."""
+    t = _trade()
     assert t.state == S.INITIAL and t.target1 == pytest.approx(112)
+    assert t.stop == pytest.approx(94) and t.leg_shares == 833
 
-    # T1 at 112 → double, no profit
+    # close at target → maintenance ratchets stop to 112−1.5×5=104.5,
+    # then leg 2 added; next target 112+3×5=127
     r = re_.advance(t, 112, 5.0)
     assert t.state == S.TARGET1 and t.shares == 833 * 2
-    assert "no profit" in t.events[-1]
+    assert t.stop == pytest.approx(104.5)
+    assert t.target1 == pytest.approx(127)
 
-    # S3/S4 tighten: stop = 115 − 1×5 = 110 (ratchet above old 94)
-    r = re_.advance(t, 115, 5.0)
-    assert t.state == S.TARGET2 and t.stop == pytest.approx(110)
+    # next close: maintenance → 115−7.5=107.5; target not hit
+    re_.advance(t, 115, 5.0)
+    assert t.stop == pytest.approx(107.5)
+    assert t.state == S.TARGET1 and t.shares == 1666
 
-    # T2 trailing: 118 − 0.75×5 = 114.25
-    r = re_.advance(t, 118, 5.0)
-    assert t.state == S.TRAILING and t.stop == pytest.approx(114.25)
+    # target 2 hit at 128 → maintenance 128−7.5=120.5; leg 3, target 143
+    re_.advance(t, 128, 5.0)
+    assert t.state == S.ADDITION and t.shares == 833 * 3
+    assert t.stop == pytest.approx(120.5)
+    assert t.target1 == pytest.approx(143)
 
-    # trail up further: 122 − 3.75 = 118.25
-    re_.advance(t, 122, 5.0)
-    assert t.stop == pytest.approx(118.25)
+    # never loosens: 121−7.5=113.5 < 120.5 → stop stays
+    re_.advance(t, 121, 5.0)
+    assert t.stop == pytest.approx(120.5)
 
-    # price falls to 117 < stop 118.25 → stopped out
-    r = re_.advance(t, 117, 5.0)
+    # close below stop → exit the whole pyramid
+    r = re_.advance(t, 119, 5.0)
     assert t.state == S.STOPPED
-
-
-def test_pyramid_profit_50_policy():
-    t = _trade(t2_policy="profit_50")
-    re_.advance(t, 112, 5.0)              # T1 → double
-    re_.advance(t, 115, 5.0)              # tighten
-    before = t.shares
-    re_.advance(t, 118, 5.0)              # T2 → sell half
-    assert t.state == S.PARTIAL_EXIT
-    assert t.shares == before // 2
-
-
-def test_t2_policy_must_be_explicit():
-    with pytest.raises(ValueError):
-        _trade(t2_policy="combine_both")  # silent mixing rejected
+    assert r["fill"] == pytest.approx(119)
 
 
 def test_addition_rejected_when_risk_fails():
+    """add_ok=False → no leg, but the pyramid keeps trading under the
+    trailing stop (v1 dead-ends here — v2 keeps maintaining)."""
     t = _trade()
     r = re_.advance(t, 112, 5.0, add_ok=False)
-    assert t.state == S.REJECTED
-    assert t.shares == 833  # no doubling
+    assert t.state == S.INITIAL
+    assert t.shares == 833
+    assert t.stop == pytest.approx(104.5)  # maintenance still ran
+    assert "REJECTED" in t.events[-1]
+
+    # retry on a later close — risk may have freed up
+    re_.advance(t, 113, 5.0)
+    assert t.shares == 833 * 2
+    assert t.state == S.TARGET1
 
 
 def test_gap_through_stop():
@@ -241,3 +244,184 @@ def test_breach_carries_remediation():
          "notional": 50_000}, _pf())
     b = next(b for b in r["breaches"] if b["rule"] == "max_single_name")
     assert b["observed"] and b["required"] and b["remediation"]
+
+
+# ── new-docs: Trade Risk Sheet / Ledger / Dashboard / PM ──
+
+def test_trade_risk_sheet_hand_calc():
+    """Workbook cols R–AB: entry 380, stop 350, target 610, FV 610,
+    qty 33, equity 50k."""
+    s = re_.trade_risk_sheet(entry=380, stop=350, target=610,
+                             fair_value=610, qty=33, equity=50_000,
+                             margin_rate=0.20)
+    assert s["initial_notional"] == pytest.approx(380 * 33)
+    assert s["initial_margin"] == pytest.approx(380 * 33 * 0.20)
+    assert s["risk_dollars"] == pytest.approx(30 * 33)      # always ≥0
+    assert s["risk_pct_equity"] == pytest.approx(990 / 50_000)
+    assert s["reward_dollars"] == pytest.approx(230 * 33)
+    assert s["rr"] == pytest.approx(230 / 30)
+    assert s["mos_pct"] == pytest.approx((610 - 380) / 610)
+    assert s["upside_pct"] == pytest.approx((610 - 380) / 380)
+
+
+def test_trade_risk_never_negative():
+    """The old workbook's -$874 bug — risk uses ABS."""
+    assert re_.calculate_risk(300, 280, 43.7) == pytest.approx(874)
+    assert re_.calculate_rr(3885, 874) == pytest.approx(4.44, abs=0.01)
+
+
+def test_position_size_for_risk():
+    """equity 50k × 2% = $1000 budget; risk/unit $20 → 50 units."""
+    r = re_.position_size_for_risk(50_000, 0.02, 300, 280)
+    assert r["qty"] == 50
+    # invalid stop distance → no size
+    assert re_.position_size_for_risk(50_000, 0.02, 300, 300)["qty"] == 0
+
+
+def test_trade_risk_decision_rules():
+    eq = 50_000
+    # risk > 2% equity → BLOCK
+    s = {"risk_dollars": 1100, "risk_capacity_after": 10_000,
+         "initial_margin": 5000, "rr": 3.0}
+    assert re_.trade_risk_decision(s, eq)["decision"] == "BLOCK"
+    # risk > remaining portfolio capacity → BLOCK even if 1R trade
+    s = {"risk_dollars": 800, "risk_capacity_after": 500,
+         "initial_margin": 100, "rr": 4.0}
+    d = re_.trade_risk_decision(s, eq)
+    assert d["decision"] == "BLOCK" and "capacity" in d["reason"]
+    # R/R < 2 → REVIEW
+    s = {"risk_dollars": 500, "risk_capacity_after": 5000,
+         "initial_margin": 100, "rr": 1.5}
+    assert re_.trade_risk_decision(s, eq)["decision"] == "REVIEW"
+    # margin utilisation > 50% → BLOCK
+    s = {"risk_dollars": 500, "risk_capacity_after": 5000,
+         "initial_margin": 26_000, "rr": 3.0}
+    assert re_.trade_risk_decision(s, eq)["decision"] == "BLOCK"
+    # clean → PASS
+    s = {"risk_dollars": 800, "risk_capacity_after": 5000,
+         "initial_margin": 5000, "rr": 3.0}
+    assert re_.trade_risk_decision(s, eq)["decision"] == "PASS"
+
+
+def test_position_ledger_row_long():
+    """Entry 300, current 380, stop 350, qty 10 → open risk $300,
+    locked-in $500, remaining reward $2300."""
+    r = re_.position_ledger_row(qty=10, avg_entry=300, current_price=380,
+                                stop=350, target=610, fair_value=610,
+                                equity=50_000, direction="long")
+    assert r["open_risk"] == pytest.approx(30 * 10)
+    assert r["locked_in_profit"] == pytest.approx(50 * 10)
+    assert r["remaining_reward"] == pytest.approx(230 * 10)
+    assert r["gross_pnl"] == pytest.approx(80 * 10)
+    assert r["rr"] == pytest.approx(230 / 30)
+    assert r["unstopped"] is False
+
+
+def test_portfolio_dashboard_workbook():
+    """3 stopped positions + 1 unstopped — unstopped counts full
+    notional as open risk (conservative spec choice)."""
+    pos = [
+        {"notional": 10_000, "margin": 2_000, "open_risk": 1_000,
+         "net_pnl": 500, "remaining_reward": 3_000, "direction": "long",
+         "strategy": "rule1"},
+        {"notional": 20_000, "margin": 4_000, "open_risk": 2_000,
+         "net_pnl": -100, "remaining_reward": 4_000, "direction": "long",
+         "strategy": "rule1"},
+        {"notional": 30_000, "margin": 6_000, "open_risk": None,
+         "net_pnl": 0, "remaining_reward": 0, "direction": "long",
+         "strategy": "swing"},
+    ]
+    d = re_.portfolio_dashboard(pos, 50_000, 10_000)
+    assert d["gross_notional"] == pytest.approx(60_000)
+    assert d["gross_leverage"] == pytest.approx(1.2)
+    assert d["current_margin"] == pytest.approx(12_000)
+    assert d["margin_utilisation"] == pytest.approx(0.24)
+    assert d["open_stop_risk"] == pytest.approx(3_000)
+    assert d["unstopped_notional"] == pytest.approx(30_000)
+    assert d["open_risk"] == pytest.approx(33_000)
+    # open risk 33k > 15% of 50k (7.5k) → REDUCE
+    assert d["status"] == "REDUCE"
+    assert "risk_capacity" in d and d["risk_capacity"] == 0
+    assert d["risk_by_strategy"]["rule1"] == pytest.approx(3_000)
+
+
+def test_margin_call_buffer_check():
+    """Exposure doc: $30k equity, 5x = $150k gross, maint 16% → call
+    at $24k — same equity level as the 20% stop → call first."""
+    r = re_.margin_call_check(30_000, 150_000,
+                              margin_requirement=0.20,
+                              maintenance_margin=0.16,
+                              portfolio_stop_pct=0.20)
+    assert r["margin_call_equity_threshold"] == pytest.approx(24_000)
+    assert r["equity_at_stop"] == pytest.approx(24_000)
+    # doc: M% ≥ 16% → margin call before the stop (zero buffer)
+    assert r["margin_call_before_stop"] is True
+    # maint 17% → threshold $25.5k > $24k → margin call first
+    r = re_.margin_call_check(30_000, 150_000,
+                              maintenance_margin=0.17)
+    assert r["margin_call_before_stop"] is True
+    # maint 10% → threshold $15k < $24k → stop hits first, safe
+    r = re_.margin_call_check(30_000, 150_000,
+                              maintenance_margin=0.10)
+    assert r["margin_call_before_stop"] is False
+
+
+def test_drawdown_escalation_ladder():
+    assert re_.drawdown_escalation(0.02)["level"] == "NORMAL"
+    assert re_.drawdown_escalation(0.06)["level"] == "WATCH"
+    assert re_.drawdown_escalation(0.12)["level"] == "RISK_REDUCTION"
+    assert re_.drawdown_escalation(0.20)["level"] == "TRADING_HALT"
+
+
+def test_named_stress_scenarios():
+    pos = [
+        {"symbol": "NVDA", "sector": "Information Technology",
+         "market_value": 10_000},
+        {"symbol": "JNJ", "sector": "Health Care",
+         "market_value": 10_000},
+    ]
+    out = re_.named_stress(pos, 50_000)
+    by_key = {s["key"]: s for s in out}
+    # semis −20% hits only NVDA
+    assert by_key["semi_shock"]["loss"] == pytest.approx(2_000)
+    # tech −15% hits only NVDA
+    assert by_key["tech_shock"]["loss"] == pytest.approx(1_500)
+    # broad −10% hits both
+    assert by_key["broad_market"]["loss"] == pytest.approx(2_000)
+    assert by_key["broad_market"]["status"] in (
+        "OK", "WATCH", "REDUCE", "HALT")
+
+
+def test_pm_decide_matrix():
+    # hard veto first
+    assert re_.pm_decide(thesis="VALID", valuation="ATTRACTIVE",
+                         technical="CONFIRMED", risk_check="BLOCK",
+                         portfolio_check="PASS")["decision"] == "BLOCK"
+    # all green + no position → ENTER
+    assert re_.pm_decide(thesis="VALID", valuation="ATTRACTIVE",
+                         technical="CONFIRMED", risk_check="PASS",
+                         portfolio_check="PASS")["decision"] == "ENTER"
+    # thesis invalid → EXIT regardless of P&L
+    assert re_.pm_decide(thesis="INVALID", valuation="ATTRACTIVE",
+                         technical="CONFIRMED", risk_check="PASS",
+                         portfolio_check="PASS",
+                         has_position=True)["decision"] == "EXIT"
+    # position + valid + capacity + target hit → ADD
+    assert re_.pm_decide(thesis="VALID", valuation="ATTRACTIVE",
+                         technical="CONFIRMED", risk_check="PASS",
+                         portfolio_check="PASS", has_position=True,
+                         target_hit=True)["decision"] == "ADD"
+    # position + valid + normal → HOLD
+    assert re_.pm_decide(thesis="VALID", valuation="REVIEW",
+                         technical="CONFIRMED", risk_check="PASS",
+                         portfolio_check="PASS",
+                         has_position=True)["decision"] == "HOLD"
+    # concentration → REDUCE
+    assert re_.pm_decide(thesis="VALID", valuation="ATTRACTIVE",
+                         technical="CONFIRMED", risk_check="PASS",
+                         portfolio_check="PASS", has_position=True,
+                         concentration_high=True)["decision"] == "REDUCE"
+    # ambiguous → REVIEW
+    assert re_.pm_decide(thesis="REVIEW", valuation="REVIEW",
+                         technical="WEAKENING", risk_check="REVIEW",
+                         portfolio_check="PASS")["decision"] == "REVIEW"

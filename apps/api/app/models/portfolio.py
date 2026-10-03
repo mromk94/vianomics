@@ -39,6 +39,12 @@ class Position(Base, IdMixin, TimestampMixin):
     avg_cost: Mapped[float | None] = mapped_column(MONEY)
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     thesis_ref: Mapped[str | None]  # → decision_records / research
+    # Position-ledger risk fields (VAIIP spec: active stop + target +
+    # fair value per position — powers open-stop-risk accounting).
+    stop_price: Mapped[float | None] = mapped_column(MONEY)
+    target_price: Mapped[float | None] = mapped_column(MONEY)
+    fair_value: Mapped[float | None] = mapped_column(MONEY)
+    strategy: Mapped[str | None] = mapped_column(String(64))
 
 
 class Trade(Base, IdMixin, TimestampMixin):
