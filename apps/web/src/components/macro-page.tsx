@@ -19,6 +19,7 @@ interface Regime {
   market_regime: string;
   fear_greed: number | null;
   fg_components: Record<string, number>;
+  fg_source?: string;
   overlay: string | null;
   vix: number | null;
   vix_band: string | null;
@@ -143,6 +144,9 @@ export function MacroPage() {
                 <div className="glass-tile p-3">
                   <div className="text-[10px] tracking-wider text-dim uppercase">F&G proxy</div>
                   <div className="num text-lg font-semibold">{r.fear_greed ?? "—"}</div>
+                  {r.fg_source && (
+                    <div className="text-[10px] text-sub">{r.fg_source === "cnn" ? "CNN F&G index" : "proxy composite"}</div>
+                  )}
                   {r.overlay && <StatusBadge tone={TONE[r.overlay]}>{r.overlay.replace(/_/g, " ")}</StatusBadge>}
                 </div>
                 <div className="glass-tile p-3">

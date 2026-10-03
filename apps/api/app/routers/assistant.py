@@ -44,7 +44,8 @@ async def _context(db: AsyncSession) -> dict:
     live = None
     try:
         from app.services import macro_regime as mr
-        live = await mr.classify(db, utcnow())
+        from app.providers.market import fetch_fear_greed
+        live = await mr.classify(db, utcnow(), fetch_fg=fetch_fear_greed)
     except Exception:
         await db.rollback()
     if live and not regime:
