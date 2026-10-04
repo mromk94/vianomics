@@ -16,10 +16,22 @@ class YahooAdapter:
     name = "yahoo"
     kind = "market"
 
-    async def fetch_daily(self, symbol: str, range_: str = "2y") -> list[dict]:
-        async with httpx.AsyncClient(timeout=30, headers=UA) as c:
-            r = await c.get(f"{BASE}/{symbol.upper()}",
-                            params={"range": range_, "interval": "1d"})
+    async def fetch_daily(self, symbol: str, range_: str = "2y",
+                          start: str | None = None) -> list[dict]:
+        # range='max' makes Yahoo downsample to sparse monthly anchors
+        # timestamped at month-start — NOT daily bars. Deep history must
+        # be requested via explicit period1/period2.
+        params: dict = {"interval": "1d"}
+        if start:
+            p1 = int(datetime.fromisoformat(start)
+                     .replace(tzinfo=timezone.utc).timestamp())
+            params["period1"] = p1
+            params["period2"] = int(datetime.now(tz=timezone.utc)
+                                    .timestamp())
+        else:
+            params["range"] = range_
+        async with httpx.AsyncClient(timeout=90, headers=UA) as c:
+            r = await c.get(f"{BASE}/{symbol.upper()}", params=params)
             r.raise_for_status()
         result = r.json()["chart"]["result"][0]
         ts = result.get("timestamp") or []

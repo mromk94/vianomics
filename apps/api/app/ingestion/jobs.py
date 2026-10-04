@@ -423,7 +423,7 @@ async def ingest_stooq_bars(
 
     raw, status = await run_job(
         session, job_run=run, provider_key="yahoo",
-        work=lambda: adapter.fetch_daily(symbol),
+        work=lambda: adapter.fetch_daily(symbol, start="2000-01-01"),
     )
     if raw is None:
         run.finished_at = utcnow()
