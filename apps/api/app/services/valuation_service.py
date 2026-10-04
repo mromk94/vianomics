@@ -26,7 +26,7 @@ def _cagr(series: dict, years: int | None = None) -> Decimal | None:
     items = sorted(series.items())
     if years:
         items = items[-(years + 1):]
-    if len(items) < 2 or items[0][1] <= 0:
+    if len(items) < 2 or items[0][1] <= 0 or items[-1][1] <= 0:
         return None
     n = len(items) - 1
     return (D(str(items[-1][1])) / D(str(items[0][1]))) ** (D(1) / n) - 1
@@ -269,3 +269,49 @@ async def run_valuation(
     )
     db.add(run)
     return run
+
+
+async def auto_valuation(
+    db: AsyncSession, inst: Instrument, *, price: float,
+    mandate=None, actor_id: str | None = None,
+) -> ValuationRun | None:
+    """Baseline valuation with the doc's conservative defaults —
+    the qualification gate (and downstream eligibility) needs a run to
+    read; this supplies it without hand-tuned assumptions.
+
+    - growth = min(5y EPS/NI/revenue CAGR, 15%) — Rule #1 never
+      assumes above 15–20%
+    - discount rate = CAPM with the live ^TNX yield as rf and the
+      doc's 4.3% ERP, beta 1.0 (conservative central case)
+    - MOS = mandate floor (50% default)
+
+    Recorded as scenario='auto_baseline' so operator-authored runs are
+    distinguishable in the version history."""
+    anchors = await gather_inputs(db, inst, utcnow())
+    g5 = (anchors["growth"]["eps"] or anchors["growth"]["ni"]
+          or anchors["growth"]["revenue"])
+    growth = max(0.0, min(float(g5 or 0.08), 0.15))
+
+    # CAPM — rf from the live 10y treasury yield, doc ERP 4.3%, β=1.0
+    rate = 0.10   # doc-example fallback when ^TNX is absent
+    try:
+        from sqlalchemy import select as _sel
+        from app.models.market import OhlcvBar
+        from app.models.instruments import Instrument as _I
+        tnx = (await db.execute(
+            _sel(_I.id).where(_I.symbol == "^TNX"))).scalar()
+        if tnx:
+            y = (await db.execute(
+                _sel(OhlcvBar.close)
+                .where(OhlcvBar.instrument_id == tnx,
+                       OhlcvBar.timeframe == "1d")
+                .order_by(OhlcvBar.time.desc()).limit(1))).scalar()
+            if y:
+                rate = ve.capm_discount_rate(float(y) / 100, 1.0, 0.043)
+    except Exception:
+        pass
+
+    return await run_valuation(
+        db, inst, price=price, growth=growth,
+        discount_rate=rate, mandate=mandate, actor_id=actor_id,
+        scenario="auto_baseline")

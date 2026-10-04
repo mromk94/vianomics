@@ -149,6 +149,25 @@ async def symbol_detail(symbol: str, db: AsyncSession = Depends(get_db)) -> dict
         except Exception:
             pass
 
+    # Phase-1 qualification gate — Four M's + valuation zone verdict
+    qualification = None
+    if inst:
+        try:
+            from app.services import qualification as qual
+            g = await qual.gate_with_price(db, inst)
+            qualification = {
+                "verdict": g["verdict"],
+                "four_ms": {k: v.get("pass", v.get("deferred"))
+                            for k, v in g["four_ms"].items()
+                            if isinstance(v, dict)},
+                "valuation_status": g["valuation"]["status"],
+                "rule1_zone": g["valuation"]["rule1"]["zone"],
+                "mos_price": g["valuation"]["rule1"]["mos_price"],
+                "five_numbers_pass": g["five_numbers"]["all_pass"],
+            }
+        except Exception:
+            pass
+
     # open pyramid records for this instrument
     pyramids = []
     if inst:
@@ -181,5 +200,6 @@ async def symbol_detail(symbol: str, db: AsyncSession = Depends(get_db)) -> dict
         "dossier": dossier,
         "signals": sig,
         "fundamentals": fundamentals,
+        "qualification": qualification,
         "pyramids": pyramids,
     }

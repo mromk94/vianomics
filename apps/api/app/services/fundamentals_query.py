@@ -23,8 +23,16 @@ async def fy_series(
     as_of: datetime,
     years: int = 6,
 ) -> dict[date, float]:
-    """Latest-published FY value per period_end for the first matching
-    concept (EDGAR has aliases — first non-empty concept wins)."""
+    """FY value per period_end, merged across concept aliases.
+
+    Aliases merge rather than first-non-empty-wins: a stale taxonomy
+    (`Revenues`, ends 2010) must not shadow the live one
+    (`RevenueFromContractWithCustomerExcludingAssessedTax`). The
+    earliest-listed (canonical) concept wins each period_end; later
+    aliases only fill ends the canonical ones lack — old-era values
+    extend coverage instead of competing. Window filtering happens
+    per-concept BEFORE merge so an out-of-window alias can't win."""
+    cutoff = as_of.date() - timedelta(days=365 * years)
     out: dict[date, float] = {}
     for concept in concepts:
         rows = (
@@ -36,6 +44,7 @@ async def fy_series(
                     FundamentalObservation.published_at.is_not(None),
                     FundamentalObservation.published_at <= as_of,
                     FundamentalObservation.quality != "quarantined",
+                    FundamentalObservation.period_end >= cutoff,
                 )
                 .order_by(
                     FundamentalObservation.period_end.asc(),
@@ -51,11 +60,8 @@ async def fy_series(
             elif r.fiscal_period != "FY":
                 continue
             # later filings supersede earlier ones for same period
-            out[r.period_end] = float(r.value)
-        if out:
-            break
-    cutoff = as_of.date() - timedelta(days=365 * years)
-    return {k: v for k, v in out.items() if k >= cutoff}
+            out.setdefault(r.period_end, float(r.value))
+    return out
 
 
 async def latest_instant(

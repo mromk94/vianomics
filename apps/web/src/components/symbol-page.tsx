@@ -165,6 +165,31 @@ export function SymbolPage({ symbol }: { symbol: string }) {
                   ? <StatusBadge tone={tone(d.decision.verdict)}>{d.decision.verdict}</StatusBadge>
                   : <div className="mt-1 text-[10px] text-faint">no decision</div>}
               </div>
+              {/* Phase-1 qualification gate — spans the grid */}
+              <div className="glass-tile col-span-2 p-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="text-[9px] uppercase text-dim">Qualification gate</div>
+                  {d?.qualification?.mos_price && (
+                    <span className="num text-[9px] text-faint">
+                      MOS ${fmtNum(d.qualification.mos_price, 2)}
+                    </span>
+                  )}
+                </div>
+                {d?.qualification
+                  ? <div className="mt-1 flex items-center gap-1.5">
+                      <StatusBadge tone={tone(d.qualification.verdict)}>
+                        {d.qualification.verdict}
+                      </StatusBadge>
+                      <span className="text-[9px] text-faint">
+                        4M {["meaning","moat","management"].map(k =>
+                          d.qualification.four_ms?.[k] === true ? "✓" : "·").join("")}
+                        {" "}· 5-num {d.qualification.five_numbers_pass ? "✓" : "·"}
+                        {d.qualification.rule1_zone
+                          ? ` · ${d.qualification.rule1_zone}` : ""}
+                      </span>
+                    </div>
+                  : <div className="mt-1 text-[10px] text-faint">no gate data</div>}
+              </div>
             </div>
             {d?.dossier && (
               <a href={`/research?symbol=${sym}`}

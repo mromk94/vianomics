@@ -218,3 +218,14 @@ async def valuation(symbol: str, price: float | None = Query(None),
     out["allowed_metrics"] = sorted(val.allowed_metrics(sector_name))
     out["price"] = price
     return out
+
+
+@router.get("/qualification/{symbol}")
+async def qualification(symbol: str, db: AsyncSession = Depends(get_db)
+                        ) -> dict:
+    """Phase-1 Fundamental Qualification Gate — Four M's proxies,
+    five-numbers growth table, initial screen, valuation status. The
+    verdict is research output; it never creates or sizes an order."""
+    from app.services import qualification as qual
+    inst = await _inst(db, symbol)
+    return await qual.gate_with_price(db, inst)
