@@ -238,6 +238,93 @@ async def test_cooldown_survives_next_sweep(db):
                for b in gate["breaches"])
 
 
+async def test_per_leg_cost_basis_pnl(db):
+    """Legs added at target prices are P&L'd at THEIR fill, not the
+    leg-1 entry — 10sh@100 + 10sh@130 marked at 120 = +$100, not
+    +$400."""
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    await _funded_book(db)
+    db.add(LimitConfig(version=1, payload={"sleeve_enabled": True,
+                                           "min_sectors": 0}))
+    await _bars(db, inst, [120] * 43)
+    rec = _rec(inst, shares=20, additions=1, target1=200.0,
+               params={"leg_shares": 10,
+                       "leg_fills": [{"fill": 100.0, "shares": 10,
+                                      "leg": 1},
+                                     {"fill": 130.0, "shares": 10,
+                                      "leg": 2}]})
+    db.add(rec)
+    await db.flush()
+
+    out = await pm.maintain_open_pyramids(db)
+    # 20sh × 120 = 2400 marked − (1000 + 1300) cost = +100
+    assert out["sleeve"]["sleeve_open_pnl"] == pytest.approx(100.0)
+
+
+async def test_legacy_fills_reconstruct_at_entry(db):
+    """Rows without leg_fills degrade to one leg at entry — the old
+    (wrong-after-adds) behaviour, flagged as reconstructed."""
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    rec = _rec(inst, shares=20, additions=1)
+    fills = pm._leg_fills(rec)
+    assert fills == [{"fill": 100.0, "shares": 20, "leg": 1,
+                      "reconstructed": True}]
+    assert pm._cost_basis(rec) == pytest.approx(2000.0)
+
+
+async def test_drawdown_measured_from_high_water(db):
+    """Equity that peaked and gave back counts as drawdown — gains
+    surrendered are losses taken. HWM 40k → mark 28k = $12k dd."""
+    from app.models.risk import SleeveState
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    await _funded_book(db)                    # sleeve equity 30k
+    db.add(LimitConfig(version=1, payload={
+        "sleeve_enabled": True, "min_sectors": 0,
+        "sleeve_gross_stop_pct": 0.0}))       # isolate the HWM rule
+    db.add(SleeveState(state="active", equity_hwm=40_000.0))
+    # 100sh @98 vs entry 100 → pnl −200 → eq_mark 29.8k; vs HWM 40k
+    # → $10.2k ≥ $6k stop → liquidate. Under the old rule (−0.67%
+    # from cost basis) it survived.
+    await _bars(db, inst, [98] * 43)
+    db.add(_rec(inst, shares=100, stop=1.0, target1=9999.0,
+                params={"leg_shares": 100}))
+    await db.flush()
+
+    out = await pm.maintain_open_pyramids(db)
+    assert out.get("liquidated") == 1
+    life = (await db.execute(select(SleeveState))).scalar_one()
+    assert life.state == "cooldown"
+    assert life.drawdown_pct == pytest.approx(10_200 / 30_000)
+
+
+async def test_gross_stop_fires_before_equity_stop(db):
+    """4%-of-current-gross is the tighter floor at low deployment:
+    100sh down $5 = $500 loss < $6k equity stop, but ≥ $380 = 4% of
+    the $9.5k gross → liquidate."""
+    from app.models.risk import SleeveState
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    await _funded_book(db)
+    db.add(LimitConfig(version=1, payload={
+        "sleeve_enabled": True, "min_sectors": 0}))
+    await _bars(db, inst, [95] * 43)
+    db.add(_rec(inst, shares=100, stop=1.0, target1=9999.0,
+                params={"leg_shares": 100}))
+    await db.flush()
+
+    out = await pm.maintain_open_pyramids(db)
+    assert out.get("liquidated") == 1
+    assert "gross-exposure" in (await db.execute(
+        select(SleeveState))).scalar_one().cooldown_reason
+
+
 async def test_summary_shape(db):
     inst = Instrument(symbol="TEST", name="T", asset_class="equity")
     db.add(inst)

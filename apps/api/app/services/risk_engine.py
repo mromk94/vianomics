@@ -62,6 +62,9 @@ DEFAULT_LIMITS = {
     "sleeve_max_asset_gross_pct": 0.20,   # per-asset ≤ 20% of gross cap
     "sleeve_starter_fraction": 0.25,  # starter = ¼ of max per asset
     "sleeve_portfolio_stop_pct": 0.20,    # 20% sleeve-equity DD → all out
+    "sleeve_gross_stop_pct": 0.04,        # 4% of current gross → all out
+                                        # (the tighter stop at low
+                                        # deployment — doc Phase 0/2.2)
 }
 
 
@@ -166,6 +169,10 @@ class PyramidTrade:
     additions: int = 0
     leg_shares: int = 0                   # shares per pyramid leg
     atr_current: float | None = None
+    # per-leg cost basis — each entry {"fill", "shares", "leg"}; the
+    # pyramid's P&L is computed against these fills, NEVER against the
+    # leg-1 entry for every share (legs 2+ fill at target prices)
+    leg_fills: list = field(default_factory=list)
     events: list = field(default_factory=list)
 
     def log(self, msg):
@@ -192,7 +199,9 @@ def create_pyramid(symbol, equity, entry, atr, cash, risk_pct=0.005,
         stop=sz["stop_price"],
         target1=float(D(str(entry)) + 3 * D(str(atr))),
         state=PyramidState.INITIAL, leg_shares=sz["shares"],
-        atr_current=float(atr), t2_policy=t2_policy)
+        atr_current=float(atr), t2_policy=t2_policy,
+        leg_fills=[{"fill": float(entry), "shares": sz["shares"],
+                    "leg": 1}])
     t.log(f"entry {sz['shares']}sh @ {entry} — stop "
           f"{sz['stop_price']:.2f} (1.5×ATR), target "
           f"{t.target1:.2f} (3×ATR)")
@@ -250,9 +259,13 @@ def advance(trade: PyramidTrade, price, current_atr, *,
         t.state = (PyramidState.TARGET1 if t.additions == 1
                    else PyramidState.ADDITION)
         t.target1 = float(p + 3 * atr)
-        t.log(f"target hit — added leg {t.legs} (+{t.leg_shares}sh, "
-              f"total {t.shares}sh); next target {t.target1:.2f} "
-              f"(3×ATR); stop {t.stop:.2f} covers all legs")
+        add_fill = float(fill_price) if fill_price else float(p)
+        t.leg_fills.append({"fill": add_fill, "shares": t.leg_shares,
+                            "leg": t.legs})
+        t.log(f"target hit — added leg {t.legs} (+{t.leg_shares}sh "
+              f"@ {add_fill:.2f}, total {t.shares}sh); next target "
+              f"{t.target1:.2f} (3×ATR); stop {t.stop:.2f} covers "
+              "all legs")
         return {"state": t.state, "shares": t.shares,
                 "stop": t.stop, "target": t.target1}
 
@@ -284,6 +297,8 @@ def sleeve_config(limits: "Limits | None" = None) -> dict:
             float(L.get("sleeve_starter_fraction") or 0.25),
         "portfolio_stop_pct":
             float(L.get("sleeve_portfolio_stop_pct") or 0.20),
+        "gross_stop_pct":
+            float(L.get("sleeve_gross_stop_pct") or 0.04),
     }
 
 

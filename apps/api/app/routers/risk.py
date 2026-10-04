@@ -556,26 +556,37 @@ async def create_pyramid(
                   "lifecycle": sleeve.get("lifecycle")})
 
     # Trade Eligibility gate — the unified quality+valuation+technical+
-    # margin+portfolio object. When the sleeve is on, pyramid creation
-    # refuses anything below TRADE_ELIGIBLE unless an authorized
-    # override is sent (audited with the gate snapshot).
+    # margin+portfolio object. `force` may waive the IDEA gates
+    # (quality/valuation/technical — human judgment per the doc's AI-
+    # for-judgment split) but NEVER the capacity gates — margin and
+    # sleeve room are hard risk constraints, not opinions.
     eligibility = None
     if sleeve["enabled"]:
         from app.services import eligibility as elig
         eligibility = await elig.trade_eligibility(
             db, inst, ctx, entry=body.entry, atr=body.atr)
-        if eligibility["verdict"] != "TRADE_ELIGIBLE" and not body.force:
+        capacity_fail = (
+            not eligibility["gates"]["margin"]["pass"]
+            or not eligibility["gates"]["portfolio"]["pass"])
+        refuse = (eligibility["verdict"] != "TRADE_ELIGIBLE"
+                  and (not body.force or capacity_fail))
+        if refuse:
             await audit(
                 db, action="pyramid.create.rejected", actor=user,
                 entity_type="instrument", entity_id=inst.id,
                 detail={"symbol": inst.symbol,
                         "verdict": eligibility["verdict"],
-                        "blocking": eligibility["blocking"]})
+                        "blocking": eligibility["blocking"],
+                        "force_requested": body.force,
+                        "capacity_fail": capacity_fail})
             await db.commit()
             raise HTTPException(
                 409,
-                {"detail": f"{inst.symbol} is {eligibility['verdict']} "
-                           "— pyramid requires TRADE_ELIGIBLE",
+                {"detail": (
+                    f"{inst.symbol} is {eligibility['verdict']} — "
+                    + ("capacity gates cannot be overridden"
+                       if capacity_fail and body.force else
+                       "pyramid requires TRADE_ELIGIBLE")),
                  "eligibility": eligibility})
 
     sizing = None
@@ -587,6 +598,52 @@ async def create_pyramid(
                 p["market_value"] for p in sleeve["positions"]
                 if p["symbol"] == inst.symbol),
             adv_shares=adv)
+    else:
+        # flat sizing path — still gated: every entry passes the
+        # portfolio risk engine, sleeve or no sleeve (doc Step 18)
+        sizing = re_.initial_sizing(
+            body.equity, body.risk_pct, body.entry, body.atr,
+            body.cash, adv_shares=adv)
+        limits = await _active_limits(db)
+        cs = float(inst.contract_size or 1)
+        gate = re_.check_order(
+            {"symbol": inst.symbol, "side": "buy",
+             "sector": None,
+             "notional": sizing["notional"] * cs,
+             "risk_dollars": sizing["dollar_risk"] * cs},
+            ctx, limits=limits)
+        if not gate["allowed"]:
+            await audit(
+                db, action="pyramid.create.rejected", actor=user,
+                entity_type="instrument", entity_id=inst.id,
+                detail={"symbol": inst.symbol,
+                        "breaches": gate["breaches"]})
+            await db.commit()
+            raise HTTPException(
+                409, {"detail": "risk gate refused the order",
+                      "breaches": gate["breaches"]})
+        db.add(RiskCheck(
+            symbol=inst.symbol, side="buy",
+            notional=sizing["notional"] * cs,
+            allowed=True, breaches=gate["breaches"],
+            limits_snapshot=dict(limits.values),
+            engine_version=re_.ENGINE_VERSION,
+            checked_by=user.id))
+    # zero-share guard — a pyramid with no fills is an audit artifact,
+    # not a position
+    if sizing is not None and sizing["shares"] <= 0:
+        await audit(
+            db, action="pyramid.create.rejected", actor=user,
+            entity_type="instrument", entity_id=inst.id,
+            detail={"symbol": inst.symbol,
+                    "reason": "sizing produced 0 shares",
+                    "binding": sizing.get("binding"),
+                    "caps": sizing.get("caps")})
+        await db.commit()
+        raise HTTPException(
+            422, {"detail": "sizing produced 0 shares — no capacity",
+                  "binding": sizing.get("binding"),
+                  "caps": sizing.get("caps")})
     t = re_.create_pyramid(
         inst.symbol, body.equity, body.entry, body.atr, body.cash,
         risk_pct=body.risk_pct, t2_policy=body.t2_policy,
@@ -598,6 +655,9 @@ async def create_pyramid(
         engine_version=re_.ENGINE_VERSION, events=t.events,
         params={"risk_pct": body.risk_pct,
                 "leg_shares": t.leg_shares,
+                "leg_fills": t.leg_fills,
+                "initial_risk": (sizing["dollar_risk"]
+                                 if sizing else None),
                 "atr_current": t.atr_current,
                 "sleeve": sleeve["enabled"],
                 "binding": sizing["binding"] if sizing else None,
@@ -635,14 +695,20 @@ async def advance_pyramid(
     if rec is None:
         raise HTTPException(404, "pyramid trade not found")
     params = rec.params or {}
+    # adds are LINEAR (+leg_shares each), not doubling — 1+additions
+    # is the correct divisor for legacy rows without leg_shares
     leg_shares = params.get("leg_shares") or max(
-        1, int(rec.shares / max(1, 2 ** rec.additions)))
+        1, int(rec.shares / (1 + rec.additions)))
     t = re_.PyramidTrade(
         symbol="?", entry=rec.entry, atr_initial=rec.atr_initial,
         shares=rec.shares, stop=rec.stop, target1=rec.target1,
         state=re_.PyramidState(rec.state), t2_policy=rec.t2_policy,
         additions=rec.additions, leg_shares=leg_shares,
         atr_current=params.get("atr_current"),
+        leg_fills=(params.get("leg_fills")
+                   or [{"fill": float(rec.entry),
+                        "shares": rec.shares, "leg": 1,
+                        "reconstructed": True}]),
         events=list(rec.events))
 
     # spec §14/§25/§29 — a pyramid add is a controlled transaction:
@@ -683,6 +749,7 @@ async def advance_pyramid(
     rec.additions = t.additions
     rec.events = t.events
     rec.params = {**params, "leg_shares": t.leg_shares,
+                  "leg_fills": t.leg_fills,
                   "atr_current": t.atr_current}
     rec.engine_version = re_.ENGINE_VERSION
     await db.commit()

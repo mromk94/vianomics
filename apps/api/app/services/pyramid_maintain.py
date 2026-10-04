@@ -62,18 +62,35 @@ async def get_sleeve_state(db: AsyncSession) -> SleeveState:
     return st
 
 
+def _leg_fills(rec: PyramidTradeRec) -> list:
+    """Per-leg cost basis from params; legacy rows predate it, so
+    degrade to a single leg at `entry` — wrong after adds but the
+    best available reconstruction (flagged via _leg_fills_fallback)."""
+    fills = (rec.params or {}).get("leg_fills")
+    if fills:
+        return [dict(f) for f in fills]
+    return [{"fill": float(rec.entry), "shares": rec.shares,
+             "leg": 1, "reconstructed": True}]
+
+
+def _cost_basis(rec: PyramidTradeRec) -> float:
+    """Dollar cost across every recorded leg fill."""
+    return sum(f["shares"] * f["fill"] for f in _leg_fills(rec))
+
+
 def _rebuild(rec: PyramidTradeRec) -> re_.PyramidTrade:
     """Same hydration the advance endpoint uses — params carries the
     fields the dataclass needs but the row doesn't."""
     params = rec.params or {}
     leg = params.get("leg_shares") or max(
-        1, int(rec.shares / max(1, 2 ** rec.additions)))
+        1, int(rec.shares / (1 + rec.additions)))
     return re_.PyramidTrade(
         symbol="?", entry=rec.entry, atr_initial=rec.atr_initial,
         shares=rec.shares, stop=rec.stop, target1=rec.target1,
         state=re_.PyramidState(rec.state), t2_policy=rec.t2_policy,
         additions=rec.additions, leg_shares=leg,
         atr_current=params.get("atr_current"),
+        leg_fills=_leg_fills(rec),
         events=list(rec.events or []))
 
 
@@ -101,7 +118,9 @@ async def _sleeve_ctx(db: AsyncSession, nav: float,
         cs = float(inst.contract_size or 1)
         mv = rec.shares * px * cs
         gross += mv
-        pnl += rec.shares * (px - rec.entry) * cs
+        # per-leg cost basis — legs 2+ filled at target prices, not
+        # the leg-1 entry; booking all shares at entry overstates P&L
+        pnl += (mv - _cost_basis(rec) * cs)
         if inst.maintenance_margin_rate is not None:
             maint_rates.append(float(inst.maintenance_margin_rate))
         positions.append({"symbol": inst.symbol, "state": rec.state,
@@ -254,6 +273,7 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
             rec.events = t.events
             rec.params = {**(rec.params or {}),
                           "leg_shares": t.leg_shares,
+                          "leg_fills": t.leg_fills,
                           "atr_current": t.atr_current}
             rec.engine_version = re_.ENGINE_VERSION
 
@@ -299,22 +319,36 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
                 observed=st["margin_utilisation"], required=0.9,
                 action="reduce gross before broker forces it")
         # ── doc portfolio stop — ABSOLUTE (Sprint-5 semantics):
-        # marked sleeve equity = allocated equity + open P&L; the
-        # drawdown is measured against that mark's high water and the
-        # configured floor. A breach liquidates the sleeve and puts it
-        # in cooldown — a human release is the only way back. ──
+        # drawdown is measured from the equity HIGH-WATER mark —
+        # profits given back still count as losses taken. Two floors,
+        # whichever is tighter: the absolute 20%-of-sleeve-equity stop
+        # AND 4% of CURRENT gross exposure (at starter deployment the
+        # gross floor fires first — doc Phase 0/2.2). A breach
+        # liquidates the sleeve and drops it into cooldown; a human
+        # release is the only way back. ──
         life = await get_sleeve_state(db)
         eq_mark = st["sleeve_equity"] + (st["sleeve_open_pnl"] or 0)
         life.equity_hwm = max(life.equity_hwm or 0, eq_mark,
                               st["sleeve_equity"])
-        dd = max(0.0, -(st["sleeve_pnl_pct"] or 0))
+        dd_usd = max(0.0, life.equity_hwm - eq_mark)
+        dd = (dd_usd / st["sleeve_equity"]
+              if st["sleeve_equity"] else 0.0)
         life.drawdown_pct = dd
-        stop_pct = sleeve["config"]["portfolio_stop_pct"]
-        if dd >= stop_pct and life.state != "cooldown":
+        cfg = sleeve["config"]
+        stop_usd = cfg["portfolio_stop_pct"] * st["sleeve_equity"]
+        gross_floor = (cfg["gross_stop_pct"] * st["gross"]
+                       if st["gross"] > 0 else float("inf"))
+        floor = min(stop_usd, gross_floor)
+        if dd_usd >= floor and life.state != "cooldown":
+            which = ("gross-exposure" if gross_floor < stop_usd
+                     else "equity")
             out["liquidated"] = await _liquidate_sleeve(
-                db, f"sleeve drawdown {dd:.1%} >= {stop_pct:.0%} stop")
+                db, f"sleeve drawdown ${dd_usd:,.0f} >= {which} "
+                    f"stop ${floor:,.0f}")
             out["sleeve"]["cooldown"] = True
         out["sleeve_drawdown_pct"] = dd
+        out["sleeve_drawdown_usd"] = dd_usd
+        out["sleeve_stop_floor_usd"] = floor
         out["sleeve_cooldown"] = (life.state == "cooldown")
 
     out["maintain_version"] = MAINTAIN_VERSION
