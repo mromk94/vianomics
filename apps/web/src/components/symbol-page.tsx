@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { CandlestickSeries, createChart } from "lightweight-charts";
+import { useEffect, useState } from "react";
 
 import { apiGet } from "@/lib/api";
 import { fmtNum, fmtTime } from "@/lib/format";
@@ -48,9 +47,9 @@ export function SymbolPage({ symbol }: { symbol: string }) {
   const [news, setNews] = useState<{ items: NewsItem[]; sources: string[] } | null>(null);
   const [tf, setTf] = useState("1d");
   const [bars, setBars] = useState<any[]>([]);
-  const [chartMode, setChartMode] = useState<"tv" | "history">("tv");
   const [pyrOpen, setPyrOpen] = useState(false);
-  const chartRef = useRef<HTMLDivElement>(null);
+  const [finTab, setFinTab] = useState<"income" | "balance" | "cashflow" | "other">("income");
+  const [finFreq, setFinFreq] = useState<"FY" | "Q">("FY");
 
   useEffect(() => {
     setD(null); setErr(null);
@@ -67,28 +66,16 @@ export function SymbolPage({ symbol }: { symbol: string }) {
       .then((r) => setBars(r.bars)).catch(() => setBars([]));
   }, [sym, tf]);
 
-  // price-history chart
-  useEffect(() => {
-    if (chartMode !== "history" || !chartRef.current || !bars.length) return;
-    const chart = createChart(chartRef.current, {
-      autoSize: true, height: 320,
-      layout: { background: { color: "transparent" },
-        textColor: "#64748b", fontSize: 11 },
-      grid: { vertLines: { color: "#1e293b33" },
-        horzLines: { color: "#1e293b33" } },
-      rightPriceScale: { borderColor: "#1e293b" },
-      timeScale: { borderColor: "#1e293b" },
-    });
-    chart.addSeries(CandlestickSeries, {
-      upColor: "#34d399", downColor: "#f87171",
-      wickUpColor: "#34d399", wickDownColor: "#f87171",
-      borderVisible: false,
-    }).setData(bars.map((b) => ({
-      time: b.time, open: b.open, high: b.high,
-      low: b.low, close: b.close })) as any);
-    chart.timeScale().fitContent();
-    return () => chart.remove();
-  }, [bars, chartMode]);
+  const downloadCsv = () => {
+    const rows = [["date", "open", "high", "low", "close", "volume"],
+      ...bars.map((b) => [b.time, b.open, b.high, b.low, b.close, b.volume])];
+    const url = URL.createObjectURL(new Blob(
+      [rows.map((r) => r.join(",")).join("\n")],
+      { type: "text/csv" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = `${sym}-${tf}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
 
   if (err) return (
     <div className="p-6"><ErrorState title={sym} detail={err} /></div>);
@@ -123,32 +110,11 @@ export function SymbolPage({ symbol }: { symbol: string }) {
       )}
 
       <div className="grid gap-4 xl:grid-cols-3">
-        {/* charts — TradingView / stored price history */}
-        <SectionCard className="xl:col-span-2"
-          title={chartMode === "tv" ? "Chart — TradingView" : "Price history — stored bars"}
-          action={
-            <div className="flex items-center gap-2">
-              {chartMode === "history" && (
-                <select value={tf} onChange={(e) => setTf(e.target.value)}
-                  className="rounded border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-dim focus:border-accent focus:outline-none">
-                  {TFS.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
-                </select>
-              )}
-              <button onClick={() => setChartMode(chartMode === "tv" ? "history" : "tv")}
-                className="rounded-full border border-border px-3 py-0.5 text-[11px] text-dim hover:text-text">
-                {chartMode === "tv" ? "Price history" : "TradingView"}
-              </button>
-            </div>}>
-          {chartMode === "tv" ? (
-            <iframe key={sym} title={`${sym} TradingView`}
-              src={`https://www.tradingview.com/widgetembed/?symbol=${encodeURIComponent(sym)}&interval=D&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1&hide_side_toolbar=0&allow_symbol_change=0&studies=%5B%22RSI%40tv-basicstudies%22%2C%22ATR%40tv-basicstudies%22%5D`}
-              className="h-[380px] w-full border-0" allow="fullscreen" />
-          ) : bars.length ? (
-            <div ref={chartRef} className="h-[380px] w-full" />
-          ) : (
-            <EmptyState title="No stored bars"
-              hint="Daily bars ingest via the dataops backfill." />
-          )}
+        {/* chart — TradingView widget */}
+        <SectionCard className="xl:col-span-2" title="Chart — TradingView">
+          <iframe key={sym} title={`${sym} TradingView`}
+            src={`https://www.tradingview.com/widgetembed/?symbol=${encodeURIComponent(sym)}&interval=D&theme=dark&style=1&timezone=Etc%2FUTC&withdateranges=1&hide_side_toolbar=0&allow_symbol_change=0&studies=%5B%22RSI%40tv-basicstudies%22%2C%22ATR%40tv-basicstudies%22%5D`}
+            className="h-[380px] w-full border-0" allow="fullscreen" />
         </SectionCard>
 
         {/* right rail — position + engine verdicts */}
@@ -210,7 +176,7 @@ export function SymbolPage({ symbol }: { symbol: string }) {
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-3">
+      <div className="grid gap-4 xl:grid-cols-2">
         {/* market intelligence — full signal surface */}
         <SectionCard title="Market intelligence" className="xl:col-span-1"
           action={s ? `as of ${s.as_of}` : undefined}>
@@ -263,29 +229,171 @@ export function SymbolPage({ symbol }: { symbol: string }) {
           ) : <EmptyState title="No ATR" hint="needs daily bars" />}
         </SectionCard>
 
-        {/* financials — latest SEC facts */}
-        <SectionCard title="Financials" className="xl:col-span-1"
-          action="latest reported facts">
-          {d?.fundamentals?.length ? (
-            <div className="max-h-56 space-y-1 overflow-y-auto text-[12px]">
-              {d.fundamentals.map((f: any) => (
-                <div key={f.concept}
-                  className="flex items-center justify-between border-b border-border/40 py-1 last:border-0">
-                  <span className="truncate pr-2 text-dim">
-                    {f.concept.replace("us-gaap:", "").replace(/([a-z])([A-Z])/g, "$1 $2")}
-                    <span className="ml-1 text-[9px] text-faint">{f.period_end}</span>
-                  </span>
-                  <span className="num shrink-0 font-medium">
-                    {f.value == null ? "—" : f.unit === "USD" || f.unit === "shares"
-                      ? `${fmtNum(f.value / 1e6, 1)}M`
-                      : fmtNum(f.value, 2)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : <EmptyState title="No fundamentals" hint="SEC facts ingest via ingest:edgar:facts" />}
-        </SectionCard>
       </div>
+
+      {/* price history — investing.com-style OHLCV table */}
+      <SectionCard title="Stock Price History"
+        action={
+          <div className="flex items-center gap-2">
+            <select value={tf} onChange={(e) => setTf(e.target.value)}
+              className="rounded border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-dim focus:border-accent focus:outline-none">
+              {TFS.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
+            </select>
+            <button onClick={downloadCsv} disabled={!bars.length}
+              className="rounded-full border border-border px-3 py-0.5 text-[11px] text-dim hover:text-text disabled:opacity-40">
+              Download CSV
+            </button>
+          </div>}>
+        {bars.length === 0 ? (
+          <EmptyState title="No stored bars"
+            hint="Daily bars ingest via the dataops backfill." />
+        ) : (
+          <div className="max-h-80 overflow-y-auto">
+            <table className="w-full text-[12px]">
+              <thead className="sticky top-0 bg-[#0b0f1a]">
+                <tr className="border-b border-border text-left text-[10px] uppercase tracking-wide text-faint">
+                  <th className="py-1.5 pr-2">Date</th>
+                  <th className="py-1.5 pr-2 text-right">Price</th>
+                  <th className="py-1.5 pr-2 text-right">Open</th>
+                  <th className="py-1.5 pr-2 text-right">High</th>
+                  <th className="py-1.5 pr-2 text-right">Low</th>
+                  <th className="py-1.5 pr-2 text-right">Vol.</th>
+                  <th className="py-1.5 text-right">Change %</th>
+                </tr>
+              </thead>
+              <tbody className="num">
+                {[...bars].reverse().map((b, i, arr) => {
+                  const prevC = arr[i + 1]?.close;
+                  const chg = prevC ? b.close / prevC - 1 : null;
+                  return (
+                    <tr key={b.time}
+                      className="border-b border-border/40 last:border-0 hover:bg-surface-2/50">
+                      <td className="py-1.5 pr-2 text-dim">{b.time}{b.provisional ? " *" : ""}</td>
+                      <td className={`py-1.5 pr-2 text-right font-semibold ${chg == null ? "" : chg >= 0 ? "text-pos" : "text-neg"}`}>
+                        {fmtNum(b.close, 2)}</td>
+                      <td className="py-1.5 pr-2 text-right">{fmtNum(b.open, 2)}</td>
+                      <td className="py-1.5 pr-2 text-right">{fmtNum(b.high, 2)}</td>
+                      <td className="py-1.5 pr-2 text-right">{fmtNum(b.low, 2)}</td>
+                      <td className="py-1.5 pr-2 text-right text-dim">
+                        {b.volume >= 1e6 ? `${fmtNum(b.volume / 1e6, 2)}M` : fmtNum(b.volume / 1e3, 0) + "K"}</td>
+                      <td className={`py-1.5 text-right ${chg == null ? "text-faint" : chg >= 0 ? "text-pos" : "text-neg"}`}>
+                        {chg == null ? "—" : `${chg >= 0 ? "+" : ""}${(chg * 100).toFixed(2)}%`}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </SectionCard>
+
+      {/* financials — investing.com layout: key ratios + statements */}
+      <SectionCard title="Financials"
+        action={d?.fundamentals ? `${d.fundamentals.facts} concepts · SEC filings` : undefined}>
+        {!d?.fundamentals?.facts ? (
+          <EmptyState title="No fundamentals"
+            hint="SEC facts ingest via ingest:edgar:facts:{SYM}" />
+        ) : (() => {
+          const f = d.fundamentals;
+          const r = f.ratios ?? {};
+          const fmtBig = (v: number | null, unit?: string | null) =>
+            v == null ? "—" : unit === "USD" || unit === "shares"
+              ? fmtNum(v / 1e6, Math.abs(v) >= 1e8 ? 0 : 2) + "M"
+              : fmtNum(v, 2);
+          const cols = (f.periods ?? []).filter((p: any) =>
+            finFreq === "FY" ? p.fp === "FY" : p.fp.startsWith("Q"));
+          const rows = (f.statements?.[finTab] ?? []).map((c: any) => ({
+            ...c,
+            pts: Object.fromEntries(
+              (c.points ?? []).filter((p: any) =>
+                cols.some((col: any) => col.end === p.end))
+                .map((p: any) => [p.end, p.value])),
+          }));
+          return (
+            <div className="space-y-3">
+              {/* key ratios */}
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+                {[
+                  ["P/E", r.pe ? fmtNum(r.pe, 1) : "—"],
+                  ["P/B", r.pb ? fmtNum(r.pb, 2) : "—"],
+                  ["Debt/Eq", r.debt_equity != null ? `${(r.debt_equity * 100).toFixed(0)}%` : "—"],
+                  ["ROE", r.roe != null ? `${(r.roe * 100).toFixed(2)}%` : "—"],
+                  ["Div Yield", r.dividend_yield ? `${(r.dividend_yield * 100).toFixed(2)}%` : "—"],
+                  ["EBITDA", r.ebitda != null ? `${fmtNum(r.ebitda / 1e9, 2)}B` : "—"],
+                  ["EPS dil.", r.eps_diluted != null ? fmtNum(r.eps_diluted, 2) : "—"],
+                  ["Shares", r.shares ? `${fmtNum(r.shares / 1e9, 2)}B` : "—"],
+                ].map(([l, v]) => (
+                  <div key={l as string} className="glass-tile px-2.5 py-1.5">
+                    <div className="text-[9px] uppercase tracking-wide text-faint">{l}</div>
+                    <div className="num mt-0.5 text-[13px] font-semibold">{v}</div>
+                  </div>
+                ))}
+              </div>
+              {/* statement tabs + frequency */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex gap-1">
+                  {([["income", "Income Statement"], ["balance", "Balance Sheet"],
+                     ["cashflow", "Cash Flow"], ["other", "Other"]] as const)
+                    .map(([k, l]) => (
+                      <button key={k} onClick={() => setFinTab(k)}
+                        className={`rounded-full px-3 py-1 text-[11px] transition ${
+                          finTab === k ? "bg-accent text-[#0b0f1a] font-semibold"
+                            : "border border-border text-dim hover:text-text"}`}>
+                        {l}
+                      </button>
+                    ))}
+                </div>
+                <div className="ml-auto flex gap-1">
+                  {(["FY", "Q"] as const).map((fq) => (
+                    <button key={fq} onClick={() => setFinFreq(fq)}
+                      className={`rounded-full px-3 py-1 text-[11px] transition ${
+                        finFreq === fq ? "bg-surface-3 text-accent font-semibold"
+                          : "border border-border text-dim hover:text-text"}`}>
+                      {fq === "FY" ? "Annual" : "Quarterly"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {/* periods-as-columns statement table */}
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[560px] text-[12px]">
+                  <thead>
+                    <tr className="border-b border-border text-[10px] uppercase tracking-wide text-faint">
+                      <th className="py-1.5 pr-2 text-left">Period ending</th>
+                      {cols.map((c: any) => (
+                        <th key={c.end} className="py-1.5 text-right">
+                          {c.end.slice(0, 7)}
+                          <span className="ml-1 text-[9px]">{c.fp}</span>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="num">
+                    {rows.filter((r2: any) => Object.keys(r2.pts).length).map((r2: any) => (
+                      <tr key={r2.concept}
+                        className="border-b border-border/40 last:border-0">
+                        <td className="py-1.5 pr-2 text-dim">
+                          {r2.label.replace(/([a-z])([A-Z])/g, "$1 $2")}</td>
+                        {cols.map((c: any) => (
+                          <td key={c.end} className="py-1.5 text-right">
+                            {r2.pts[c.end] != null ? fmtBig(r2.pts[c.end], r2.unit) : "—"}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                    {rows.filter((r2: any) => Object.keys(r2.pts).length).length === 0 && (
+                      <tr><td colSpan={cols.length + 1}
+                        className="py-3 text-center text-[11px] text-faint">
+                        no {finFreq === "FY" ? "annual" : "quarterly"} facts on this statement
+                      </td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
+      </SectionCard>
 
       {/* news */}
       <SectionCard title="News"

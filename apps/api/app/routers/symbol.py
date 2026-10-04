@@ -139,27 +139,13 @@ async def symbol_detail(symbol: str, db: AsyncSession = Depends(get_db)) -> dict
         except Exception:
             pass
 
-    # latest fundamentals per concept (SEC facts)
-    fundamentals = []
+    # statement-style fundamentals (income/balance/cashflow + ratios)
+    fundamentals = None
     if inst:
         try:
-            from app.models.fundamentals import FundamentalObservation as FO
-            rn = func.row_number().over(
-                partition_by=FO.concept,
-                order_by=(FO.period_end.desc(), FO.published_at.desc())
-            ).label("rn")
-            sub = select(FO.concept, FO.period_end, FO.value,
-                         FO.unit, rn).where(
-                FO.instrument_id == inst.id).subquery()
-            fundamentals = [
-                {"concept": r.concept,
-                 "period_end": (r.period_end.isoformat()
-                                if r.period_end else None),
-                 "value": float(r.value) if r.value is not None else None,
-                 "unit": r.unit}
-                for r in (await db.execute(
-                    select(sub).where(sub.c.rn == 1))).all()]
-            fundamentals.sort(key=lambda f: f["concept"])
+            from app.services import financials as fin
+            fundamentals = await fin.statement_map(
+                db, inst, close=(sig or {}).get("close"))
         except Exception:
             pass
 

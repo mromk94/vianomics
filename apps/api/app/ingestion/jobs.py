@@ -94,6 +94,22 @@ async def ingest_edgar_facts(
     ).scalar_one_or_none()
     cik = cik_row.value if cik_row else None
     if cik is None:
+        # self-heal: SEC's official ticker→CIK map; persist the
+        # identifier so subsequent runs skip the lookup
+        try:
+            tmap = await adapter.ticker_map()
+            hit = next(
+                (v for v in tmap.values()
+                 if str(v.get("ticker", "")).upper() == symbol.upper()),
+                None)
+            if hit:
+                cik = str(hit["cik_str"])
+                session.add(InstrumentIdentifier(
+                    instrument_id=inst.id, scheme="cik", value=cik))
+                await session.flush()
+        except Exception:
+            cik = None
+    if cik is None:
         run.status, run.error, run.finished_at = (
             "failed",
             f"no CIK identifier for {symbol}",
@@ -142,27 +158,40 @@ async def ingest_edgar_facts(
                     except (KeyError, InvalidOperation):
                         continue  # structurally broken → let schema/quarantine handle
 
+    # set-based dedupe — one SELECT instead of a remote round-trip
+    # per observation (companyfacts returns tens of thousands)
+    def _key(concept, period_end, published_at):
+        return (concept, period_end.isoformat(),
+                published_at.isoformat() if published_at else None)
+
+    existing = {
+        _key(r[0], r[1], r[2]) for r in (await session.execute(
+            select(FundamentalObservation.concept,
+                   FundamentalObservation.period_end,
+                   FundamentalObservation.published_at)
+            .where(FundamentalObservation.instrument_id == inst.id))
+        ).all()
+    }
+
     async def persist(sess: AsyncSession, rec: FundamentalIn):
-        await get_or_create(
-            sess,
-            FundamentalObservation,
-            {
-                "instrument_id": inst.id,
-                "concept": rec.concept,
-                "period_end": rec.period_end,
-                "source": "edgar",
-                "published_at": rec.published_at,
-            },
-            {
-                "value": rec.value,
-                "unit": rec.unit,
-                "currency": rec.currency,
-                "period_start": rec.period_start,
-                "fiscal_period": rec.fiscal_period,
-                "observed_at": rec.observed_at,
-                "source_ref": rec.source_ref,
-            },
-        )
+        key = _key(rec.concept, rec.period_end, rec.published_at)
+        if key in existing:
+            return
+        existing.add(key)
+        sess.add(FundamentalObservation(
+            instrument_id=inst.id,
+            concept=rec.concept,
+            period_end=rec.period_end,
+            source="edgar",
+            published_at=rec.published_at,
+            value=rec.value,
+            unit=rec.unit,
+            currency=rec.currency,
+            period_start=rec.period_start,
+            fiscal_period=rec.fiscal_period,
+            observed_at=rec.observed_at,
+            source_ref=rec.source_ref,
+        ))
 
     res = await ingest_records(
         session,
