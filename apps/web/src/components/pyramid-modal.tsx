@@ -90,6 +90,7 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
   const [wP, setWP] = useState(14);
   const [mP, setMP] = useState(14);
   const [tvOpen, setTvOpen] = useState(false);
+  const [force, setForce] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -133,7 +134,7 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
     const up = s.toUpperCase();
     setSym(up); setName(hitName ?? null);
     setQ(""); setHits([]);
-    setErr(null); setPrev(null); setAtrRep(null);
+    setErr(null); setPrev(null); setAtrRep(null); setForce(false);
     setLoaded(true);
     try {
       const a = await apiGet<any>(
@@ -181,6 +182,7 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
         equity: prev.inputs.equity,
         cash: prev.inputs.cash,
         risk_pct: prev.inputs.risk_pct,
+        force,
       });
       onCreated();
       onClose();
@@ -326,6 +328,53 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
             </div>
           )}
 
+          {/* Trade Eligibility — the unified gate the create call
+              consults: quality × valuation × technical × margin ×
+              portfolio. Non-eligible requires an explicit override. */}
+          {prev?.eligibility && (
+            <div className="glass-tile p-3">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-[10px] uppercase text-dim">Trade eligibility</span>
+                <StatusBadge tone={
+                  prev.eligibility.verdict === "TRADE_ELIGIBLE" ? "pos"
+                  : prev.eligibility.verdict === "BLOCKED" ? "warn"
+                  : "neg"}>
+                  {prev.eligibility.verdict}
+                </StatusBadge>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {(["quality", "valuation", "technical", "margin",
+                   "portfolio"] as const).map((g) => {
+                  const gate = prev.eligibility.gates?.[g];
+                  if (!gate) return null;
+                  return (
+                    <span key={g}
+                      className={`rounded px-1.5 py-0.5 text-[9px] ${
+                        gate.pass
+                          ? "bg-pos/15 text-pos"
+                          : "bg-neg/15 text-neg"}`}>
+                      {g}{gate.skipped ? "·n/a" : ""}
+                    </span>
+                  );
+                })}
+              </div>
+              {prev.eligibility.blocking?.length > 0 && (
+                <div className="mt-1 text-[10px] text-neg">
+                  blocking: {prev.eligibility.blocking.join(", ")}
+                </div>
+              )}
+              {prev.eligibility.verdict !== "TRADE_ELIGIBLE" && (
+                <label className="mt-2 flex items-center gap-2 text-[10px] text-dim">
+                  <input type="checkbox" checked={force}
+                    onChange={(e) => setForce(e.target.checked)}
+                    className="accent-[#f0b429]" />
+                  Authorized override — create despite
+                  {" "}{prev.eligibility.verdict} (audited)
+                </label>
+              )}
+            </div>
+          )}
+
           {/* Trade Risk Sheet output */}
           {prev ? (
             <div className="grid gap-2 sm:grid-cols-2">
@@ -366,9 +415,19 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
                 className="rounded-full border border-border px-3 py-1 text-[11px] text-dim hover:text-text">
                 Cancel
               </button>
-              <button onClick={create} disabled={!prev || busy}
-                className="rounded-full bg-accent px-4 py-1 text-[11px] font-semibold text-[#0b0f1a] hover:brightness-110 disabled:opacity-40">
-                {busy ? "Creating…" : "Create pyramid"}
+              <button onClick={create}
+                disabled={!prev || busy || (
+                  prev?.eligibility &&
+                  prev.eligibility.verdict !== "TRADE_ELIGIBLE" &&
+                  !force)}
+                className={`rounded-full px-4 py-1 text-[11px] font-semibold hover:brightness-110 disabled:opacity-40 ${
+                  force && prev?.eligibility?.verdict !== "TRADE_ELIGIBLE"
+                    ? "bg-warn text-[#0b0f1a]"
+                    : "bg-accent text-[#0b0f1a]"}`}>
+                {busy ? "Creating…"
+                  : force && prev?.eligibility?.verdict !== "TRADE_ELIGIBLE"
+                    ? "Override & create"
+                    : "Create pyramid"}
               </button>
             </div>
           </div>

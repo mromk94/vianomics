@@ -514,6 +514,7 @@ class PyramidIn(BaseModel):
     risk_pct: float = Field(0.005, gt=0, le=0.05)
     t2_policy: str = "trailing"
     adv_shares: float | None = None
+    force: bool = False   # authorized override of the eligibility gate
 
 
 @router.post("/pyramid", status_code=201)
@@ -534,7 +535,32 @@ async def create_pyramid(
         adv = float(inst.avg_dollar_volume_30d) / body.entry
     # sleeve mode: size inside the 30% bucket (risk-budget/starter/
     # gross/margin solver) instead of flat risk_pct
-    sleeve = (await _portfolio_ctx(db))["sleeve"]
+    ctx = await _portfolio_ctx(db)
+    sleeve = ctx["sleeve"]
+
+    # Trade Eligibility gate — the unified quality+valuation+technical+
+    # margin+portfolio object. When the sleeve is on, pyramid creation
+    # refuses anything below TRADE_ELIGIBLE unless an authorized
+    # override is sent (audited with the gate snapshot).
+    eligibility = None
+    if sleeve["enabled"]:
+        from app.services import eligibility as elig
+        eligibility = await elig.trade_eligibility(
+            db, inst, ctx, entry=body.entry, atr=body.atr)
+        if eligibility["verdict"] != "TRADE_ELIGIBLE" and not body.force:
+            await audit(
+                db, action="pyramid.create.rejected", actor=user,
+                entity_type="instrument", entity_id=inst.id,
+                detail={"symbol": inst.symbol,
+                        "verdict": eligibility["verdict"],
+                        "blocking": eligibility["blocking"]})
+            await db.commit()
+            raise HTTPException(
+                409,
+                {"detail": f"{inst.symbol} is {eligibility['verdict']} "
+                           "— pyramid requires TRADE_ELIGIBLE",
+                 "eligibility": eligibility})
+
     sizing = None
     if sleeve["enabled"]:
         st = sleeve["state"]
@@ -557,13 +583,21 @@ async def create_pyramid(
                 "leg_shares": t.leg_shares,
                 "atr_current": t.atr_current,
                 "sleeve": sleeve["enabled"],
-                "binding": sizing["binding"] if sizing else None})
+                "binding": sizing["binding"] if sizing else None,
+                "eligibility": (eligibility["verdict"]
+                                if eligibility else None),
+                "force_override": body.force})
     db.add(rec)
-    await audit(db, action="pyramid.create", actor=user,
-                entity_type="pyramid_trade", entity_id=rec.id)
+    await audit(
+        db, action=("pyramid.create.override" if body.force
+                    else "pyramid.create"), actor=user,
+        entity_type="pyramid_trade", entity_id=rec.id,
+        detail=({"eligibility": eligibility} if body.force
+                and eligibility else None))
     await db.commit()
     return {"id": rec.id, "state": rec.state, "shares": rec.shares,
             "stop": rec.stop, "target1": rec.target1,
+            "eligibility": eligibility["verdict"] if eligibility else None,
             "events": rec.events}
 
 
@@ -693,6 +727,24 @@ async def sleeve_status(db: AsyncSession = Depends(get_db)) -> dict:
     return (await _portfolio_ctx(db))["sleeve"]
 
 
+@router.get("/eligibility/{symbol}")
+async def trade_eligibility_ep(
+    symbol: str, db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The Trade Eligibility Object — quality (Four M's + five
+    numbers) × valuation (price ≤ MOS) × technical timing × sleeve
+    margin × portfolio capacity, unified into one verdict with named
+    blocking reasons. This is what create_pyramid consults."""
+    from app.services import eligibility as elig
+    inst = (await db.execute(
+        select(Instrument)
+        .where(Instrument.symbol == symbol.upper()))).scalar_one_or_none()
+    if inst is None:
+        raise HTTPException(404, f"{symbol} not in security master")
+    return await elig.trade_eligibility(
+        db, inst, await _portfolio_ctx(db))
+
+
 # ── ATR output sheet + pyramid preview ──
 
 @router.get("/atr/{symbol}")
@@ -806,6 +858,14 @@ async def pyramid_preview(
 
     cs = float(inst.contract_size or 1)
     margin_rate = float(inst.margin_rate or 0)
+    eligibility = None
+    if sleeve["enabled"]:
+        try:
+            from app.services import eligibility as elig
+            eligibility = await elig.trade_eligibility(
+                db, inst, ctx, entry=entry, atr=atr_abs)
+        except Exception:
+            eligibility = None
     return {
         "symbol": inst.symbol,
         "as_of": rep["as_of"],
@@ -832,6 +892,7 @@ async def pyramid_preview(
                               if equity else None),
         },
         "sleeve": sleeve,
+        "eligibility": eligibility,
         "legs": legs,
         "vol_regime": rep["pyramid"]["vol_regime"],
         "windows": rep["daily"]["windows"],
