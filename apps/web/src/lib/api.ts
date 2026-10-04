@@ -39,9 +39,33 @@ export function setToken(t: string | null) {
   window.dispatchEvent(new Event("vaiip-auth"));
 }
 
-export async function apiGet<T>(path: string, timeoutMs = 8000): Promise<T> {
+/* Timeout tiers — analytical endpoints run multi-table gates and can
+   take tens of seconds on a cold DB; giving them the 8s default
+   produced opaque "signal is aborted without reason" errors while the
+   server was still working (and would log a spurious 200). */
+const FAST_MS = 10_000;
+const SLOW_MS = 45_000;
+const SLOW_PREFIXES = [
+  "/api/v1/symbol/", "/api/v1/research/", "/api/v1/committee/",
+  "/api/v1/risk/eligibility", "/api/v1/risk/pyramid",
+  "/api/v1/risk/atr", "/api/v1/risk/sleeve", "/api/v1/dataops/",
+];
+
+function defaultTimeout(path: string): number {
+  return SLOW_PREFIXES.some((p) => path.startsWith(p)) ? SLOW_MS : FAST_MS;
+}
+
+function abortReason(e: unknown): string | null {
+  const name = (e as { name?: string })?.name;
+  if (name === "AbortError" || name === "TimeoutError")
+    return "request timed out (client abort) — the API may still be working; retry if needed";
+  return null;
+}
+
+export async function apiGet<T>(path: string, timeoutMs?: number): Promise<T> {
+  const ms = timeoutMs ?? defaultTimeout(path);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const timer = setTimeout(() => ctrl.abort(), ms);
   try {
     const res = await fetch(`${API_URL}${path}`, {
       signal: ctrl.signal,
@@ -56,6 +80,10 @@ export async function apiGet<T>(path: string, timeoutMs = 8000): Promise<T> {
       throw new ApiError(res.status, `API ${res.status} on ${path}`);
     }
     return (await res.json()) as T;
+  } catch (e) {
+    const reason = abortReason(e);
+    if (reason) throw new ApiError(0, `${reason} [${path}]`);
+    throw e;
   } finally {
     clearTimeout(timer);
   }
@@ -64,10 +92,11 @@ export async function apiGet<T>(path: string, timeoutMs = 8000): Promise<T> {
 export async function apiPost<T>(
   path: string,
   body: unknown,
-  timeoutMs = 8000,
+  timeoutMs?: number,
 ): Promise<T> {
+  const ms = timeoutMs ?? defaultTimeout(path);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const timer = setTimeout(() => ctrl.abort(), ms);
   try {
     const res = await fetch(`${API_URL}${path}`, {
       method: "POST",
@@ -88,6 +117,10 @@ export async function apiPost<T>(
       throw new ApiError(res.status, msg);
     }
     return (await res.json()) as T;
+  } catch (e) {
+    const reason = abortReason(e);
+    if (reason) throw new ApiError(0, `${reason} [${path}]`);
+    throw e;
   } finally {
     clearTimeout(timer);
   }
@@ -96,10 +129,11 @@ export async function apiPost<T>(
 export async function apiPut<T>(
   path: string,
   body: unknown,
-  timeoutMs = 8000,
+  timeoutMs?: number,
 ): Promise<T> {
+  const ms = timeoutMs ?? defaultTimeout(path);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const timer = setTimeout(() => ctrl.abort(), ms);
   try {
     const res = await fetch(`${API_URL}${path}`, {
       method: "PUT",
@@ -120,6 +154,10 @@ export async function apiPut<T>(
       throw new ApiError(res.status, msg);
     }
     return (await res.json()) as T;
+  } catch (e) {
+    const reason = abortReason(e);
+    if (reason) throw new ApiError(0, `${reason} [${path}]`);
+    throw e;
   } finally {
     clearTimeout(timer);
   }

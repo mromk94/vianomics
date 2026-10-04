@@ -149,12 +149,17 @@ async def symbol_detail(symbol: str, db: AsyncSession = Depends(get_db)) -> dict
         except Exception:
             pass
 
-    # Phase-1 qualification gate — Four M's + valuation zone verdict
+    # Phase-1 qualification gate — Four M's + valuation zone verdict.
+    # auto_baseline=False: this is a READ path — it reports the latest
+    # valuation run, it must never trigger a full auto_valuation
+    # (12y of fy_series + a versioned write) inside a GET. Seeding
+    # belongs to the eligibility/pyramid flows.
     qualification = None
     if inst:
         try:
             from app.services import qualification as qual
-            g = await qual.gate_with_price(db, inst)
+            g = await qual.gate_with_price(db, inst,
+                                           auto_baseline=False)
             qualification = {
                 "verdict": g["verdict"],
                 "four_ms": {k: v.get("pass", v.get("deferred"))
