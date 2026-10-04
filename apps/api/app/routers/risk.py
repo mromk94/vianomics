@@ -538,6 +538,23 @@ async def create_pyramid(
     ctx = await _portfolio_ctx(db)
     sleeve = ctx["sleeve"]
 
+    # Cooldown is absolute — the portfolio stop put the sleeve down;
+    # only POST /risk/sleeve/release (human reassessment) reopens it.
+    # `force` does NOT bypass this.
+    if sleeve["enabled"] and sleeve.get("cooldown"):
+        await audit(
+            db, action="pyramid.create.rejected", actor=user,
+            entity_type="instrument", entity_id=inst.id,
+            detail={"symbol": inst.symbol,
+                    "verdict": "COOLDOWN",
+                    "blocking": ["sleeve_cooldown"]})
+        await db.commit()
+        raise HTTPException(
+            409, {"detail": "trading sleeve is in COOLDOWN — release "
+                            "via /risk/sleeve/release after "
+                            "reassessment",
+                  "lifecycle": sleeve.get("lifecycle")})
+
     # Trade Eligibility gate — the unified quality+valuation+technical+
     # margin+portfolio object. When the sleeve is on, pyramid creation
     # refuses anything below TRADE_ELIGIBLE unless an authorized
@@ -717,6 +734,19 @@ async def _sleeve_ctx(db: AsyncSession, ctx: dict,
         maint_margin=max(maint_rates) if maint_rates else None)
     out["state"] = state
     out["positions"] = positions
+    # lifecycle — cooldown is absolute until human release
+    from app.models.risk import SleeveState
+    life = (await db.execute(
+        select(SleeveState).limit(1))).scalar_one_or_none()
+    out["cooldown"] = bool(life and life.state == "cooldown")
+    if life and life.state == "cooldown":
+        out["lifecycle"] = {
+            "state": life.state,
+            "cooldown_at": (life.cooldown_at.isoformat()
+                            if life.cooldown_at else None),
+            "reason": life.cooldown_reason,
+            "liquidated_at": (life.liquidated_at.isoformat()
+                              if life.liquidated_at else None)}
     return out
 
 
@@ -725,6 +755,40 @@ async def sleeve_status(db: AsyncSession = Depends(get_db)) -> dict:
     """Phase-0 sleeve ledger — equity, gross/margin caps, the
     maintenance-margin buffer verdict, and open sleeve positions."""
     return (await _portfolio_ctx(db))["sleeve"]
+
+
+class ReleaseIn(BaseModel):
+    note: str | None = None
+
+
+@router.post("/sleeve/release")
+async def sleeve_release(
+    body: ReleaseIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require("trading:execute")),
+) -> dict:
+    """Human reassessment — the ONLY path out of cooldown. The doc is
+    explicit: the portfolio stop is absolute, and re-entry requires a
+    review, not a toggle. Audited with actor + note."""
+    from app.models.risk import SleeveState
+    life = (await db.execute(
+        select(SleeveState).limit(1))).scalar_one_or_none()
+    if life is None or life.state != "cooldown":
+        raise HTTPException(409, "sleeve is not in cooldown")
+    life.state = "active"
+    life.released_at = utcnow()
+    life.released_by = user.id
+    life.release_note = body.note
+    life.drawdown_pct = None
+    await audit(
+        db, action="sleeve.cooldown.release", actor=user,
+        entity_type="sleeve_state", entity_id=life.id,
+        detail={"note": body.note,
+                "cooldown_reason": life.cooldown_reason})
+    await db.commit()
+    return {"state": "active",
+            "released_at": life.released_at.isoformat(),
+            "released_by": user.id, "note": body.note}
 
 
 @router.get("/eligibility/{symbol}")

@@ -16,6 +16,8 @@ it can never flip a failing gate.
 
 Verdict ladder:
     TRADE_ELIGIBLE  — all gates pass; sizing may proceed
+    COOLDOWN        — the portfolio stop shut the sleeve; only a human
+                      release reopens it (outranks the idea ladder)
     BLOCKED         — fundamentals + timing pass but sleeve capacity
                       is exhausted (positions/gross/margin full)
     WATCHLIST       — quality + valuation pass; waiting on timing or
@@ -111,12 +113,15 @@ async def trade_eligibility(
             "buffer_capped": st["buffer_capped"],
             "skipped": False,
         }
+        in_cooldown = bool(sleeve.get("cooldown"))
         portfolio_gate = {
             "pass": bool(
-                (already_held
-                 or st["open_positions"] < cfg["max_positions"])
+                not in_cooldown
+                and (already_held
+                     or st["open_positions"] < cfg["max_positions"])
                 and st["gross"] < st["effective_gross_cap"]
                 and asset_gross < st["max_asset_notional"]),
+            "cooldown": in_cooldown,
             "open_positions": st["open_positions"],
             "max_positions": cfg["max_positions"],
             "gross": st["gross"],
@@ -159,16 +164,22 @@ async def trade_eligibility(
     if tech["decision"] == "invalid_data":
         blocking.append("technical_invalid_data")
     if sleeve.get("enabled"):
+        if portfolio_gate.get("cooldown"):
+            blocking.append("sleeve_cooldown")
+        elif not portfolio_gate["pass"]:
+            blocking.append("sleeve_capacity_exhausted")
         if not margin_gate["pass"]:
             blocking.append("no_margin_headroom")
-        if not portfolio_gate["pass"]:
-            blocking.append("sleeve_capacity_exhausted")
 
     capacity_blocked = (sleeve.get("enabled")
                         and (not margin_gate["pass"]
                              or not portfolio_gate["pass"]))
     if not quality_pass:
         verdict = "REJECTED"
+    elif portfolio_gate.get("cooldown"):
+        # the portfolio stop shut the sleeve — release is a human
+        # decision, so this verdict outranks the idea-quality ladder
+        verdict = "COOLDOWN"
     elif not growth_pass or not val_usable:
         verdict = "WATCH"      # quality ok, proof incomplete
     elif not valuation_pass:

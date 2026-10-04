@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import JSON, DateTime, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -126,3 +128,26 @@ class LimitConfig(Base, IdMixin, TimestampMixin):
     payload: Mapped[dict] = mapped_column(JSON)
     created_by: Mapped[str | None]
     note: Mapped[str | None]
+
+
+class SleeveState(Base, IdMixin, TimestampMixin):
+    """Trading-sleeve lifecycle — single-row runtime state (config
+    lives in LimitConfig; this is the live ledger). The portfolio
+    stop is absolute: at the drawdown threshold the sleeve liquidates
+    and enters COOLDOWN; new entries/adds block until a human
+    releases it."""
+
+    __tablename__ = "sleeve_state"
+
+    state: Mapped[str] = mapped_column(default="active")  # active|cooldown
+    equity_hwm: Mapped[float | None]      # high-water mark, marked eq
+    drawdown_pct: Mapped[float | None]    # last observed drawdown
+    cooldown_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    cooldown_reason: Mapped[str | None]
+    liquidated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    released_by: Mapped[str | None]
+    release_note: Mapped[str | None]

@@ -172,6 +172,72 @@ async def test_seed_records_not_maintained(db):
     assert rec.state == "trade_eligible"
 
 
+async def test_portfolio_stop_liquidates_and_cools_down(db):
+    """20% sleeve drawdown → liquidate all + cooldown (absolute)."""
+    from app.models.risk import SleeveState
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    await _funded_book(db)                    # nav 100k → sleeve 30k
+    db.add(LimitConfig(version=1, payload={
+        "sleeve_enabled": True, "min_sectors": 0}))
+    # entry 100 → close 60: stop set low (40) so the breach is the
+    # PORTFOLIO stop, not the per-trade stop — 1000sh × −40 = −40k
+    # vs $30k sleeve equity → −133% ≥ 20%
+    await _bars(db, inst, [100] * 40 + [60] * 3)
+    rec = _rec(inst, shares=1000, stop=40.0,
+               params={"leg_shares": 1000})
+    db.add(rec)
+    await db.flush()
+
+    out = await pm.maintain_open_pyramids(db)
+    assert out["liquidated"] == 1
+    assert rec.state == "closed"
+    assert any("PORTFOLIO STOP" in e for e in rec.events)
+    life = (await db.execute(select(SleeveState))).scalar_one()
+    assert life.state == "cooldown"
+    assert "drawdown" in (life.cooldown_reason or "")
+    alerts = (await db.execute(select(Alert))).scalars().all()
+    assert any("PORTFOLIO STOP" in a.message.upper()
+               for a in alerts)
+
+
+async def test_cooldown_survives_next_sweep(db):
+    """Once in cooldown a later sweep does not re-liquidate — and the
+    gate stack keeps new orders out until release."""
+    from app.models.risk import SleeveState
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    await _funded_book(db)
+    db.add(LimitConfig(version=1, payload={
+        "sleeve_enabled": True, "min_sectors": 0}))
+    db.add(SleeveState(state="cooldown",
+                       cooldown_reason="test"))
+    await _bars(db, inst, [100] * 43)
+    db.add(_rec(inst))
+    await db.flush()
+
+    out = await pm.maintain_open_pyramids(db)
+    assert out.get("liquidated", 0) == 0
+    assert out["sleeve_cooldown"] is True
+
+    # check_order sees the cooldown through pf["sleeve"]["cooldown"]
+    from app.services import risk_engine as re_
+    cfg = re_.sleeve_config(re_.Limits(values={"sleeve_enabled": True}))
+    st = re_.sleeve_state(100_000, 0, cfg)
+    pf = {"nav": 100_000, "cash": 100_000, "positions": [],
+          "sleeve": {"enabled": True, "config": cfg, "state": st,
+                     "positions": [], "cooldown": True}}
+    gate = re_.check_order(
+        {"side": "buy", "symbol": "TEST", "sector": None,
+         "notional": 1_000, "sleeve": True}, pf,
+        limits=re_.Limits(values={"min_sectors": 0}))
+    assert gate["allowed"] is False
+    assert any(b["rule"] == "sleeve_cooldown"
+               for b in gate["breaches"])
+
+
 async def test_summary_shape(db):
     inst = Instrument(symbol="TEST", name="T", asset_class="equity")
     db.add(inst)

@@ -29,7 +29,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.base import utcnow
 from app.models.instruments import Instrument
 from app.models.market import OhlcvBar
-from app.models.risk import LimitConfig, PyramidTradeRec, RiskCheck
+from app.models.risk import (
+    LimitConfig, PyramidTradeRec, RiskCheck, SleeveState)
 from app.services import risk_engine as re_
 from app.services import technical as ti
 from app.services.monitoring import emit_alert
@@ -48,6 +49,17 @@ async def _active_limits(db: AsyncSession) -> re_.Limits:
         select(LimitConfig).order_by(LimitConfig.version.desc())
         .limit(1))).scalar_one_or_none()
     return re_.Limits(values=cfg.payload) if cfg else re_.Limits()
+
+
+async def get_sleeve_state(db: AsyncSession) -> SleeveState:
+    """The single lifecycle row — created lazily."""
+    st = (await db.execute(
+        select(SleeveState).limit(1))).scalar_one_or_none()
+    if st is None:
+        st = SleeveState(state="active")
+        db.add(st)
+        await db.flush()
+    return st
 
 
 def _rebuild(rec: PyramidTradeRec) -> re_.PyramidTrade:
@@ -100,8 +112,48 @@ async def _sleeve_ctx(db: AsyncSession, nav: float,
     state["sleeve_open_pnl"] = pnl
     state["sleeve_pnl_pct"] = (pnl / state["sleeve_equity"]
                              if state["sleeve_equity"] else None)
+    life = await get_sleeve_state(db)
+    out["cooldown"] = life.state == "cooldown"
     out["state"], out["positions"] = state, positions
     return out
+
+
+async def _liquidate_sleeve(db: AsyncSession, reason: str) -> int:
+    """Portfolio stop is absolute — mark every open sleeve position
+    closed, drop the lifecycle row into cooldown, alert. Order
+    routing is a separate concern: this is the state-machine
+    liquidation the doc demands; execution still goes through the
+    normal order path."""
+    now = utcnow()
+    n = 0
+    recs = (await db.execute(
+        select(PyramidTradeRec, Instrument)
+        .join(Instrument, PyramidTradeRec.instrument_id == Instrument.id)
+        .where(PyramidTradeRec.state.in_(_MAINTAIN_STATES)))).all()
+    for rec, inst in recs:
+        px = (await db.execute(
+            select(OhlcvBar.close)
+            .where(OhlcvBar.instrument_id == inst.id,
+                   OhlcvBar.timeframe == "1d")
+            .order_by(OhlcvBar.time.desc()).limit(1))).scalar()
+        rec.state = "closed"
+        rec.events = [*(rec.events or []),
+                      f"{now.isoformat()[:10]} PORTFOLIO STOP — "
+                      f"liquidated all {rec.shares}sh "
+                      f"@{float(px) if px else 'last'} ({reason})"]
+        n += 1
+    life = await get_sleeve_state(db)
+    life.state = "cooldown"
+    life.cooldown_at = now
+    life.cooldown_reason = reason
+    life.liquidated_at = now
+    await emit_alert(
+        db, severity="critical", source="monitor:portfolio",
+        message=(f"SLEEVE PORTFOLIO STOP — {n} position(s) liquidated, "
+                 f"sleeve in cooldown ({reason})"),
+        dedup_key="sleeve_liquidated",
+        action="human reassessment required to release cooldown")
+    return n
 
 
 async def maintain_open_pyramids(db: AsyncSession) -> dict:
@@ -246,21 +298,24 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
                 dedup_key="sleeve_margin_hot",
                 observed=st["margin_utilisation"], required=0.9,
                 action="reduce gross before broker forces it")
-        # doc portfolio stop: unrealized sleeve drawdown vs the 20%
-        # equity stop — liquidation+cooldown is Sprint 5; today the
-        # sweep flags the breach as critical
+        # ── doc portfolio stop — ABSOLUTE (Sprint-5 semantics):
+        # marked sleeve equity = allocated equity + open P&L; the
+        # drawdown is measured against that mark's high water and the
+        # configured floor. A breach liquidates the sleeve and puts it
+        # in cooldown — a human release is the only way back. ──
+        life = await get_sleeve_state(db)
+        eq_mark = st["sleeve_equity"] + (st["sleeve_open_pnl"] or 0)
+        life.equity_hwm = max(life.equity_hwm or 0, eq_mark,
+                              st["sleeve_equity"])
         dd = max(0.0, -(st["sleeve_pnl_pct"] or 0))
-        if dd >= sleeve["config"]["portfolio_stop_pct"]:
-            await emit_alert(
-                db, severity="critical", source="monitor:portfolio",
-                message=(f"sleeve drawdown {dd:.1%} ≥ portfolio stop "
-                         f"{sleeve['config']['portfolio_stop_pct']:.0%}"
-                         " — liquidate-all threshold reached"),
-                dedup_key="sleeve_portfolio_stop",
-                observed=dd,
-                required=sleeve["config"]["portfolio_stop_pct"],
-                action="liquidate sleeve + enter cooldown")
+        life.drawdown_pct = dd
+        stop_pct = sleeve["config"]["portfolio_stop_pct"]
+        if dd >= stop_pct and life.state != "cooldown":
+            out["liquidated"] = await _liquidate_sleeve(
+                db, f"sleeve drawdown {dd:.1%} >= {stop_pct:.0%} stop")
+            out["sleeve"]["cooldown"] = True
         out["sleeve_drawdown_pct"] = dd
+        out["sleeve_cooldown"] = (life.state == "cooldown")
 
     out["maintain_version"] = MAINTAIN_VERSION
     return out

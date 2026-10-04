@@ -194,6 +194,20 @@ async def test_sleeve_disabled_skips_capacity_gates(db, inst,
     assert e["gates"]["portfolio"]["skipped"] is True
 
 
+async def test_cooldown_outranks_idea_quality(db, inst, sleeve_cfg,
+                                              monkeypatch):
+    """Portfolio-stop cooldown → COOLDOWN verdict even when every
+    idea-gate passes — release is a human decision."""
+    await _make_eligible_fundamentals(db, inst)
+    _stub_technical(monkeypatch, "entry_signal")
+    ctx = _ctx(sleeve_cfg)
+    ctx["sleeve"]["cooldown"] = True
+    e = await elig.trade_eligibility(db, inst, ctx,
+                                     entry=100, atr=10)
+    assert e["verdict"] == "COOLDOWN"
+    assert "sleeve_cooldown" in e["blocking"]
+
+
 async def test_object_shape_is_machine_readable(db, inst, sleeve_cfg,
                                                 monkeypatch):
     await _make_eligible_fundamentals(db, inst)

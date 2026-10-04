@@ -583,8 +583,15 @@ def check_order(
         if order.get("sleeve") and sleeve.get("enabled"):
             st = sleeve["state"]
             cfg = sleeve["config"]
+            if sleeve.get("cooldown"):
+                breaches.append(Breach(
+                    "sleeve_cooldown", None,
+                    "sleeve in cooldown after portfolio stop",
+                    remediation="requires human reassessment — "
+                                "release via /risk/sleeve/release"))
             sg = _d(st["gross"])
-            if sg + notional_d > _d(st["effective_gross_cap"]):
+            if not sleeve.get("cooldown") \
+                    and sg + notional_d > _d(st["effective_gross_cap"]):
                 breaches.append(Breach(
                     "sleeve_gross_cap",
                     round(float(sg + notional_d), 2),
