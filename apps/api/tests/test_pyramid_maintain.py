@@ -83,7 +83,9 @@ async def test_stop_never_widens(db):
     assert out["tightened"] == 0
 
 
-async def test_stop_breach_exits_all(db):
+async def test_stop_breach_proposes_exit_never_closes(db):
+    """Stop breach queues an exit_request — the position stays open
+    until a human approves. No close is ever automatic."""
     inst = Instrument(symbol="TEST", name="T", asset_class="equity")
     db.add(inst)
     await db.flush()
@@ -93,10 +95,20 @@ async def test_stop_breach_exits_all(db):
     await db.flush()
 
     out = await pm.maintain_open_pyramids(db)
-    assert rec.state == "stopped_out"
-    assert out["stopped"] == 1
+    assert rec.state == "initial_position"        # still open
+    assert out["exits_proposed"] == 1
+    assert out["stopped"] == 0
+    req = rec.params["exit_request"]
+    assert req["trigger"] == "stop_breach"
+    assert req["proposed_state"] == "stopped_out"
     alerts = (await db.execute(select(Alert))).scalars().all()
-    assert any("STOPPED" in a.message for a in alerts)
+    assert any("EXIT APPROVAL REQUIRED" in a.message
+               for a in alerts)
+
+    # a second sweep doesn't re-fire — it waits on the human
+    out2 = await pm.maintain_open_pyramids(db)
+    assert out2["exit_pending"] == 1
+    assert out2["exits_proposed"] == 0
 
 
 async def test_target_hit_adds_leg_after_risk_recheck(db):
@@ -172,8 +184,10 @@ async def test_seed_records_not_maintained(db):
     assert rec.state == "trade_eligible"
 
 
-async def test_portfolio_stop_liquidates_and_cools_down(db):
-    """20% sleeve drawdown → liquidate all + cooldown (absolute)."""
+async def test_portfolio_stop_queues_exits_and_cools_down(db):
+    """20% sleeve drawdown → cooldown NOW (no new risk) + every
+    position queued for human-approved liquidation — closes are
+    never automatic."""
     from app.models.risk import SleeveState
     inst = Instrument(symbol="TEST", name="T", asset_class="equity")
     db.add(inst)
@@ -191,12 +205,16 @@ async def test_portfolio_stop_liquidates_and_cools_down(db):
     await db.flush()
 
     out = await pm.maintain_open_pyramids(db)
-    assert out["liquidated"] == 1
-    assert rec.state == "closed"
-    assert any("PORTFOLIO STOP" in e for e in rec.events)
+    assert out["liquidation_queued"] == 1
+    assert rec.state == "initial_position"     # open pending approval
+    req = rec.params["exit_request"]
+    assert req["trigger"] == "portfolio_stop"
+    assert any("EXIT PROPOSED" in e for e in rec.events)
     life = (await db.execute(select(SleeveState))).scalar_one()
     assert life.state == "cooldown"
     assert "drawdown" in (life.cooldown_reason or "")
+    await db.refresh(inst)
+    assert inst.status == "cooldown"
     alerts = (await db.execute(select(Alert))).scalars().all()
     assert any("PORTFOLIO STOP" in a.message.upper()
                for a in alerts)
@@ -219,7 +237,7 @@ async def test_cooldown_survives_next_sweep(db):
     await db.flush()
 
     out = await pm.maintain_open_pyramids(db)
-    assert out.get("liquidated", 0) == 0
+    assert out.get("liquidation_queued", 0) == 0
     assert out["sleeve_cooldown"] is True
 
     # check_order sees the cooldown through pf["sleeve"]["cooldown"]
@@ -297,7 +315,7 @@ async def test_drawdown_measured_from_high_water(db):
     await db.flush()
 
     out = await pm.maintain_open_pyramids(db)
-    assert out.get("liquidated") == 1
+    assert out.get("liquidation_queued") == 1
     life = (await db.execute(select(SleeveState))).scalar_one()
     assert life.state == "cooldown"
     assert life.drawdown_pct == pytest.approx(10_200 / 30_000)
@@ -320,7 +338,7 @@ async def test_gross_stop_fires_before_equity_stop(db):
     await db.flush()
 
     out = await pm.maintain_open_pyramids(db)
-    assert out.get("liquidated") == 1
+    assert out.get("liquidation_queued") == 1
     assert "gross-exposure" in (await db.execute(
         select(SleeveState))).scalar_one().cooldown_reason
 
@@ -354,9 +372,10 @@ async def _weak_fundamentals(db, inst):
     await db.flush()
 
 
-async def test_fundamental_deterioration_exits_qualified(db):
+async def test_fundamental_deterioration_proposes_exit(db):
     """Doc Step 20B — a position that was TRADE_ELIGIBLE at entry and
-    now fails four_ms is closed: deterioration = pass → fail."""
+    now fails four_ms gets an exit proposal: deterioration =
+    pass → fail. Approval still belongs to a human."""
     inst = Instrument(symbol="TEST", name="T", asset_class="equity")
     db.add(inst)
     await db.flush()
@@ -371,8 +390,9 @@ async def test_fundamental_deterioration_exits_qualified(db):
 
     out = await pm.maintain_open_pyramids(db)
     rec = (await db.execute(select(PyramidTradeRec))).scalar_one()
-    assert rec.state == "closed"
-    assert out["exits"] == 1
+    assert rec.state == "initial_position"     # open pending approval
+    assert out["exits_proposed"] == 1
+    assert rec.params["exit_request"]["trigger"] == "independent"
     assert any("fundamental deterioration" in e for e in rec.events)
 
 
@@ -394,7 +414,8 @@ async def test_unqualified_fundamental_fail_alerts_not_exits(db):
     out = await pm.maintain_open_pyramids(db)
     rec = (await db.execute(select(PyramidTradeRec))).scalar_one()
     assert rec.state != "closed"
-    assert out["exits"] == 0
+    assert out["exits_proposed"] == 0
+    assert "exit_request" not in (rec.params or {})
     alerts = (await db.execute(select(Alert))).scalars().all()
     assert any("fundamental review" in a.message for a in alerts)
 
@@ -412,12 +433,13 @@ async def test_missing_fundamentals_never_exits(db):
     out = await pm.maintain_open_pyramids(db)
     rec = (await db.execute(select(PyramidTradeRec))).scalar_one()
     assert rec.state != "closed"
-    assert out["exits"] == 0
+    assert out["exits_proposed"] == 0
 
 
-async def test_valuation_exit_closes_pyramid(db):
-    """Doc Step 7/20C — price ≥ sticker is an objective exit,
-    independent of ATR state or entry qualification."""
+async def test_valuation_exit_proposes_close(db):
+    """Doc Step 7/20C — price ≥ sticker is an objective exit signal,
+    independent of ATR state or entry qualification. It queues an
+    exit_request; a human approves the actual close."""
     from app.models.valuation import ValuationRun
     inst = Instrument(symbol="TEST", name="T", asset_class="equity")
     db.add(inst)
@@ -435,9 +457,10 @@ async def test_valuation_exit_closes_pyramid(db):
 
     out = await pm.maintain_open_pyramids(db)
     rec = (await db.execute(select(PyramidTradeRec))).scalar_one()
-    assert rec.state == "closed"
-    assert out["exits"] == 1
-    assert any("valuation exit" in e for e in rec.events)
+    assert rec.state == "initial_position"
+    assert out["exits_proposed"] == 1
+    assert "valuation exit" in rec.params["exit_request"]["reason"]
+    assert any("EXIT PROPOSED" in e for e in rec.events)
 
 
 async def test_macro_risk_off_blocks_adds(db):
@@ -468,9 +491,11 @@ async def test_macro_risk_off_blocks_adds(db):
                for b in checks[0].breaches)
 
 
-async def test_stop_exit_marks_instrument_exited(db):
-    """V1 Step-2 lifecycle — the last open leg closing moves the
-    instrument to exited."""
+async def test_approved_exit_closes_and_marks_exited(db):
+    """The human approval path: proposal → POST /pyramid/{id}/exit
+    → terminal state + instrument lifecycle EXITED."""
+    from app.models.identity import User
+    from app.routers.risk import ExitIn, exit_pyramid
     inst = Instrument(symbol="TEST", name="T", asset_class="equity")
     db.add(inst)
     await db.flush()
@@ -480,8 +505,53 @@ async def test_stop_exit_marks_instrument_exited(db):
     await db.flush()
 
     await pm.maintain_open_pyramids(db)
+    assert rec.state == "initial_position"     # pending, not closed
+
+    user = User(id="u-test", email="t@t", is_active=True)
+    out = await exit_pyramid(rec.id, ExitIn(approve=True), db, user)
+    assert out["state"] == "stopped_out"       # proposed_state honored
+    assert "exit_request" not in (rec.params or {})
     await db.refresh(inst)
-    assert rec.state == "stopped_out"
+    assert inst.status == "exited"
+    assert any("EXIT APPROVED" in e for e in rec.events)
+
+
+async def test_rejected_exit_clears_request(db):
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    await _bars(db, inst, [100] * 40 + [80] * 3)
+    rec = _rec(inst)
+    db.add(rec)
+    await db.flush()
+    await pm.maintain_open_pyramids(db)
+    assert "exit_request" in rec.params
+
+    from app.models.identity import User
+    from app.routers.risk import ExitIn, exit_pyramid
+    user = User(id="u-test", email="t@t", is_active=True)
+    out = await exit_pyramid(rec.id, ExitIn(approve=False), db, user)
+    assert "exit_request" not in (rec.params or {})
+    assert rec.state == "initial_position"
+    assert any("EXIT REJECTED" in e for e in rec.events)
+
+
+async def test_manual_close_is_its_own_approval(db):
+    """A human closing directly IS the approval — no pending request
+    required."""
+    from app.models.identity import User
+    from app.routers.risk import ExitIn, exit_pyramid
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    rec = _rec(inst)
+    db.add(rec)
+    await db.flush()
+
+    user = User(id="u-test", email="t@t", is_active=True)
+    out = await exit_pyramid(rec.id, ExitIn(approve=True), db, user)
+    assert out["state"] == "closed"
+    await db.refresh(inst)
     assert inst.status == "exited"
 
 

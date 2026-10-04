@@ -689,6 +689,78 @@ class AdvanceIn(BaseModel):
     add_ok: bool = True
 
 
+class ExitIn(BaseModel):
+    approve: bool = True
+    note: str | None = None
+
+
+@router.post("/pyramid/{trade_id}/exit")
+async def exit_pyramid(
+    trade_id: str, body: ExitIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require("trading:execute")),
+) -> dict:
+    """Human approval gate for every position close — the doc's
+    'human approval before execution' applied to exits. The
+    maintenance loop only ever PROPOSES closes (exit_request in
+    params); this endpoint is the only path that writes a terminal
+    state. approve=True with no pending request is a manual close —
+    the caller is the approval."""
+    from app.services.pyramid_maintain import (
+        _MAINTAIN_STATES, mark_instrument_exited)
+    rec = await db.get(PyramidTradeRec, trade_id)
+    if rec is None:
+        raise HTTPException(404, "pyramid trade not found")
+    if rec.state not in _MAINTAIN_STATES:
+        raise HTTPException(
+            409, {"detail": f"pyramid is {rec.state} — nothing to "
+                            "approve or close"})
+    inst = await db.get(Instrument, rec.instrument_id)
+    now = utcnow()
+    params = dict(rec.params or {})
+    req = params.pop("exit_request", None)
+
+    if not body.approve:
+        if req is None:
+            raise HTTPException(
+                409, {"detail": "no pending exit request to reject"})
+        rec.params = params
+        rec.events = [*(rec.events or []),
+                      f"{now.isoformat()[:10]} EXIT REJECTED by "
+                      f"{user.id} — {req['reason']}"
+                      + (f" ({body.note})" if body.note else "")]
+        await audit(
+            db, action="pyramid.exit.rejected", actor=user,
+            entity_type="pyramid_trade", entity_id=rec.id,
+            detail={"reason": req["reason"], "note": body.note})
+        await db.commit()
+        return {"state": rec.state, "exit_request": None,
+                "events": rec.events[-5:]}
+
+    rec.state = (req or {}).get("proposed_state", "closed")
+    reason = (req or {}).get("reason", "manual close")
+    price = (req or {}).get("price")
+    rec.params = params
+    rec.events = [
+        *(rec.events or []),
+        f"{now.isoformat()[:10]} EXIT APPROVED — {reason}"
+        + (f" @ {price:.2f}" if price else "")
+        + f" by {user.id}"
+        + (f" ({body.note})" if body.note else "")]
+    # last open leg on the name → instrument EXITED
+    await mark_instrument_exited(db, inst, now)
+    await audit(
+        db,
+        action=("pyramid.exit.approved" if req
+                else "pyramid.close.manual"),
+        actor=user, entity_type="pyramid_trade", entity_id=rec.id,
+        detail={"reason": reason, "price": price,
+                "trigger": (req or {}).get("trigger"),
+                "note": body.note})
+    await db.commit()
+    return {"state": rec.state, "events": rec.events[-5:]}
+
+
 @router.post("/pyramid/{trade_id}/advance")
 async def advance_pyramid(
     trade_id: str, body: AdvanceIn,
@@ -698,6 +770,23 @@ async def advance_pyramid(
     rec = await db.get(PyramidTradeRec, trade_id)
     if rec is None:
         raise HTTPException(404, "pyramid trade not found")
+    # same rule as the maintenance loop — a price at/under the stop
+    # proposes an exit; it never closes the position itself
+    if (rec.stop is not None and body.price <= rec.stop
+            and not (rec.params or {}).get("exit_request")):
+        from app.services.pyramid_maintain import _propose_exit
+        inst = await db.get(Instrument, rec.instrument_id)
+        await _propose_exit(
+            db, rec, inst,
+            reason=(f"stop breached — price {body.price:.2f} "
+                    f"≤ stop {rec.stop:.2f}"),
+            trigger="stop_breach", price=body.price,
+            proposed_state="stopped_out", now=utcnow())
+        await db.commit()
+        return {"state": rec.state,
+                "exit_request": rec.params["exit_request"],
+                "detail": "stop breached — exit queued for human "
+                          "approval"}
     params = rec.params or {}
     # adds are LINEAR (+leg_shares each), not doubling — 1+additions
     # is the correct divisor for legacy rows without leg_shares

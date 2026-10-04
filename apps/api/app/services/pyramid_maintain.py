@@ -7,9 +7,17 @@ as one job:
         ↓
     target hit → earn-the-right risk re-check → add leg
         ↓
-    stop breached → EXIT ALL (state → stopped_out)
+    close trigger (stop breach / independent exit / portfolio
+    stop) → EXIT PROPOSED → human approval → closed
         ↓
     sleeve margin + drawdown recomputed → alerts
+
+CLOSING IS NEVER AUTOMATIC: every close trigger queues an
+`exit_request` on the record and raises a critical alert — the
+position stays open until a human approves via
+POST /risk/pyramid/{id}/exit. The portfolio stop still drops the
+sleeve into cooldown immediately (no NEW risk), but liquidating
+the open legs waits for the human too.
 
 Every action lands in the record's append-only events log; add
 re-checks persist a RiskCheck row — the audit trail for "earn the
@@ -138,8 +146,8 @@ async def _sleeve_ctx(db: AsyncSession, nav: float,
     return out
 
 
-async def _mark_exited(db: AsyncSession, inst: Instrument,
-                       now) -> None:
+async def mark_instrument_exited(db: AsyncSession, inst: Instrument,
+                                 now) -> None:
     """Instrument status on position close — EXITED only when no
     other pyramid record on the same name is still open."""
     still_open = (await db.execute(
@@ -151,12 +159,40 @@ async def _mark_exited(db: AsyncSession, inst: Instrument,
         inst.status, inst.status_at = "exited", now
 
 
-async def _liquidate_sleeve(db: AsyncSession, reason: str) -> int:
-    """Portfolio stop is absolute — mark every open sleeve position
-    closed, drop the lifecycle row into cooldown, alert. Order
-    routing is a separate concern: this is the state-machine
-    liquidation the doc demands; execution still goes through the
-    normal order path."""
+async def _propose_exit(db: AsyncSession, rec: PyramidTradeRec,
+                        inst: Instrument, *, reason: str, trigger: str,
+                        price: float, proposed_state: str,
+                        now) -> bool:
+    """Queue a close for human approval — the loop NEVER closes a
+    position on its own. Returns True when a new request was queued
+    (False when one is already pending)."""
+    if (rec.params or {}).get("exit_request"):
+        return False
+    rec.params = {
+        **(rec.params or {}),
+        "exit_request": {"reason": reason, "trigger": trigger,
+                         "price": price,
+                         "proposed_at": now.isoformat(),
+                         "proposed_state": proposed_state}}
+    rec.events = [*(rec.events or []),
+                  f"{now.isoformat()[:10]} EXIT PROPOSED — {reason} "
+                  f"@ {price:.2f} — awaiting human approval"]
+    await emit_alert(
+        db, severity="critical", source="monitor:trading",
+        message=(f"{inst.symbol}: EXIT APPROVAL REQUIRED — {reason} "
+                 f"@ {price:.2f}"),
+        dedup_key=f"pyr_exit_req:{inst.symbol}:{rec.id}",
+        instrument_id=inst.id, observed=price, required=rec.stop,
+        action=(f"approve or reject via "
+                f"POST /risk/pyramid/{rec.id}/exit"))
+    return True
+
+
+async def _queue_liquidation(db: AsyncSession, reason: str) -> int:
+    """Portfolio stop is absolute about RISK, not about execution —
+    it drops the sleeve into cooldown immediately (no new exposure)
+    and queues every open position for human-approved liquidation.
+    Closes never happen without the human."""
     now = utcnow()
     n = 0
     recs = (await db.execute(
@@ -169,11 +205,11 @@ async def _liquidate_sleeve(db: AsyncSession, reason: str) -> int:
             .where(OhlcvBar.instrument_id == inst.id,
                    OhlcvBar.timeframe == "1d")
             .order_by(OhlcvBar.time.desc()).limit(1))).scalar()
-        rec.state = "closed"
-        rec.events = [*(rec.events or []),
-                      f"{now.isoformat()[:10]} PORTFOLIO STOP — "
-                      f"liquidated all {rec.shares}sh "
-                      f"@{float(px) if px else 'last'} ({reason})"]
+        await _propose_exit(
+            db, rec, inst, reason=f"portfolio stop — {reason}",
+            trigger="portfolio_stop",
+            price=float(px) if px else float(rec.entry),
+            proposed_state="closed", now=now)
         # liquidated names go to instrument COOLDOWN — the doc's
         # post-risk-event universe state; release is sleeve-level
         inst.status, inst.status_at = "cooldown", now
@@ -185,10 +221,10 @@ async def _liquidate_sleeve(db: AsyncSession, reason: str) -> int:
     life.liquidated_at = now
     await emit_alert(
         db, severity="critical", source="monitor:portfolio",
-        message=(f"SLEEVE PORTFOLIO STOP — {n} position(s) liquidated, "
-                 f"sleeve in cooldown ({reason})"),
+        message=(f"SLEEVE PORTFOLIO STOP — {n} position(s) queued for "
+                 f"liquidation, sleeve in cooldown ({reason})"),
         dedup_key="sleeve_liquidated",
-        action="human reassessment required to release cooldown")
+        action="approve each pending exit — closes require a human")
     return n
 
 
@@ -210,7 +246,8 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
         .where(PyramidTradeRec.state.in_(_MAINTAIN_STATES)))).all()
 
     out = {"processed": 0, "tightened": 0, "added": 0, "stopped": 0,
-           "add_blocked": 0, "stale_skipped": 0, "exits": 0,
+           "add_blocked": 0, "stale_skipped": 0,
+           "exits_proposed": 0, "exit_pending": 0,
            "unchanged_period": 0, "errors": 0, "actions": []}
     # doc Phase 0 — the strategy's ATR timeframe is a config, not a
     # constant: 1d (default), 1w or 1mo. Wider frames need a deep
@@ -221,6 +258,11 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
     for rec, inst in recs:
         out["processed"] += 1
         try:
+            # a queued close waits on a human — the loop touches
+            # nothing on a name whose exit is pending approval
+            if (rec.params or {}).get("exit_request"):
+                out["exit_pending"] += 1
+                continue
             bars = (await db.execute(
                 select(OhlcvBar)
                 .where(OhlcvBar.instrument_id == inst.id,
@@ -342,29 +384,38 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
             except Exception:
                 exit_reason = None        # gate failure ≠ exit signal
             if exit_reason:
-                rec.state = "closed"
-                rec.events = [
-                    *(rec.events or []),
-                    f"{now.isoformat()[:10]} EXIT — {exit_reason} "
-                    f"@ {close:.2f}"]
-                # no open pyramid legs left on this name → EXITED
-                await _mark_exited(db, inst, now)
-                out["exits"] += 1
-                out["actions"].append(
-                    {"symbol": inst.symbol,
-                     "event": f"independent exit — {exit_reason}"})
-                await emit_alert(
-                    db, severity="warning", source="monitor:trading",
-                    message=(f"{inst.symbol}: EXIT — {exit_reason} "
-                             f"@ {close:.2f}"),
-                    dedup_key=f"pyr_exit:{inst.symbol}:{rec.id}",
-                    instrument_id=inst.id,
-                    action="position closed by non-ATR exit rule")
+                # propose, never close — a human approves via
+                # POST /risk/pyramid/{id}/exit
+                if await _propose_exit(
+                        db, rec, inst, reason=exit_reason,
+                        trigger="independent", price=close,
+                        proposed_state="closed", now=now):
+                    out["exits_proposed"] += 1
+                    out["actions"].append(
+                        {"symbol": inst.symbol,
+                         "event": f"exit proposed — {exit_reason}"})
                 continue
 
             t = _rebuild(rec)
             events_before = len(t.events)
             prior_additions = t.additions
+
+            # stop breach is a close trigger — it queues an exit
+            # request like every other close path; advance() only
+            # runs when no close is pending on this bar
+            if t.stop is not None and close <= t.stop:
+                if await _propose_exit(
+                        db, rec, inst,
+                        reason=(f"stop breached — close {close:.2f} "
+                                f"≤ stop {t.stop:.2f}"),
+                        trigger="stop_breach", price=close,
+                        proposed_state="stopped_out", now=now):
+                    out["exits_proposed"] += 1
+                    out["actions"].append(
+                        {"symbol": inst.symbol,
+                         "event": f"exit proposed — stop breach @ "
+                                  f"{close:.2f}"})
+                continue
 
             # earn the right — a target hit only earns a leg if the
             # sleeve + portfolio gates still have room (doc Phase 4.6)
@@ -409,16 +460,18 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
             new_events = t.events[events_before:]
             if t.state == re_.PyramidState.STOPPED \
                     and prior_state != re_.PyramidState.STOPPED:
-                out["stopped"] += 1
-                await _mark_exited(db, inst, now)
-                await emit_alert(
-                    db, severity="critical", source="monitor:trading",
-                    message=(f"{inst.symbol}: pyramid STOPPED OUT @ "
-                             f"{close:.2f} (stop {rec.stop:.2f})"),
-                    dedup_key=f"pyr_stop:{inst.symbol}:{rec.id}",
-                    instrument_id=inst.id,
-                    observed=close, required=rec.stop,
-                    action="exit all legs per stop policy")
+                # unreachable while the pre-check above holds — but a
+                # close must never slip through unapproved: roll the
+                # state back and queue the request anyway
+                t.state = prior_state
+                rec.state = prior_state.value
+                if await _propose_exit(
+                        db, rec, inst,
+                        reason=(f"stop breached — close {close:.2f} "
+                                f"≤ stop {t.stop:.2f}"),
+                        trigger="stop_breach", price=close,
+                        proposed_state="stopped_out", now=now):
+                    out["exits_proposed"] += 1
             elif t.additions > prior_additions:
                 out["added"] += 1
             elif any("maintenance: stop" in e for e in new_events):
@@ -448,14 +501,14 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
                 dedup_key="sleeve_margin_hot",
                 observed=st["margin_utilisation"], required=0.9,
                 action="reduce gross before broker forces it")
-        # ── doc portfolio stop — ABSOLUTE (Sprint-5 semantics):
-        # drawdown is measured from the equity HIGH-WATER mark —
-        # profits given back still count as losses taken. Two floors,
-        # whichever is tighter: the absolute 20%-of-sleeve-equity stop
-        # AND 4% of CURRENT gross exposure (at starter deployment the
-        # gross floor fires first — doc Phase 0/2.2). A breach
-        # liquidates the sleeve and drops it into cooldown; a human
-        # release is the only way back. ──
+        # ── doc portfolio stop — ABSOLUTE about risk: a breach drops
+        # the sleeve into cooldown immediately (no new exposure) and
+        # queues every open position for liquidation. Closes still
+        # require human approval — cooldown removes the ability to
+        # ADD risk while the human decides. Two floors, whichever is
+        # tighter: 20% of sleeve equity AND 4% of current gross
+        # exposure (doc Phase 0/2.2), drawdown measured off the
+        # equity high-water mark. ──
         life = await get_sleeve_state(db)
         eq_mark = st["sleeve_equity"] + (st["sleeve_open_pnl"] or 0)
         life.equity_hwm = max(life.equity_hwm or 0, eq_mark,
@@ -472,7 +525,7 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
         if dd_usd >= floor and life.state != "cooldown":
             which = ("gross-exposure" if gross_floor < stop_usd
                      else "equity")
-            out["liquidated"] = await _liquidate_sleeve(
+            out["liquidation_queued"] = await _queue_liquidation(
                 db, f"sleeve drawdown ${dd_usd:,.0f} >= {which} "
                     f"stop ${floor:,.0f}")
             out["sleeve"]["cooldown"] = True
