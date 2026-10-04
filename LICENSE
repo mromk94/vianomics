@@ -1,21 +1,115 @@
-MIT License
+VIANOMICS PROPRIETARY SOFTWARE LICENSE
 
-Copyright (c) 2026 OMK
+Copyright (c) 2026 Obozunya Larry / Spintall Network Solutions Limited.
+All Rights Reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. OWNERSHIP
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+The Vianomics software, including but not limited to its source code, architecture,
+algorithms, business logic, interfaces, designs, documentation, database structures,
+and associated materials (collectively, the "Software") is proprietary intellectual
+property of Obozunya Larry and/or Spintall Network Solutions Limited ("Owner").
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+The publication of the Software on GitHub does not transfer ownership or grant any
+license to use the Software beyond the limited rights expressly stated in this
+license.
+
+2. LIMITED VIEWING RIGHT
+
+The Software is made publicly available solely for viewing, inspection, educational
+reference, security review, and evaluation purposes.
+
+No other rights are granted unless expressly authorized in writing by the Owner.
+
+3. PROHIBITED USE
+
+Without prior written permission from the Owner, you may NOT:
+
+- use the Software or any substantial portion of it for commercial purposes;
+- copy, reproduce, or redistribute the Software;
+- modify, adapt, translate, or create derivative works from the Software;
+- incorporate the Software or substantial portions of it into another product,
+  application, service, platform, or codebase;
+- deploy, host, operate, or provide access to the Software or a substantially
+  similar derivative implementation;
+- sell, sublicense, lease, license, or otherwise transfer the Software;
+- use the Software to create or operate a competing product or service;
+- use the Software, its architecture, business logic, or proprietary implementation
+  as the basis for a competing commercial product;
+- remove, alter, or obscure copyright, proprietary, or attribution notices;
+- represent that you are an owner, authorized distributor, or official representative
+  of Vianomics.
+
+4. PERSONAL AND NON-COMMERCIAL EVALUATION
+
+Individuals may inspect and study the publicly available source code for personal,
+non-commercial evaluation and educational purposes.
+
+Such inspection does not grant permission to deploy, distribute, commercially use,
+modify for redistribution, or create derivative commercial works from the Software.
+
+5. COMMERCIAL LICENSING
+
+Commercial use, deployment, redistribution, integration, derivative works, or any
+other use outside the permissions expressly granted in this license requires a
+separate written commercial license from the Owner.
+
+Commercial licensing inquiries should be directed to:
+
+Obozunya Larry
+Spintall Network Solutions Limited
+
+6. TRADEMARKS AND BRANDING
+
+The names "Vianomics", "Vianomics AI", associated logos, trademarks, service marks,
+product names, branding, visual identity, and other brand assets are not licensed
+under this agreement.
+
+Nothing in this license grants permission to use the Owner's trademarks or branding.
+
+7. THIRD-PARTY SOFTWARE
+
+The Software may contain or depend upon third-party libraries, frameworks, tools,
+or other components that are distributed under their own licenses.
+
+Those components remain subject to their respective licenses. This license does
+not attempt to restrict rights that are independently granted by those third-party
+licenses.
+
+8. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE, AND NON-INFRINGEMENT.
+
+9. LIMITATION OF LIABILITY
+
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE OWNER SHALL NOT BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR OTHER DAMAGES
+ARISING FROM THE USE OF, OR INABILITY TO USE, THE SOFTWARE.
+
+10. TERMINATION
+
+Any permission granted under this license automatically terminates if you violate
+its terms.
+
+Upon termination, you must cease any use of the Software that is not otherwise
+authorized by the Owner.
+
+11. RESERVATION OF RIGHTS
+
+All rights not expressly granted by this license are reserved by the Owner.
+
+Nothing in this license shall be interpreted as granting an implied license,
+ownership interest, or other right in the Software or the Owner's intellectual
+property.
+
+12. GOVERNING LAW
+
+This license shall be interpreted in accordance with the applicable laws governing
+the Owner and its intellectual property rights.
+
+13. COPYRIGHT
+
+Copyright (c) 2026 Obozunya Larry / Spintall Network Solutions Limited.
+All Rights Reserved.
