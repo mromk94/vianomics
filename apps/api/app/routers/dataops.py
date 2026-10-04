@@ -106,7 +106,8 @@ async def run_job_now(job_key: str,
                 "yahoo": YahooAdapter}
     parts = job_key.split(":")
     try:
-        if job_key in ("technical:scan", "monitor:scan", "pyramid:seed"):
+        if job_key in ("technical:scan", "monitor:scan", "pyramid:seed",
+                       "pyramid:maintain"):
             from app.ingestion.upsert import get_or_create
             from app.models.ops import Job, JobRun
             from app.db.base import utcnow
@@ -124,6 +125,11 @@ async def run_job_now(job_key: str,
                     from app.services import pyramid_seed
                     res = await pyramid_seed.seed_candidates(db)
                     n = res["created"]
+                elif job_key == "pyramid:maintain":
+                    from app.services import pyramid_maintain
+                    res = await pyramid_maintain.maintain_open_pyramids(
+                        db)
+                    n = res["processed"]
                 else:
                     from app.services import monitoring as mon
                     res = await mon.run_checks(db)
