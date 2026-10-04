@@ -16,6 +16,8 @@ from typing import Any, Literal, Protocol
 import itertools
 import random
 
+import httpx
+
 from app.providers.base import ProviderConfigError
 
 # broker-reported states (never locally inferred beyond 'local_')
@@ -237,7 +239,6 @@ class AlpacaAdapter(BrokerAdapter):
     Keys: ALPACA_API_KEY / ALPACA_SECRET_KEY (env or secret store)."""
 
     key = "alpaca"
-    live = True
 
     def __init__(self):
         import os
@@ -249,6 +250,7 @@ class AlpacaAdapter(BrokerAdapter):
             raise ProviderConfigError(
                 "alpaca: set ALPACA_API_KEY + ALPACA_SECRET_KEY")
         self._paper = "paper" in self._base
+        self.live = not self._paper   # paper URL → simulated lane
 
     def capabilities(self):
         return {"mode": "paper" if self._paper else "live",
@@ -264,10 +266,54 @@ class AlpacaAdapter(BrokerAdapter):
                             headers=self._h())
             r.raise_for_status()
             a = r.json()
-            return {"equity": float(a.get("equity", 0)),
+            eq = float(a.get("equity", 0))
+            last = float(a.get("last_equity") or eq)
+            return {"equity": eq,
                     "cash": float(a.get("cash", 0)),
                     "buying_power": float(a.get("buying_power", 0)),
+                    "portfolio_value": float(
+                        a.get("portfolio_value") or 0),
+                    "day_pnl": eq - last,
+                    "status": a.get("status"),
+                    "account_number": a.get("account_number"),
                     "paper": self._paper}
+
+    async def positions(self) -> list[dict[str, Any]]:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(f"{self._base}/v2/positions",
+                            headers=self._h())
+            r.raise_for_status()
+            return [{"symbol": p["symbol"],
+                     "qty": float(p.get("qty") or 0),
+                     "avg_cost": float(p.get("avg_entry_price") or 0),
+                     "last_px": float(p.get("current_price") or 0),
+                     "market_value": float(p.get("market_value") or 0),
+                     "unrealized_pl": float(
+                         p.get("unrealized_pl") or 0),
+                     "side": p.get("side")}
+                    for p in r.json()]
+
+    async def margin_requirements(self, symbol: str) -> dict:
+        """Alpaca exposes marginability as asset flags, not a per-
+        symbol margin endpoint — return the real flags + the honest
+        Reg-T default note rather than faking a percentage."""
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(
+                f"{self._base}/v2/assets/{symbol.upper()}",
+                headers=self._h())
+            if r.status_code != 200:
+                return {"symbol": symbol, "tradable": None,
+                        "note": "asset lookup failed"}
+            a = r.json()
+            return {"symbol": symbol,
+                    "tradable": a.get("tradable"),
+                    "marginable": a.get("marginable"),
+                    "shortable": a.get("shortable"),
+                    "easy_to_borrow": a.get("easy_to_borrow"),
+                    "fractionable": a.get("fractionable"),
+                    "note": ("Alpaca does not expose per-symbol margin "
+                             "% — marginable equities use Reg-T "
+                             "initial 50%, maint varies")}
 
     async def submit_order(self, o: BrokerOrder) -> BrokerOrder:
         body = {"symbol": o.symbol, "qty": o.qty, "side": o.side,
@@ -295,30 +341,67 @@ class AlpacaAdapter(BrokerAdapter):
                              "stage": "submitted", "detail": d["id"]})
             return o
 
-    async def order_status(self, o: BrokerOrder) -> BrokerOrder:
+    _STATUS_MAP = {"filled": "filled", "canceled": "cancelled",
+                   "rejected": "rejected", "expired": "cancelled",
+                   "done_for_day": "cancelled",
+                   "partially_filled": "partially_filled",
+                   "pending_cancel": "submitted"}
+
+    def _map_order(self, d: dict) -> BrokerOrder:
+        o = BrokerOrder(broker_order_id=d["id"],
+                        symbol=d.get("symbol") or "",
+                        side=d.get("side") or "buy",
+                        qty=float(d.get("qty") or 0),
+                        order_type=d.get("type") or "market")
+        o.status = self._STATUS_MAP.get(d.get("status"), "submitted")
+        o.filled_qty = float(d.get("filled_qty") or 0)
+        o.avg_fill_price = (float(d["filled_avg_price"])
+                            if d.get("filled_avg_price") else None)
+        o.limit_price = (float(d["limit_price"])
+                         if d.get("limit_price") else None)
+        return o
+
+    async def order_status(self, broker_order_id: str) -> BrokerOrder:
         async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get(f"{self._base}/v2/orders/{o.broker_order_id}",
+            r = await c.get(
+                f"{self._base}/v2/orders/{broker_order_id}",
+                headers=self._h())
+            r.raise_for_status()
+            return self._map_order(r.json())
+
+    async def cancel_order(self, broker_order_id: str) -> BrokerOrder:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.delete(
+                f"{self._base}/v2/orders/{broker_order_id}",
+                headers=self._h())
+            o = BrokerOrder(broker_order_id=broker_order_id,
+                            symbol="", side="", qty=0)
+            o.status = "cancelled" if r.status_code in (200, 204, 404) \
+                else "unknown"
+            if r.status_code == 422:
+                o.status = "error"
+                o.reject_reason = "order no longer cancelable"
+            return o
+
+    async def executions(self) -> list[dict]:
+        """Closed/filled orders — the broker-side fills record."""
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(f"{self._base}/v2/orders",
+                            params={"status": "closed", "limit": 100,
+                                    "direction": "desc"},
                             headers=self._h())
             r.raise_for_status()
-            d = r.json()
-            o.status = {"filled": "filled", "canceled": "cancelled",
-                        "rejected": "rejected",
-                        "expired": "cancelled"}.get(
-                            d.get("status"), "submitted")
-            o.filled_qty = float(d.get("filled_qty") or 0)
-            o.avg_fill_price = (float(d["filled_avg_price"])
-                                if d.get("filled_avg_price") else None)
-            return o
-
-    async def cancel_order(self, o: BrokerOrder) -> BrokerOrder:
-        async with httpx.AsyncClient(timeout=15) as c:
-            await c.delete(
-                f"{self._base}/v2/orders/{o.broker_order_id}",
-                headers=self._h())
-            o.status = "cancelled"
-            return o
-
-    positions = margin_requirements = executions = None
+            return [{"broker_order_id": d["id"],
+                     "symbol": d.get("symbol"),
+                     "side": d.get("side"),
+                     "status": self._STATUS_MAP.get(
+                         d.get("status"), d.get("status")),
+                     "filled_qty": float(d.get("filled_qty") or 0),
+                     "avg_fill_price": (
+                         float(d["filled_avg_price"])
+                         if d.get("filled_avg_price") else None),
+                     "filled_at": d.get("filled_at")}
+                    for d in r.json() if d.get("filled_qty")]
 
 
 # registry — paper default; alpaca + ibkr when configured

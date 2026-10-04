@@ -178,3 +178,59 @@ async def refresh_quotes(db: AsyncSession,
         row.ts = now
         n += 1
     return n
+
+
+async def refresh_alpaca_quotes(db: AsyncSession,
+                                symbols: list[str] | None = None
+                                ) -> int:
+    """Alpaca snapshot → market_quotes (source='alpaca'). Snapshot is
+    the richest single call: NBBO-ish bid/ask (IEX tape on the free
+    tier), last trade, today's open and prior close in one response.
+    Second real-time source alongside MT4/Tiingo/Yahoo."""
+    from app.providers.alpaca import AlpacaAdapter
+    from app.providers.base import ProviderConfigError
+    try:
+        ad = AlpacaAdapter()
+    except ProviderConfigError:
+        return 0
+    syms = symbols or list(CONTEXT_INSTRUMENTS)
+    n = 0
+    for sym in syms:
+        if sym.startswith("^"):
+            continue  # IEX/SIP carry stocks/ETFs, not indices
+        try:
+            snap = await ad.snapshot(sym)
+        except Exception:
+            continue
+        if not snap:
+            continue
+        q = snap.get("latestQuote") or {}
+        t = snap.get("latestTrade") or {}
+        day = snap.get("dailyBar") or {}
+        prev = snap.get("prevDailyBar") or {}
+        bid, ask = q.get("bp"), q.get("ap")
+        mid = ((bid + ask) / 2 if bid is not None and ask is not None
+               else t.get("p"))
+        if mid is None:
+            continue
+        inst = (await db.execute(
+            select(Instrument).where(Instrument.symbol == sym))
+        ).scalar_one_or_none()
+        now = datetime.now(UTC)
+        row = (await db.execute(
+            select(MarketQuote).where(
+                MarketQuote.source == "alpaca",
+                MarketQuote.symbol == sym))
+        ).scalar_one_or_none()
+        if row is None:
+            row = MarketQuote(source="alpaca", symbol=sym, ts=now)
+            db.add(row)
+        row.instrument_id = inst.id if inst else None
+        row.bid = bid
+        row.ask = ask
+        row.mid = mid
+        row.day_open = day.get("o")
+        row.prev_close = prev.get("c")
+        row.ts = now
+        n += 1
+    return n

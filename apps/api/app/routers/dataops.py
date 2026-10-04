@@ -184,6 +184,36 @@ async def run_job_now(job_key: str,
             run = await ing.ingest_fred_series(
                 db, adapters["fred"](api_key=key), parts[-1], parts[-1],
                 use_csv=not key)
+        elif job_key == "market:alpaca:quotes":
+            # snapshot sweep → market_quotes (source='alpaca')
+            from app.services import market_context as mc
+            n = await mc.refresh_alpaca_quotes(db)
+            await db.commit()
+            return {"status": "success", "records_ok": n}
+        elif job_key == "portfolio:alpaca:sync":
+            from app.services import broker_sync
+            res = await broker_sync.sync_alpaca_account(db)
+            await db.commit()
+            return res
+        elif job_key == "portfolio:ibkr:sync":
+            from app.services import broker_sync
+            res = await broker_sync.sync_ibkr_flex(db)
+            await db.commit()
+            return res
+        elif job_key.startswith("ingest:alpaca:"):
+            # ingest:alpaca:<sym>[:<timeframe>]  e.g. ingest:alpaca:NVDA
+            from app.providers.alpaca import AlpacaAdapter
+            from app.providers.base import ProviderConfigError
+            try:
+                sym = parts[2]
+                tf = parts[3] if len(parts) > 3 else "1Day"
+                if await _instr(db, sym) is None:
+                    return {"status": "failed",
+                            "error": f"{sym} not in universe"}
+                run = await ing.ingest_alpaca_bars(
+                    db, AlpacaAdapter(), sym, timeframe=tf)
+            except ProviderConfigError as e:
+                return {"status": "failed", "error": str(e)}
         elif job_key == "market:intraday":
             # IEX intraday bars for every context instrument
             from app.services.secrets import get_secret

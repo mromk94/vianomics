@@ -1,0 +1,107 @@
+"""Alpaca market-data adapter — data.alpaca.markets (separate host
+from the trading API). Free tier is the IEX feed; SIP needs the paid
+data subscription — `feed` is a constructor arg so callers stay
+honest about which tape a number came from.
+
+Keys: ALPACA_API_KEY / ALPACA_SECRET_KEY (env or SecretStore — the
+latter is loaded into env at startup).
+"""
+
+import os
+from typing import Any
+
+from app.providers.base import HttpAdapter, ProviderConfigError
+
+
+class AlpacaAdapter(HttpAdapter):
+    key = "alpaca"
+    kind = "market"
+    base_url = "https://data.alpaca.markets"
+    rps = 3.0  # free tier ~200 req/min
+
+    def __init__(self, api_key: str | None = None,
+                 secret_key: str | None = None, feed: str = "iex",
+                 **kw: Any) -> None:
+        super().__init__(**kw)
+        self.api_key = api_key or os.environ.get("ALPACA_API_KEY")
+        self.secret_key = (secret_key
+                           or os.environ.get("ALPACA_SECRET_KEY"))
+        self.feed = feed
+
+    def _headers(self) -> dict[str, str]:
+        if not (self.api_key and self.secret_key):
+            raise ProviderConfigError(
+                "alpaca: ALPACA_API_KEY + ALPACA_SECRET_KEY "
+                "not configured")
+        return {"APCA-API-KEY-ID": self.api_key,
+                "APCA-API-SECRET-KEY": self.secret_key}
+
+    def capabilities(self) -> dict[str, Any]:
+        return {
+            "asset_classes": ["equity", "etf"],
+            "data": ["eod_ohlcv", "intraday", "quotes", "trades",
+                     "snapshots", "news"],
+            "feed": self.feed,
+            "requires_credentials": True,
+            "configured": bool(self.api_key and self.secret_key),
+        }
+
+    async def healthcheck(self) -> bool:
+        resp = await self._get(
+            f"{self.base_url}/v2/stocks/AAPL/trades/latest",
+            params={"feed": self.feed}, headers=self._headers())
+        return resp.status_code == 200
+
+    async def bars(self, symbol: str, start: str, end: str,
+                   timeframe: str = "1Day",
+                   limit: int = 10000) -> list[dict]:
+        """→ [{t,o,h,l,c,v,n,vw}] raw Alpaca bars (paged)."""
+        out: list[dict] = []
+        page_token: str | None = None
+        while True:
+            params: dict[str, Any] = {
+                "start": start, "end": end, "timeframe": timeframe,
+                "feed": self.feed, "limit": limit,
+                "adjustment": "raw"}
+            if page_token:
+                params["page_token"] = page_token
+            resp = await self._get(
+                f"{self.base_url}/v2/stocks/{symbol.upper()}/bars",
+                params=params, headers=self._headers())
+            resp.raise_for_status()
+            d = resp.json()
+            out.extend(d.get("bars") or [])
+            page_token = d.get("next_page_token")
+            if not page_token:
+                return out
+
+    async def latest_quote(self, symbol: str) -> dict | None:
+        """NBBO-ish quote {bp,bs,ap,as,t} — IEX tape on free tier."""
+        resp = await self._get(
+            f"{self.base_url}/v2/stocks/{symbol.upper()}"
+            "/quotes/latest",
+            params={"feed": self.feed}, headers=self._headers())
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("quote")
+
+    async def latest_trade(self, symbol: str) -> dict | None:
+        """Last trade {p,s,t,x}."""
+        resp = await self._get(
+            f"{self.base_url}/v2/stocks/{symbol.upper()}"
+            "/trades/latest",
+            params={"feed": self.feed}, headers=self._headers())
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("trade")
+
+    async def snapshot(self, symbol: str) -> dict | None:
+        """{latestTrade,latestQuote,dailyBar,prevDailyBar,minuteBar} —
+        one call carries everything a quote row needs plus the day's
+        open and prior close."""
+        resp = await self._get(
+            f"{self.base_url}/v2/stocks/{symbol.upper()}/snapshot",
+            params={"feed": self.feed}, headers=self._headers())
+        if resp.status_code != 200:
+            return None
+        return resp.json()

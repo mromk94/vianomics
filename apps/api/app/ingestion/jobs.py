@@ -624,3 +624,69 @@ async def ingest_tiingo_intraday(
     run.finished_at = utcnow()
     await mark_sync(session, provider, f"intraday:{symbol}", True)
     return run
+
+
+async def ingest_alpaca_bars(
+    session: AsyncSession,
+    adapter,
+    symbol: str,
+    start: str = "2015-01-01",
+    timeframe: str = "1Day",
+) -> JobRun:
+    """Alpaca stock bars → ohlcv_bars (source='alpaca', timeframe from
+    the API string lowercased: '1day'). Idempotent on
+    (instrument, timeframe, time, source, adjusted)."""
+    from app.models.market import OhlcvBar
+
+    job, _ = await get_or_create(
+        session, Job, {"key": f"ingest:alpaca:{symbol}:{timeframe}"},
+        {"kind": "ingestion"})
+    run = JobRun(job_id=job.id)
+    session.add(run)
+    await session.flush()
+    provider = await _provider(session, "alpaca")
+
+    inst = await _instrument(session, symbol)
+    if inst is None:
+        run.status, run.error, run.finished_at = (
+            "failed", f"{symbol} not in security master", utcnow())
+        await mark_sync(session, provider, f"market:{symbol}", False,
+                        run.error)
+        return run
+
+    today = date.today().isoformat()
+    raw, status = await run_job(
+        session, job_run=run, provider_key="alpaca",
+        work=lambda: adapter.bars(symbol, start, today,
+                                  timeframe=timeframe))
+    if raw is None:
+        run.finished_at = utcnow()
+        await mark_sync(session, provider, f"market:{symbol}", False,
+                        run.error)
+        return run
+
+    tf = timeframe.lower()
+    existing_times = {
+        t for (t,) in (await session.execute(
+            select(OhlcvBar.time).where(
+                OhlcvBar.instrument_id == inst.id,
+                OhlcvBar.timeframe == tf,
+                OhlcvBar.source == "alpaca",
+                OhlcvBar.adjusted.is_(False)))).all()
+    }
+    for r in raw:
+        t = _parse_dt(r["t"])
+        if t not in existing_times:
+            session.add(OhlcvBar(
+                instrument_id=inst.id, timeframe=tf, time=t,
+                open=r["o"], high=r["h"], low=r["l"],
+                close=r["c"], volume=r.get("v"),
+                adjusted=False, source="alpaca"))
+            existing_times.add(t)
+    await session.flush()
+    run.records_in = run.records_ok = len(raw)
+    run.records_quarantined = 0
+    run.status = "success"
+    run.finished_at = utcnow()
+    await mark_sync(session, provider, f"market:{symbol}", True)
+    return run
