@@ -31,6 +31,7 @@ from app.models.instruments import Instrument
 from app.models.market import OhlcvBar
 from app.models.risk import (
     LimitConfig, PyramidTradeRec, RiskCheck, SleeveState)
+from app.services import qualification as qual
 from app.services import risk_engine as re_
 from app.services import technical as ti
 from app.services.monitoring import emit_alert
@@ -193,8 +194,8 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
         .where(PyramidTradeRec.state.in_(_MAINTAIN_STATES)))).all()
 
     out = {"processed": 0, "tightened": 0, "added": 0, "stopped": 0,
-           "add_blocked": 0, "stale_skipped": 0, "errors": 0,
-           "actions": []}
+           "add_blocked": 0, "stale_skipped": 0, "exits": 0,
+           "errors": 0, "actions": []}
     for rec, inst in recs:
         out["processed"] += 1
         try:
@@ -234,6 +235,69 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
                       for b in reversed(bars)]
             atr = ti.atr(t_bars, 14) or rec.atr_initial
             close = float(last.close)
+
+            # ── independent exits (doc Step 20) — a position does not
+            # stay open on chart strength alone. Two re-tests every
+            # close: fundamentals (four_m proxies) and valuation zone
+            # (price ≥ sticker → "VALUATION EXIT / DO NOT ADD").
+            # Missing data is NOT deterioration — an unresearched name
+            # can't be condemned by a gate that couldn't see it. ──
+            exit_reason = None
+            try:
+                gate = await qual.qualification_gate(
+                    db, inst, price=close)
+                has_fund = any(
+                    isinstance(row, dict)
+                    and any(row.get(h) is not None
+                            for h in ("10y", "5y", "3y", "1y",
+                                      "latest"))
+                    for row in gate["five_numbers"].values())
+                reasons = []
+                if has_fund and not gate["four_ms"]["pass"]:
+                    # deterioration = pass → fail. Only a position that
+                    # was TRADE_ELIGIBLE at entry has a passing
+                    # baseline; a never-qualified record gets a review
+                    # alert, not an auto-liquidation on a proxy.
+                    qualified = ((rec.params or {}).get("eligibility")
+                                 == "TRADE_ELIGIBLE")
+                    if qualified:
+                        reasons.append("fundamental deterioration "
+                                       "(four_ms)")
+                    else:
+                        await emit_alert(
+                            db, severity="warning",
+                            source="monitor:trading",
+                            message=(f"{inst.symbol}: four_ms failing "
+                                     "with no passing baseline — "
+                                     "fundamental review required"),
+                            dedup_key=f"pyr_fund:{inst.symbol}:{rec.id}",
+                            instrument_id=inst.id,
+                            action="review fundamentals — position "
+                                   "predates the qualification gate")
+                if (gate["valuation"]["rule1"].get("zone")
+                        == "VALUATION_EXIT"):
+                    reasons.append("valuation exit (price ≥ sticker)")
+                exit_reason = " + ".join(reasons) or None
+            except Exception:
+                exit_reason = None        # gate failure ≠ exit signal
+            if exit_reason:
+                rec.state = "closed"
+                rec.events = [
+                    *(rec.events or []),
+                    f"{now.isoformat()[:10]} EXIT — {exit_reason} "
+                    f"@ {close:.2f}"]
+                out["exits"] += 1
+                out["actions"].append(
+                    {"symbol": inst.symbol,
+                     "event": f"independent exit — {exit_reason}"})
+                await emit_alert(
+                    db, severity="warning", source="monitor:trading",
+                    message=(f"{inst.symbol}: EXIT — {exit_reason} "
+                             f"@ {close:.2f}"),
+                    dedup_key=f"pyr_exit:{inst.symbol}:{rec.id}",
+                    instrument_id=inst.id,
+                    action="position closed by non-ATR exit rule")
+                continue
 
             t = _rebuild(rec)
             events_before = len(t.events)

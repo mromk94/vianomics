@@ -641,6 +641,15 @@ def check_order(
                     round(float(order_margin), 2),
                     f"<= free {st['free_margin']:,.0f}",
                     remediation="no sleeve margin headroom"))
+            # Step-17 regime check — entries and pyramid adds are
+            # refused while the market regime is hostile; exits are
+            # never gated by regime (side==buy reaches here only)
+            if pf.get("market_regime") == "risk_off":
+                breaches.append(Breach(
+                    "sleeve_macro_risk_off", pf.get("market_regime"),
+                    "market_regime != risk_off",
+                    remediation="risk-off regime — no new sleeve "
+                                "exposure until regime clears"))
         # max position count
         lim = L.get("max_positions")
         if lim is not None and order["symbol"] not in {

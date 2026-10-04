@@ -83,6 +83,17 @@ async def trade_eligibility(
     if entry is None:
         entry = tech.get("last_close") or price
 
+    # ── macro regime — the doc's Step-9 gate ("Macro Regime: PASS").
+    # Persisted RegimeRun rides pf_ctx; a missing run skips (flagged),
+    # a risk-off market regime is a real blocker. ──
+    regime = pf_ctx.get("market_regime")
+    macro_gate = {
+        "pass": regime != "risk_off",
+        "market_regime": regime,
+        "econ_regime": pf_ctx.get("econ_regime"),
+        "skipped": regime is None,
+    }
+
     # ── sleeve margin + portfolio capacity ──
     sleeve = pf_ctx.get("sleeve") or {}
     margin_gate = {"pass": True, "skipped": True}
@@ -152,6 +163,7 @@ async def trade_eligibility(
                       "mos_price": gate["valuation"]["rule1"]["mos_price"],
                       "price": price},
         "technical": tech,
+        "macro": macro_gate,
         "margin": margin_gate,
         "portfolio": portfolio_gate,
     }
@@ -163,6 +175,8 @@ async def trade_eligibility(
         blocking.append("valuation_insufficient_data")
     if tech["decision"] == "invalid_data":
         blocking.append("technical_invalid_data")
+    if not macro_gate["pass"]:
+        blocking.append("macro_risk_off")
     if sleeve.get("enabled"):
         if portfolio_gate.get("cooldown"):
             blocking.append("sleeve_cooldown")
@@ -186,6 +200,8 @@ async def trade_eligibility(
         verdict = "WATCHLIST"  # qualified company, price above MOS
     elif not tech["pass"]:
         verdict = "WATCHLIST"  # at/below MOS, waiting on timing
+    elif not macro_gate["pass"]:
+        verdict = "WATCHLIST"  # idea stands, regime hostile
     elif capacity_blocked:
         # every idea-gate passed — the sleeve itself is full
         verdict = "BLOCKED"

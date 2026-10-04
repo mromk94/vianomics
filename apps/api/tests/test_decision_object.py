@@ -151,7 +151,8 @@ async def test_stage_results_complete(db, inst, monkeypatch):
     _stub_technical(monkeypatch, "wait")
     o = await dobj.decision_object(db, inst, _ctx())
     assert set(o["stages"]) == {"quality", "valuation", "technical",
-                                "margin", "portfolio", "sleeve"}
+                                "macro", "margin", "portfolio",
+                                "sleeve"}
     assert o["stages"]["valuation"]["mos_price"] == 200.0
     assert o["stages"]["technical"]["decision"] == "wait"
     assert o["decision"] == "WATCH"

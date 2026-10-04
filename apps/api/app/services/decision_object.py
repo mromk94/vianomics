@@ -116,6 +116,7 @@ async def decision_object(
                 "pass": tech.get("pass"),
                 "decision": tech.get("decision"),
                 "data_fresh": tech.get("data_fresh")},
+            "macro": e["gates"].get("macro"),
             "margin": e["gates"].get("margin"),
             "portfolio": e["gates"].get("portfolio"),
             "sleeve": {

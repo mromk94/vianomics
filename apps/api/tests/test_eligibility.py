@@ -135,6 +135,35 @@ async def test_technical_wait_is_watchlist(db, inst, sleeve_cfg,
     assert e["gates"]["technical"]["pass"] is False
 
 
+async def test_macro_risk_off_blocks_eligibility(db, inst, sleeve_cfg,
+                                                 monkeypatch):
+    """Doc Step 9 — Macro Regime is a named gate; risk_off blocks
+    entries the same way a capacity constraint does (idea gates
+    passed → WATCHLIST, not BLOCKED)."""
+    await _make_eligible_fundamentals(db, inst)
+    _stub_technical(monkeypatch, "entry_signal", atr=10, close=100)
+    ctx = _ctx(sleeve_cfg)
+    ctx["market_regime"] = "risk_off"
+    e = await elig.trade_eligibility(db, inst, ctx,
+                                     entry=100, atr=10)
+    assert e["verdict"] == "WATCHLIST"
+    assert e["gates"]["macro"]["pass"] is False
+    assert "macro_risk_off" in e["blocking"]
+
+
+async def test_macro_missing_skips_not_blocks(db, inst, sleeve_cfg,
+                                              monkeypatch):
+    """No persisted regime → the gate is skipped (flagged), never a
+    phantom blocker."""
+    await _make_eligible_fundamentals(db, inst)
+    _stub_technical(monkeypatch, "entry_signal", atr=10, close=100)
+    e = await elig.trade_eligibility(db, inst, _ctx(sleeve_cfg),
+                                     entry=100, atr=10)
+    assert e["gates"]["macro"]["skipped"] is True
+    assert e["gates"]["macro"]["pass"] is True
+    assert e["verdict"] == "TRADE_ELIGIBLE"
+
+
 async def test_above_mos_is_watchlist_not_eligible(db, inst, sleeve_cfg,
                                                    monkeypatch):
     # price 180 > MOS 100 → qualified but not at the buy price
@@ -214,7 +243,7 @@ async def test_object_shape_is_machine_readable(db, inst, sleeve_cfg,
     _stub_technical(monkeypatch, "wait")
     e = await elig.trade_eligibility(db, inst, _ctx(sleeve_cfg))
     assert set(e["gates"]) == {"quality", "valuation", "technical",
-                               "margin", "portfolio"}
+                               "macro", "margin", "portfolio"}
     assert isinstance(e["blocking"], list)
     assert e["qualification_verdict"] in (
         "TRADE_ELIGIBLE", "WATCHLIST", "WATCH", "REJECTED")

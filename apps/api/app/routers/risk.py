@@ -295,6 +295,8 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
         "max_dd": None,
         "vix": regime.vix if regime else None,
         "fear_greed": regime.fear_greed if regime else None,
+        "market_regime": (regime.market_regime if regime else None),
+        "econ_regime": regime.econ_regime if regime else None,
         "as_of": utcnow().isoformat(),
     }
     # Layer-IV sleeve ledger rides on the shared context so every
