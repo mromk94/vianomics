@@ -229,3 +229,15 @@ async def qualification(symbol: str, db: AsyncSession = Depends(get_db)
     from app.services import qualification as qual
     inst = await _inst(db, symbol)
     return await qual.gate_with_price(db, inst)
+
+
+@router.get("/decision/{symbol}")
+async def decision(symbol: str, db: AsyncSession = Depends(get_db)
+                   ) -> dict:
+    """Step-25 Decision Object — the standardized machine-readable
+    verdict: stage results (quality/valuation/technical/margin/
+    portfolio/sleeve), confidence, blocking reasons, risk flags,
+    CIO advisory (never a gate override), approval_required=True."""
+    from app.services import decision_object as dobj
+    inst = await _inst(db, symbol)
+    return await dobj.decision_object(db, inst)

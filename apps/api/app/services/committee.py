@@ -75,6 +75,16 @@ async def gather_ctx(db: AsyncSession, inst: Instrument,
          "sector": sec.name if sec else None,
          "notional": max(1_000, risk_ctx["nav"] * 0.02)}, risk_ctx)
 
+    # Layer-IV gates — qualification + eligibility are inputs to the
+    # CIO record, never overrides of them
+    eligibility = None
+    try:
+        from app.services import eligibility as elig_svc
+        eligibility = await elig_svc.trade_eligibility(
+            db, inst, risk_ctx)
+    except Exception:
+        eligibility = None
+
     # green zone latest score for this instrument
     gz = (
         await db.execute(
@@ -109,6 +119,7 @@ async def gather_ctx(db: AsyncSession, inst: Instrument,
         "risk_gate": gate,
         "green_zone": green_zone,
         "in_universe": in_univ,
+        "eligibility": eligibility,
     }
 
 
@@ -284,7 +295,15 @@ async def run_committee(
         gate_results={"conflict": conflict,
                       "tree": tree,
                       "entry_protocol": entry,
-                      "risk_gate": ctx["risk_gate"]["breaches"]},
+                      "risk_gate": ctx["risk_gate"]["breaches"],
+                      "eligibility": (
+                          {"verdict": ctx["eligibility"]["verdict"],
+                           "blocking":
+                               ctx["eligibility"]["blocking"],
+                           "qualification":
+                               ctx["eligibility"]
+                                   ["qualification_verdict"]}
+                          if ctx.get("eligibility") else None)},
         agent_scores={k: r.score for k, r in reports.items() if r},
         numbers={**{
             "price": ctx["price"],
