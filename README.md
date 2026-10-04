@@ -62,8 +62,10 @@ apps/
     src/
       app/        routes: /[module] shell + /symbol/[ticker]
       components/ one component per workstation page + ui/ primitives
-docs/             runbooks (incl. the MT4 push EA)
-new docs/         canonical specs — SOW, ATR/pyramid workbook, state machines
+docs/             local-only runbooks (incl. the MT4 push EA) —
+                  intentionally untracked
+new docs/         local-only canonical specs — SOW, ATR/pyramid
+                  workbook, state machines — intentionally untracked
 ```
 
 ## Workstation modules
@@ -209,10 +211,10 @@ platform never presents fixture data as live.
 
 ## Documentation
 
-- `docs/` — runbooks, MT4 EA, deployment notes
-- `new docs/` — canonical specifications the implementation is audited
-  against: the SOW, the ATR Calculator workbook, the revised pyramid
-  state machine, and the position-risk engine spec
+- `docs/`, `new docs/` — internal runbooks and canonical
+  specifications (SOW, ATR Calculator workbook, pyramid state
+  machine). **Intentionally untracked** — they are not part of the
+  public repository and are gitignored.
 - `PROJECT_STATUS.md` — module-level status ledger
 
 ---
