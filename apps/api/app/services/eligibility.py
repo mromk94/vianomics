@@ -28,9 +28,11 @@ Verdict ladder:
 
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.instruments import Instrument
+from app.models.risk import PyramidTradeRec
 from app.services import risk_engine as re_
 from app.services import technical_engine as te
 from app.services import qualification as qual
@@ -39,6 +41,46 @@ from app.db.base import utcnow
 D = Decimal
 
 _TL = "TRADE_ELIGIBLE"
+
+# rec states that mean "money is at risk" — seeds aren't positions
+_OPEN_REC_STATES = (
+    "initial_position", "target_1", "position_addition",
+    "target_2", "trailing_exit", "partial_exit")
+
+# eligibility verdict → V1 Step-2 instrument lifecycle. An open
+# position always wins — while money is at risk the state machine,
+# not the idea gate, owns the status.
+_LIFECYCLE = {
+    "TRADE_ELIGIBLE": "trade_eligible",
+    "BLOCKED": "trade_eligible",      # eligible idea, sleeve full
+    "WATCHLIST": "watchlist",
+    "WATCH": "under_research",        # proof incomplete → keep looking
+    "REJECTED": "rejected",
+    "COOLDOWN": "cooldown",
+}
+
+
+async def persist_lifecycle(db: AsyncSession, inst: Instrument,
+                            verdict: str, gate: dict) -> str:
+    """Durable instrument status — the doc's universe vocabulary.
+    `valuation_pending` when quality passes but no usable run exists;
+    `active_position` while any pyramid leg is open."""
+    open_pos = (await db.execute(
+        select(PyramidTradeRec.id).where(
+            PyramidTradeRec.instrument_id == inst.id,
+            PyramidTradeRec.state.in_(_OPEN_REC_STATES)).limit(1))
+    ).scalar()
+    if open_pos:
+        status = "active_position"
+    elif (gate["valuation"]["status"] == "INSUFFICIENT_DATA"
+          and gate["four_ms"]["pass"]):
+        status = "valuation_pending"
+    else:
+        status = _LIFECYCLE.get(verdict, "watchlist")
+    inst.status = status
+    inst.status_at = utcnow()
+    await db.flush()
+    return status
 
 
 async def trade_eligibility(
@@ -208,10 +250,13 @@ async def trade_eligibility(
     else:
         verdict = _TL
 
+    lifecycle = await persist_lifecycle(db, inst, verdict, gate)
+
     return {
         "symbol": inst.symbol,
         "as_of": utcnow().isoformat(),
         "verdict": verdict,
+        "lifecycle": lifecycle,
         "gates": gates,
         "blocking": blocking,
         "qualification_verdict": qv,

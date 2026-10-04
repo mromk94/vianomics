@@ -468,6 +468,48 @@ async def test_macro_risk_off_blocks_adds(db):
                for b in checks[0].breaches)
 
 
+async def test_stop_exit_marks_instrument_exited(db):
+    """V1 Step-2 lifecycle — the last open leg closing moves the
+    instrument to exited."""
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    await _bars(db, inst, [100] * 40 + [80] * 3)   # close < 85 stop
+    rec = _rec(inst)
+    db.add(rec)
+    await db.flush()
+
+    await pm.maintain_open_pyramids(db)
+    await db.refresh(inst)
+    assert rec.state == "stopped_out"
+    assert inst.status == "exited"
+
+
+async def test_weekly_timeframe_processes_closed_week_only(db):
+    """Doc Phase 0 — a 1w strategy advances only at completed weekly
+    closes; a second sweep in the same week is a no-op."""
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    await _funded_book(db)
+    db.add(LimitConfig(version=1, payload={
+        "sleeve_enabled": True, "min_sectors": 0,
+        "sleeve_atr_timeframe": "1w"}))
+    # ~24 weeks of daily bars — enough for a weekly ATR-14
+    await _bars(db, inst, [100] * 80 + [110] * 40)
+    rec = _rec(inst, target1=9999.0)       # isolate the ratchet
+    db.add(rec)
+    await db.flush()
+
+    out1 = await pm.maintain_open_pyramids(db)
+    assert out1["unchanged_period"] == 0
+    period = (rec.params or {}).get("last_tf_period")
+    assert period is not None             # a completed week was used
+    # same week → nothing new to evaluate
+    out2 = await pm.maintain_open_pyramids(db)
+    assert out2["unchanged_period"] == 1
+
+
 async def test_summary_shape(db):
     inst = Instrument(symbol="TEST", name="T", asset_class="equity")
     db.add(inst)

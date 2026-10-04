@@ -53,6 +53,15 @@ class Instrument(Base, IdMixin, TimestampMixin):
     delisted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+    # V1 Step-2 investment-universe lifecycle — persisted, driven by
+    # the eligibility gate + pyramid state machine:
+    #   watchlist|under_research|rejected|valuation_pending|
+    #   trade_eligible|active_position|exited|cooldown
+    status: Mapped[str] = mapped_column(
+        String(32), default="watchlist", index=True)
+    status_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
     # Contract specification (VAIIP Instrument Master — never
     # hard-code contractSize=1). Equity defaults: CS=1, tick 0.01.
     contract_size: Mapped[float] = mapped_column(

@@ -65,6 +65,8 @@ DEFAULT_LIMITS = {
     "sleeve_gross_stop_pct": 0.04,        # 4% of current gross → all out
                                         # (the tighter stop at low
                                         # deployment — doc Phase 0/2.2)
+    "sleeve_atr_timeframe": "1d",         # 1d|1w|1mo — the pyramid's
+                                        # operating chart (Phase 0)
 }
 
 
@@ -299,6 +301,8 @@ def sleeve_config(limits: "Limits | None" = None) -> dict:
             float(L.get("sleeve_portfolio_stop_pct") or 0.20),
         "gross_stop_pct":
             float(L.get("sleeve_gross_stop_pct") or 0.04),
+        "atr_timeframe":
+            str(L.get("sleeve_atr_timeframe") or "1d"),
     }
 
 
@@ -350,6 +354,10 @@ def sleeve_state(total_equity, sleeve_gross, cfg: dict,
         "effective_leverage": (float(gross / eq) if eq > 0 else None),
         "open_positions": open_positions,
         "margin_call_at_gross": (float(margin_call_at)
+                                 if margin_call_at else None),
+        # doc Step-11 metric — how much gross headroom stands between
+        # the book and a broker margin call at current equity
+        "margin_call_distance": (float(margin_call_at - gross)
                                  if margin_call_at else None),
     }
 

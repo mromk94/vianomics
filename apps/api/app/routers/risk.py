@@ -667,6 +667,8 @@ async def create_pyramid(
                                 if eligibility else None),
                 "force_override": body.force})
     db.add(rec)
+    # V1 Step-2 lifecycle — the name is now a position, not an idea
+    inst.status, inst.status_at = "active_position", utcnow()
     await audit(
         db, action=("pyramid.create.override" if body.force
                     else "pyramid.create"), actor=user,

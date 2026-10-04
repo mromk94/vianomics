@@ -164,6 +164,39 @@ async def test_macro_missing_skips_not_blocks(db, inst, sleeve_cfg,
     assert e["verdict"] == "TRADE_ELIGIBLE"
 
 
+async def test_lifecycle_persists_verdict_status(db, inst, sleeve_cfg,
+                                                 monkeypatch):
+    """V1 Step-2 — the eligibility verdict drives the durable
+    instrument status."""
+    await _make_eligible_fundamentals(db, inst)
+    _stub_technical(monkeypatch, "entry_signal", atr=10, close=100)
+    e = await elig.trade_eligibility(db, inst, _ctx(sleeve_cfg),
+                                     entry=100, atr=10)
+    assert e["lifecycle"] == "trade_eligible"
+    await db.refresh(inst)
+    assert inst.status == "trade_eligible"
+    assert inst.status_at is not None
+
+
+async def test_lifecycle_open_position_wins(db, inst, sleeve_cfg,
+                                            monkeypatch):
+    """Money at risk outranks the idea gate — an open pyramid makes
+    the status active_position even when the verdict drops."""
+    from app.models.risk import PyramidTradeRec
+    await _make_eligible_fundamentals(db, inst)
+    db.add(PyramidTradeRec(
+        instrument_id=inst.id, state="initial_position", entry=100.0,
+        atr_initial=10.0, shares=10, stop=85.0, target1=130.0,
+        t2_policy="trailing", additions=0,
+        engine_version="risk-pyramid/v2.0", events=[], params={}))
+    await db.flush()
+    _stub_technical(monkeypatch, "wait")
+    e = await elig.trade_eligibility(db, inst, _ctx(sleeve_cfg),
+                                     entry=100, atr=10)
+    assert e["verdict"] == "WATCHLIST"       # no timing signal
+    assert e["lifecycle"] == "active_position"
+
+
 async def test_above_mos_is_watchlist_not_eligible(db, inst, sleeve_cfg,
                                                    monkeypatch):
     # price 180 > MOS 100 → qualified but not at the buy price

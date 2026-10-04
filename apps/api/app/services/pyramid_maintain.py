@@ -138,6 +138,19 @@ async def _sleeve_ctx(db: AsyncSession, nav: float,
     return out
 
 
+async def _mark_exited(db: AsyncSession, inst: Instrument,
+                       now) -> None:
+    """Instrument status on position close — EXITED only when no
+    other pyramid record on the same name is still open."""
+    still_open = (await db.execute(
+        select(PyramidTradeRec.id).where(
+            PyramidTradeRec.instrument_id == inst.id,
+            PyramidTradeRec.state.in_(_MAINTAIN_STATES)).limit(1))
+    ).scalar()
+    if not still_open:
+        inst.status, inst.status_at = "exited", now
+
+
 async def _liquidate_sleeve(db: AsyncSession, reason: str) -> int:
     """Portfolio stop is absolute — mark every open sleeve position
     closed, drop the lifecycle row into cooldown, alert. Order
@@ -161,6 +174,9 @@ async def _liquidate_sleeve(db: AsyncSession, reason: str) -> int:
                       f"{now.isoformat()[:10]} PORTFOLIO STOP — "
                       f"liquidated all {rec.shares}sh "
                       f"@{float(px) if px else 'last'} ({reason})"]
+        # liquidated names go to instrument COOLDOWN — the doc's
+        # post-risk-event universe state; release is sleeve-level
+        inst.status, inst.status_at = "cooldown", now
         n += 1
     life = await get_sleeve_state(db)
     life.state = "cooldown"
@@ -195,7 +211,13 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
 
     out = {"processed": 0, "tightened": 0, "added": 0, "stopped": 0,
            "add_blocked": 0, "stale_skipped": 0, "exits": 0,
-           "errors": 0, "actions": []}
+           "unchanged_period": 0, "errors": 0, "actions": []}
+    # doc Phase 0 — the strategy's ATR timeframe is a config, not a
+    # constant: 1d (default), 1w or 1mo. Wider frames need a deep
+    # enough daily pull to resample (monthly ATR-14 wants ~15 closed
+    # months ≈ 330 sessions).
+    tf = (sleeve.get("config") or {}).get("atr_timeframe", "1d")
+    bar_limit = 60 if tf == "1d" else 450
     for rec, inst in recs:
         out["processed"] += 1
         try:
@@ -203,7 +225,7 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
                 select(OhlcvBar)
                 .where(OhlcvBar.instrument_id == inst.id,
                        OhlcvBar.timeframe == "1d")
-                .order_by(OhlcvBar.time.desc()).limit(60))
+                .order_by(OhlcvBar.time.desc()).limit(bar_limit))
             ).scalars().all()
             if not bars:
                 rec.events = [*(rec.events or []),
@@ -229,12 +251,51 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
                     action="refresh bars before next close")
                 continue
 
-            t_bars = [ti.Bar(t=b.time, o=float(b.open), h=float(b.high),
-                             l=float(b.low), c=float(b.close),
-                             v=float(b.volume or 0))
-                      for b in reversed(bars)]
-            atr = ti.atr(t_bars, 14) or rec.atr_initial
-            close = float(last.close)
+            t_bars_all = [ti.Bar(t=b.time, o=float(b.open),
+                                 h=float(b.high), l=float(b.low),
+                                 c=float(b.close),
+                                 v=float(b.volume or 0))
+                          for b in reversed(bars)]
+            # doc Phase 3: the state machine runs "at every timeframe
+            # close" — for 1w/1mo configs that means only COMPLETED
+            # periods; the still-open period is dropped and a sweep in
+            # an already-processed period is a no-op.
+            tf_period_key = None
+            if tf in ("1w", "1mo"):
+                from app.services.atr import _resample
+                groups = _resample(
+                    [{"time": b.t, "open": b.o, "high": b.h,
+                      "low": b.l, "close": b.c} for b in t_bars_all],
+                    tf)
+                now_key = (now.isocalendar()[:2] if tf == "1w"
+                           else (now.year, now.month))
+
+                def _key(g):
+                    t = g["time"]
+                    return (t.isocalendar()[:2] if tf == "1w"
+                            else (t.year, t.month))
+
+                closed_groups = [g for g in groups
+                                 if _key(g) != now_key]
+                if not closed_groups:
+                    rec.events = [*(rec.events or []),
+                                  f"{now.isoformat()[:10]} maintain: "
+                                  f"no closed {tf} period yet"]
+                    continue
+                tf_period_key = list(_key(closed_groups[-1]))
+                if (rec.params or {}).get("last_tf_period") \
+                        == tf_period_key:
+                    out["unchanged_period"] += 1
+                    continue
+                t_bars = [ti.Bar(t=g["time"], o=g["open"], h=g["high"],
+                                 l=g["low"], c=g["close"], v=0.0)
+                          for g in closed_groups]
+                atr = ti.atr(t_bars, 14) or rec.atr_initial
+                close = float(closed_groups[-1]["close"])
+            else:
+                t_bars = t_bars_all
+                atr = ti.atr(t_bars, 14) or rec.atr_initial
+                close = float(last.close)
 
             # ── independent exits (doc Step 20) — a position does not
             # stay open on chart strength alone. Two re-tests every
@@ -286,6 +347,8 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
                     *(rec.events or []),
                     f"{now.isoformat()[:10]} EXIT — {exit_reason} "
                     f"@ {close:.2f}"]
+                # no open pyramid legs left on this name → EXITED
+                await _mark_exited(db, inst, now)
                 out["exits"] += 1
                 out["actions"].append(
                     {"symbol": inst.symbol,
@@ -338,13 +401,16 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
             rec.params = {**(rec.params or {}),
                           "leg_shares": t.leg_shares,
                           "leg_fills": t.leg_fills,
-                          "atr_current": t.atr_current}
+                          "atr_current": t.atr_current,
+                          **({"last_tf_period": tf_period_key}
+                             if tf_period_key else {})}
             rec.engine_version = re_.ENGINE_VERSION
 
             new_events = t.events[events_before:]
             if t.state == re_.PyramidState.STOPPED \
                     and prior_state != re_.PyramidState.STOPPED:
                 out["stopped"] += 1
+                await _mark_exited(db, inst, now)
                 await emit_alert(
                     db, severity="critical", source="monitor:trading",
                     message=(f"{inst.symbol}: pyramid STOPPED OUT @ "
