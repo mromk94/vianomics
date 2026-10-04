@@ -9,12 +9,14 @@ export function Dialog({
   title,
   children,
   wide = false,
+  size,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: React.ReactNode;
   wide?: boolean;
+  size?: "md" | "lg" | "xl" | "full";
 }) {
   const ref = useRef<HTMLDialogElement>(null);
 
@@ -33,17 +35,22 @@ export function Dialog({
     return () => el.removeEventListener("cancel", onCancel);
   }, [onClose]);
 
+  const sz = size ?? (wide ? "lg" : "md");
+  const maxW = sz === "full" ? "max-w-[96vw]"
+    : sz === "xl" ? "max-w-5xl"
+    : sz === "lg" ? "max-w-3xl" : "max-w-lg";
+
   return (
     <dialog
       ref={ref}
       onClick={(e) => {
         if (e.target === ref.current) onClose();
       }}
-      className={`backdrop:bg-black/60 m-auto w-full rounded-md border border-border bg-surface p-0 text-text ${
-        wide ? "max-w-3xl" : "max-w-lg"
-      }`}
+      /* opaque bg — content must stay readable over the page; nearly
+         full-viewport on mobile */
+      className={`backdrop:bg-black/75 m-auto h-fit max-h-[94dvh] w-[96vw] overflow-y-auto rounded-md border border-border bg-[#0b0f1a] p-0 text-text shadow-2xl ${maxW}`}
     >
-      <header className="flex items-center justify-between border-b border-border px-4 py-3">
+      <header className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-[#0b0f1a] px-4 py-3">
         <h2 className="text-sm font-semibold">{title}</h2>
         <button
           onClick={onClose}

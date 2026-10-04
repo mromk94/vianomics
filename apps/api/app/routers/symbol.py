@@ -130,6 +130,56 @@ async def symbol_detail(symbol: str, db: AsyncSession = Depends(get_db)) -> dict
                        if d.created_at else None,
                        "sections": nsec}
 
+    # market-intelligence signal surface (same math as /market/signals)
+    sig = None
+    if inst:
+        try:
+            from app.services import market_signals as ms
+            sig = await ms.signal_row(db, inst)
+        except Exception:
+            pass
+
+    # latest fundamentals per concept (SEC facts)
+    fundamentals = []
+    if inst:
+        try:
+            from app.models.fundamentals import FundamentalObservation as FO
+            rn = func.row_number().over(
+                partition_by=FO.concept,
+                order_by=(FO.period_end.desc(), FO.published_at.desc())
+            ).label("rn")
+            sub = select(FO.concept, FO.period_end, FO.value,
+                         FO.unit, rn).where(
+                FO.instrument_id == inst.id).subquery()
+            fundamentals = [
+                {"concept": r.concept,
+                 "period_end": (r.period_end.isoformat()
+                                if r.period_end else None),
+                 "value": float(r.value) if r.value is not None else None,
+                 "unit": r.unit}
+                for r in (await db.execute(
+                    select(sub).where(sub.c.rn == 1))).all()]
+            fundamentals.sort(key=lambda f: f["concept"])
+        except Exception:
+            pass
+
+    # open pyramid records for this instrument
+    pyramids = []
+    if inst:
+        from app.models.risk import PyramidTradeRec
+        pyramids = [
+            {"id": r.id, "state": r.state, "entry": r.entry,
+             "shares": r.shares, "stop": r.stop, "target1": r.target1,
+             "additions": r.additions,
+             "atr_current": (r.params or {}).get("atr_current")}
+            for r in (await db.execute(
+                select(PyramidTradeRec).where(
+                    PyramidTradeRec.instrument_id == inst.id,
+                    PyramidTradeRec.state.not_in(
+                        ["closed", "stopped_out", "rejected"]))
+                .order_by(PyramidTradeRec.created_at.desc()))
+            ).scalars().all()]
+
     return {
         "symbol": sym,
         "in_master": inst is not None,
@@ -143,4 +193,7 @@ async def symbol_detail(symbol: str, db: AsyncSession = Depends(get_db)) -> dict
         "technical": tech,
         "valuation": val,
         "dossier": dossier,
+        "signals": sig,
+        "fundamentals": fundamentals,
+        "pyramids": pyramids,
     }

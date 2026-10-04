@@ -75,12 +75,17 @@ def _resample(bars: list[dict], period: str) -> list[dict]:
     return out
 
 
-def _frame_report(bars: list[dict]) -> dict:
-    """ATR metrics for one timeframe's bar set."""
+def _frame_report(bars: list[dict], period: int = ATR_PERIOD) -> dict:
+    """ATR metrics for one timeframe's bar set at a given period —
+    the workbook's ATR column is a rolling SMA_n(TR); horizon windows
+    are averages OF that ATR% series (not of raw TR)."""
     trs = _tr_series(bars)
     closes = [b["close"] for b in bars]
     tr_pcts = [t / c for t, c in zip(trs, closes) if c]
-    atr_abs = _sma(trs, ATR_PERIOD)
+    # per-bar ATR% series — mean of trailing `period` TRs / that bar's close
+    atr_pcts = [sum(trs[i - period + 1:i + 1]) / period / closes[i]
+                for i in range(period - 1, len(bars)) if closes[i]]
+    atr_abs = _sma(trs, period)
     last_c = closes[-1] if closes else None
     atr_pct = (atr_abs / last_c
                if atr_abs is not None and last_c else None)
@@ -88,15 +93,22 @@ def _frame_report(bars: list[dict]) -> dict:
         "bars": len(bars), "last_close": last_c,
         "atr_abs": atr_abs,
         "atr_pct": atr_pct,
+        "atr_pct_series": atr_pcts,
         "tr_pcts": tr_pcts,
+        "period": period,
         "last_time": bars[-1]["time"].isoformat() if bars else None,
     }
 
 
-async def atr_report(db: AsyncSession, symbol: str) -> dict | None:
-    """Full ATR Output sheet for a symbol. Returns None when the
-    instrument isn't in the security master; reports honest
-    insufficiency when bar history is short."""
+async def atr_report(db: AsyncSession, symbol: str,
+                     d: int = ATR_PERIOD, w: int = ATR_PERIOD,
+                     m: int = ATR_PERIOD) -> dict | None:
+    """Full ATR Output sheet for a symbol — daily/weekly/monthly ATR
+    each at its own editable period (the UI exposes 3d/8d/2w/5m…).
+    Returns None when the instrument isn't in the security master;
+    reports honest insufficiency when bar history is short."""
+    d = max(1, min(d, 200)); w = max(1, min(w, 200))
+    m = max(1, min(m, 60))
     inst = (await db.execute(
         select(Instrument).where(Instrument.symbol == symbol.upper()))
     ).scalar_one_or_none()
@@ -111,17 +123,18 @@ async def atr_report(db: AsyncSession, symbol: str) -> dict | None:
     bars = [{"time": r[0], "open": float(r[1]), "high": float(r[2]),
              "low": float(r[3]), "close": float(r[4])} for r in rows]
 
-    if len(bars) < ATR_PERIOD + 1:
+    need = max(d, 2) + 1
+    if len(bars) < need:
         return {
             "symbol": inst.symbol,
             "as_of": datetime.now(UTC).isoformat(),
             "bars": len(bars), "insufficient": True,
-            "note": f"needs ≥{ATR_PERIOD + 1} daily bars, has {len(bars)}",
+            "note": f"needs ≥{need} daily bars, has {len(bars)}",
         }
 
-    daily = _frame_report(bars)
-    weekly = _frame_report(_resample(bars, "1w"))
-    monthly = _frame_report(_resample(bars, "1mo"))
+    daily = _frame_report(bars, d)
+    weekly = _frame_report(_resample(bars, "1w"), w)
+    monthly = _frame_report(_resample(bars, "1mo"), m)
 
     return {
         "symbol": inst.symbol, "name": inst.name,
@@ -130,21 +143,25 @@ async def atr_report(db: AsyncSession, symbol: str) -> dict | None:
         "daily": {
             "atr_abs": daily["atr_abs"],
             "atr_pct": daily["atr_pct"],
-            "windows": _window_avgs(daily["tr_pcts"], DAILY_WINDOWS),
+            "period": d,
+            "windows": _window_avgs(daily["atr_pct_series"], DAILY_WINDOWS),
             "bars": daily["bars"],
         },
         "weekly": {
             "atr_abs": weekly["atr_abs"],
             "atr_pct": weekly["atr_pct"],
-            "windows": _window_avgs(weekly["tr_pcts"], WEEKLY_WINDOWS),
+            "period": w,
+            "windows": _window_avgs(weekly["atr_pct_series"], WEEKLY_WINDOWS),
             "bars": weekly["bars"],
         },
         "monthly": {
             "atr_abs": monthly["atr_abs"],
             "atr_pct": monthly["atr_pct"],
-            "windows": _window_avgs(monthly["tr_pcts"], MONTHLY_WINDOWS),
+            "period": m,
+            "windows": _window_avgs(monthly["atr_pct_series"], MONTHLY_WINDOWS),
             "bars": monthly["bars"],
         },
+        "periods": {"daily": d, "weekly": w, "monthly": m},
         # engine contract — the pyramid state machine consumes these
         "pyramid": {
             "stop_mult": 1.5, "target_mult": 3.0,

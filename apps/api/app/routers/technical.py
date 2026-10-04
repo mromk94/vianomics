@@ -34,7 +34,7 @@ async def signal(symbol: str, db: AsyncSession = Depends(get_db)) -> dict:
 @router.get("/bars/{symbol}")
 async def bars(
     symbol: str,
-    timeframe: str = Query("1d", pattern="^(1d|2d|3d|1w|1mo)$"),
+    timeframe: str = Query("1d", pattern="^(1d|2d|3d|1w|1mo|1y)$"),
     limit: int = Query(400, le=2000),
     db: AsyncSession = Depends(get_db),
 ) -> dict:

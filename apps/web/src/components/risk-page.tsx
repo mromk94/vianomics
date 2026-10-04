@@ -10,6 +10,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { PageHeader } from "@/components/ui/page-header";
 import { Sym } from "@/components/symbol-drawer";
+import { PyramidModal } from "@/components/pyramid-modal";
 import { SectionCard } from "@/components/ui/section-card";
 import { SkeletonRows } from "@/components/ui/skeleton";
 import { StatusBadge } from "@/components/ui/status-badge";
@@ -122,6 +123,7 @@ export function RiskPage() {
   const [limitsCfg, setLimitsCfg] = useState<{ version: number; limits: Record<string, number>; source: string } | null>(null);
   const [limEdit, setLimEdit] = useState<Record<string, string>>({});
   const [limEditing, setLimEditing] = useState(false);
+  const [pyrOpen, setPyrOpen] = useState(false);
 
   const load = () => {
     setError(null);
@@ -169,7 +171,12 @@ export function RiskPage() {
   return (
     <div className="space-y-4">
       <PageHeader title="Risk Center" info='Portfolio risk health — drawdown, sector and position concentration, correlation, VaR and stress tests. Breaching a limit blocks the order — risk vetoes are absolute.' subtitle={`${c?.engine ?? ""} — hard limits enforced at the gate; AI cannot override`}
-        meta={c ? `NAV $${fmtNum(c.nav, 0)} · ${c.open_pyramid_trades} open pyramid trades` : undefined} />
+        meta={c ? `NAV $${fmtNum(c.nav, 0)} · ${c.open_pyramid_trades} open pyramid trades` : undefined}
+        actions={
+          <button onClick={() => setPyrOpen(true)}
+            className="rounded-full bg-accent px-4 py-1.5 text-[12px] font-semibold text-[#0b0f1a] hover:brightness-110">
+            Pyramid calculator
+          </button>} />
       {notice && <div className="glass border-warn/40 p-3 text-[13px] text-warn">{notice}</div>}
       {error && <ErrorState title="API error" detail={error} onRetry={load} />}
       {loading && <SkeletonRows />}
@@ -545,6 +552,8 @@ export function RiskPage() {
           </SectionCard>
         </>
       )}
+      <PyramidModal open={pyrOpen} onClose={() => setPyrOpen(false)}
+        onCreated={load} />
     </div>
   );
 }

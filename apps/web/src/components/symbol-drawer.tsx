@@ -100,9 +100,15 @@ export function SymbolDrawer() {
               {[d?.sector, d?.exchange, d?.asset_class].filter(Boolean).join(" · ") || (d ? "not in security master" : "…")}
             </div>
           </div>
-          <button onClick={() => setSym(null)} className="rounded-full p-1.5 text-dim hover:text-text">
-            <X className="size-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <a href={`/symbol/${sym}`}
+              className="rounded-full border border-border px-2.5 py-0.5 text-[10px] text-dim hover:text-text">
+              full page →
+            </a>
+            <button onClick={() => setSym(null)} className="rounded-full p-1.5 text-dim hover:text-text">
+              <X className="size-4" />
+            </button>
+          </div>
         </div>
 
         {err && <div className="m-4 rounded-lg border border-warn/40 p-3 text-[12px] text-warn">{err}</div>}

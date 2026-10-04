@@ -4,7 +4,7 @@ this gate; an AI agent call cannot approve)."""
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -623,13 +623,19 @@ async def advance_pyramid(
 # ── ATR output sheet + pyramid preview ──
 
 @router.get("/atr/{symbol}")
-async def atr_output(symbol: str,
-                     db: AsyncSession = Depends(get_db)) -> dict:
-    """The docs' 'ATR Output' sheet — SMA14(TR) in absolute + % terms,
+async def atr_output(
+    symbol: str,
+    d: int = Query(14, ge=1, le=200),
+    w: int = Query(14, ge=1, le=200),
+    m: int = Query(14, ge=1, le=60),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The docs' 'ATR Output' sheet — SMA_n(TR) in absolute + % terms,
     horizon windows (6d→576d, 12w→156w, 6m→60m), and the pyramid
-    stop/target the state machine would place at the last close."""
+    stop/target the state machine would place at the last close.
+    d/w/m are the editable periods (default 14, the canonical spec)."""
     from app.services import atr as atr_svc
-    rep = await atr_svc.atr_report(db, symbol)
+    rep = await atr_svc.atr_report(db, symbol, d=d, w=w, m=m)
     if rep is None:
         raise HTTPException(404, f"{symbol} not in security master")
     return rep
@@ -662,6 +668,7 @@ class PyramidPreviewIn(BaseModel):
     entry: float | None = Field(None, gt=0)     # default: last close
     equity: float | None = Field(None, gt=0)    # default: live NAV
     cash: float | None = None                   # default: live cash
+    atr_override: float | None = Field(None, gt=0)  # edited-period ATR
 
 
 @router.post("/pyramid/preview")
@@ -692,7 +699,9 @@ async def pyramid_preview(
     if equity <= 0:
         raise HTTPException(
             422, "no portfolio equity — pass `equity` explicitly")
-    atr_abs = rep["daily"]["atr_abs"]
+    # UI sends the displayed ATR when the user edits the SMA period —
+    # keeps the risk sheet consistent with the shown ATR Output.
+    atr_abs = body.atr_override or rep["daily"]["atr_abs"]
     adv_shares = (float(inst.avg_dollar_volume_30d) / entry
                   if inst.avg_dollar_volume_30d and entry else None)
 
@@ -714,7 +723,9 @@ async def pyramid_preview(
     return {
         "symbol": inst.symbol,
         "as_of": rep["as_of"],
-        "atr": {"abs": atr_abs, "pct": rep["daily"]["atr_pct"],
+        "atr": {"abs": atr_abs,
+                "pct": (atr_abs / entry if entry else None)
+                if body.atr_override else rep["daily"]["atr_pct"],
                 "weekly_pct": rep["weekly"]["atr_pct"]},
         "inputs": {"entry": entry, "equity": equity, "cash": cash,
                    "risk_pct": body.risk_pct},

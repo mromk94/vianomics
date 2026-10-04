@@ -99,7 +99,7 @@ async def signals(db: AsyncSession = Depends(get_db)):
     returns (1D/1W/1M), volume ratio. Computed from stored daily bars;
     refreshes whenever ingestion lands new bars."""
     from app.services import cache
-    from app.services import technical as ti
+    from app.services import market_signals as ms
     hit = cache.get("market:signals", 300)
     if hit is not None:
         return hit
@@ -108,49 +108,9 @@ async def signals(db: AsyncSession = Depends(get_db)):
     ).scalars().all()
     out = []
     for inst in insts:
-        bars = (await db.execute(
-            select(OhlcvBar)
-            .where(OhlcvBar.instrument_id == inst.id,
-                   OhlcvBar.timeframe == "1d")
-            .order_by(OhlcvBar.time.desc()).limit(320))).scalars().all()
-        if len(bars) < 30:
-            continue
-        bars = list(reversed(bars))
-        t_bars = [ti.Bar(t=b.time, o=float(b.open), h=float(b.high),
-                         l=float(b.low), c=float(b.close),
-                         v=float(b.volume or 0))
-                  for b in bars]
-        closes = [b.c for b in t_bars]
-        last = closes[-1]
-        sma50 = ti.sma(closes, 50)
-        sma200 = ti.sma(closes, 200)
-        atr_v = ti.atr(t_bars, 14)
-        hi52 = max(closes[-250:]) if len(closes) >= 30 else None
-        lo52 = min(closes[-250:]) if closes else None
-        vols = [b.v for b in t_bars[-20:] if b.v]
-        out.append({
-            "symbol": inst.symbol, "name": inst.name,
-            "asset_class": inst.asset_class,
-            "close": last,
-            "as_of": bars[-1].time.isoformat()[:10],
-            "ret_1d": (last / closes[-2] - 1) if len(closes) > 1
-            else None,
-            "ret_1w": (last / closes[-6] - 1) if len(closes) > 5
-            else None,
-            "ret_1m": (last / closes[-22] - 1) if len(closes) > 21
-            else None,
-            "sma50": sma50, "sma200": sma200,
-            "above_sma50": last > sma50 if sma50 else None,
-            "above_sma200": last > sma200 if sma200 else None,
-            "rsi14": ti.rsi(closes, 14),
-            "adx14": ti.adx(t_bars, 14),
-            "macd": ti.macd(closes),
-            "atr_pct": (atr_v / last) if atr_v and last else None,
-            "from_52w_high": (last / hi52 - 1) if hi52 else None,
-            "from_52w_low": (last / lo52 - 1) if lo52 else None,
-            "vol_ratio": (t_bars[-1].v / (sum(vols) / len(vols)))
-            if vols and t_bars[-1].v else None,
-        })
+        row = await ms.signal_row(db, inst)
+        if row is not None:
+            out.append(row)
     out.sort(key=lambda x: x["symbol"])
     cache.put("market:signals", out)
     return out

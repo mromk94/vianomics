@@ -3,13 +3,19 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { apiGet } from "@/lib/api";
 import { ALL_MODULES } from "@/lib/modules";
+
+interface Hit { id: string; symbol: string; name: string;
+  asset_class: string }
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
+  const [tickers, setTickers] = useState<Hit[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const debRef = useRef<ReturnType<typeof setTimeout>>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -27,11 +33,25 @@ export function CommandPalette() {
     if (open) {
       setQuery("");
       setIndex(0);
+      setTickers([]);
       setTimeout(() => inputRef.current?.focus(), 0);
     }
   }, [open]);
 
-  const results = useMemo(() => {
+  // debounced instrument lookup — tickers sit above module results
+  useEffect(() => {
+    if (debRef.current) clearTimeout(debRef.current);
+    const q = query.trim();
+    if (!q) { setTickers([]); return; }
+    debRef.current = setTimeout(() => {
+      apiGet<Hit[]>(
+        `/api/v1/universe/instruments?q=${encodeURIComponent(q)}&limit=6`)
+        .then(setTickers).catch(() => setTickers([]));
+    }, 200);
+    return () => { if (debRef.current) clearTimeout(debRef.current); };
+  }, [query]);
+
+  const modules = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return ALL_MODULES;
     return ALL_MODULES.filter(
@@ -42,9 +62,19 @@ export function CommandPalette() {
     );
   }, [query]);
 
-  const go = (slug: string) => {
+  // flat list for keyboard nav — tickers first
+  const flat = useMemo(
+    () => [
+      ...tickers.map((t) => ({ kind: "t" as const, t })),
+      ...modules.map((m) => ({ kind: "m" as const, m })),
+    ],
+    [tickers, modules],
+  );
+
+  const go = (item: (typeof flat)[number]) => {
     setOpen(false);
-    router.push(`/${slug}`);
+    router.push(item.kind === "t"
+      ? `/symbol/${item.t.symbol}` : `/${item.m.slug}`);
   };
 
   if (!open) return null;
@@ -58,7 +88,7 @@ export function CommandPalette() {
       aria-label="Command palette"
     >
       <div
-        className="w-full max-w-lg overflow-hidden rounded-md border border-border-strong bg-surface shadow-2xl"
+        className="w-[94vw] max-w-lg overflow-hidden rounded-md border border-border-strong bg-surface shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <input
@@ -72,38 +102,54 @@ export function CommandPalette() {
             if (e.key === "Escape") setOpen(false);
             if (e.key === "ArrowDown") {
               e.preventDefault();
-              setIndex((i) => Math.min(i + 1, results.length - 1));
+              setIndex((i) => Math.min(i + 1, flat.length - 1));
             }
             if (e.key === "ArrowUp") {
               e.preventDefault();
               setIndex((i) => Math.max(i - 1, 0));
             }
-            if (e.key === "Enter" && results[index]) go(results[index].slug);
+            if (e.key === "Enter" && flat[index]) go(flat[index]);
           }}
-          placeholder="Jump to module…"
+          placeholder="Search ticker or jump to module…"
           className="w-full border-b border-border bg-transparent px-4 py-3 text-sm text-text placeholder:text-faint focus:outline-none"
         />
         <ul className="max-h-72 overflow-y-auto py-1">
-          {results.length === 0 && (
-            <li className="px-4 py-3 text-sm text-faint">No module found</li>
+          {flat.length === 0 && (
+            <li className="px-4 py-3 text-sm text-faint">No matches</li>
           )}
-          {results.map((m, i) => (
-            <li key={m.slug || "root"}>
-              <button
-                onClick={() => go(m.slug)}
-                onMouseEnter={() => setIndex(i)}
-                className={`flex w-full items-center gap-3 px-4 py-2 text-left text-sm ${
-                  i === index ? "bg-surface-2 text-text" : "text-dim"
-                }`}
-              >
-                <m.icon className="size-4 shrink-0" aria-hidden />
-                <span>{m.label}</span>
-                <span className="ml-auto text-[10px] text-faint">
-                  {m.parts.join(" · ")}
-                </span>
-              </button>
-            </li>
-          ))}
+          {flat.map((item, i) =>
+            item.kind === "t" ? (
+              <li key={`t-${item.t.id}`}>
+                <button
+                  onClick={() => go(item)}
+                  onMouseEnter={() => setIndex(i)}
+                  className={`flex w-full items-center gap-3 px-4 py-2 text-left text-sm ${
+                    i === index ? "bg-surface-2 text-text" : "text-dim"
+                  }`}
+                >
+                  <span className="num w-16 shrink-0 font-bold text-accent">{item.t.symbol}</span>
+                  <span className="truncate">{item.t.name}</span>
+                  <span className="ml-auto text-[10px] text-faint">{item.t.asset_class}</span>
+                </button>
+              </li>
+            ) : (
+              <li key={`m-${item.m.slug || "root"}`}>
+                <button
+                  onClick={() => go(item)}
+                  onMouseEnter={() => setIndex(i)}
+                  className={`flex w-full items-center gap-3 px-4 py-2 text-left text-sm ${
+                    i === index ? "bg-surface-2 text-text" : "text-dim"
+                  }`}
+                >
+                  <item.m.icon className="size-4 shrink-0" aria-hidden />
+                  <span>{item.m.label}</span>
+                  <span className="ml-auto text-[10px] text-faint">
+                    {item.m.parts.join(" · ")}
+                  </span>
+                </button>
+              </li>
+            ),
+          )}
         </ul>
       </div>
     </div>

@@ -261,6 +261,8 @@ def aggregate(bars: list[Bar], timeframe: str) -> list[Bar]:
             return (iso[0], iso[1])
         if timeframe == "1mo":
             return (d.year, d.month)
+        if timeframe == "1y":
+            return d.year
         if timeframe in ("2d", "3d"):
             n = int(timeframe[0])
             return d.toordinal() // n
