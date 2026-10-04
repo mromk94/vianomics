@@ -50,6 +50,18 @@ DEFAULT_LIMITS = {
     "starter_fraction": None,         # None = full-size initial legs
     "external_margin_rate": 0.20,     # margin rate for external CFD
                                     # positions w/o instrument match
+    # ── Layer-IV trading sleeve (V2 doc Phase 0) — the ATR pyramid
+    # engine runs only inside this 30% risk bucket. Off by default —
+    # flat risk_pct sizing remains until the sleeve is enabled. ──
+    "sleeve_enabled": False,
+    "sleeve_pct": 0.30,               # sleeve share of total equity
+    "sleeve_target_leverage": 5.0,    # gross cap = sleeve_equity × 5
+    "sleeve_initial_margin": 0.20,    # broker initial margin rate
+    "sleeve_maint_margin": 0.16,      # default; ingest broker rate
+    "sleeve_max_positions": 5,
+    "sleeve_max_asset_gross_pct": 0.20,   # per-asset ≤ 20% of gross cap
+    "sleeve_starter_fraction": 0.25,  # starter = ¼ of max per asset
+    "sleeve_portfolio_stop_pct": 0.20,    # 20% sleeve-equity DD → all out
 }
 
 
@@ -170,9 +182,10 @@ _OPEN_STATES = (PyramidState.INITIAL, PyramidState.TARGET1,
 
 
 def create_pyramid(symbol, equity, entry, atr, cash, risk_pct=0.005,
-                   adv_shares=None, t2_policy=None) -> PyramidTrade:
-    sz = initial_sizing(equity, risk_pct, entry, atr, cash,
-                        adv_shares=adv_shares)
+                   adv_shares=None, t2_policy=None,
+                   sizing: dict | None = None) -> PyramidTrade:
+    sz = sizing or initial_sizing(equity, risk_pct, entry, atr, cash,
+                                  adv_shares=adv_shares)
     t = PyramidTrade(
         symbol=symbol, entry=float(entry),
         atr_initial=float(atr), shares=sz["shares"],
@@ -244,6 +257,137 @@ def advance(trade: PyramidTrade, price, current_atr, *,
                 "stop": t.stop, "target": t.target1}
 
     return {"state": t.state, "stop": t.stop}
+
+
+# ── Layer-IV trading sleeve (V2 doc Phase 0–2) ──
+#
+# The ATR pyramid engine runs only inside a designated trading sleeve
+# (default 30% of total equity). The sleeve carries its own leverage
+# cap, margin ledger, per-asset cap, and portfolio stop — a separate
+# risk bucket, not a view of the whole book.
+
+SLEEVE_STRATEGIES = {"atr_pyramid", "sleeve", "trading"}
+
+
+def sleeve_config(limits: "Limits | None" = None) -> dict:
+    L = limits or Limits()
+    return {
+        "enabled": bool(L.get("sleeve_enabled")),
+        "sleeve_pct": float(L.get("sleeve_pct") or 0.30),
+        "target_leverage": float(L.get("sleeve_target_leverage") or 5.0),
+        "initial_margin": float(L.get("sleeve_initial_margin") or 0.20),
+        "maint_margin": float(L.get("sleeve_maint_margin") or 0.16),
+        "max_positions": int(L.get("sleeve_max_positions") or 5),
+        "max_asset_gross_pct":
+            float(L.get("sleeve_max_asset_gross_pct") or 0.20),
+        "starter_fraction":
+            float(L.get("sleeve_starter_fraction") or 0.25),
+        "portfolio_stop_pct":
+            float(L.get("sleeve_portfolio_stop_pct") or 0.20),
+    }
+
+
+def sleeve_state(total_equity, sleeve_gross, cfg: dict,
+                 open_positions: int = 0,
+                 maint_margin: float | None = None) -> dict:
+    """Live sleeve ledger. `sleeve_gross` is the marked gross exposure
+    of positions inside the sleeve; `maint_margin` overrides the
+    configured rate with the broker-ingested one when available."""
+    eq = D(str(total_equity)) * D(str(cfg["sleeve_pct"]))
+    gross = D(str(sleeve_gross))
+    maint = D(str(maint_margin if maint_margin is not None
+                  else cfg["maint_margin"]))
+    gross_cap = eq * D(str(cfg["target_leverage"]))
+    max_asset = gross_cap * D(str(cfg["max_asset_gross_pct"]))
+    starter = max_asset * D(str(cfg["starter_fraction"]))
+    port_stop = eq * D(str(cfg["portfolio_stop_pct"]))
+    risk_budget = (port_stop / D(str(cfg["max_positions"]))
+                   if cfg["max_positions"] else port_stop)
+    used_margin = gross * D(str(cfg["initial_margin"]))
+    # Margin-call buffer (doc Step 2.3): the portfolio stop must fire
+    # BEFORE the broker's maintenance call. After the stop, equity is
+    # eq − stop; a call triggers at maint% × gross. Solving for gross:
+    #   max_gross_safe = (eq − stop) / maint%
+    # Doc example: $30k/20%/5X/16% → $150k cap exactly; a 20% maint
+    # rate caps the book at $120k (4X) — exposure must shrink.
+    max_gross_safe = ((eq - port_stop) / maint) if maint > 0 \
+        else gross_cap
+    effective_cap = min(gross_cap, max_gross_safe)
+    margin_call_at = (eq / maint) if maint > 0 else None
+    return {
+        "sleeve_equity": float(eq),
+        "gross_cap": float(gross_cap),
+        "max_gross_safe": float(max_gross_safe),
+        "effective_gross_cap": float(effective_cap),
+        # parity counts as capped — the doc requires maint% STRICTLY
+        # below the stop boundary; at equality call and stop coincide
+        "buffer_capped": max_gross_safe <= gross_cap,
+        "maint_margin_used": float(maint),
+        "max_asset_notional": float(max_asset),
+        "starter_notional": float(starter),
+        "portfolio_stop_usd": float(port_stop),
+        "per_trade_risk_budget": float(risk_budget),
+        "gross": float(gross),
+        "used_margin": float(used_margin),
+        "free_margin": float(eq - used_margin),
+        "margin_utilisation": (float(used_margin / eq)
+                               if eq > 0 else None),
+        "effective_leverage": (float(gross / eq) if eq > 0 else None),
+        "open_positions": open_positions,
+        "margin_call_at_gross": (float(margin_call_at)
+                                 if margin_call_at else None),
+    }
+
+
+def sleeve_sizing(entry, atr, state: dict, cfg: dict,
+                  asset_gross: float = 0.0, adv_shares=None,
+                  lot_size=1) -> dict:
+    """Doc Step 2.4 — the sleeve constraint solver.
+
+    Final starter shares = min(
+        risk-budget shares   = per_trade_risk_budget ÷ 1.5×ATR,
+        starter-value shares = starter_notional ÷ price,
+        asset-gross headroom = (max_asset_notional − asset_gross) ÷ px,
+        sleeve-gross headroom= (effective_cap − gross) ÷ px,
+        margin headroom      = free_margin ÷ (px × initial_margin),
+        liquidity            = 10% ADV participation, when known)
+
+    Cash is NOT a cap — the sleeve is margin-funded by design; the
+    funding constraint is free margin. Gross cap includes the
+    maintenance-margin buffer (max_gross_safe) so a hot book can never
+    put itself margin-call distance inside the portfolio stop."""
+    e, a = D(str(entry)), D(str(atr))
+    if e <= 0 or a <= 0:
+        raise ValueError("entry/atr must be > 0")
+    im = D(str(cfg["initial_margin"]))
+    caps: dict[str, Decimal] = {
+        "risk_budget": D(str(state["per_trade_risk_budget"]))
+                       / (a * D("1.5")),
+        "starter_value": D(str(state["starter_notional"])) / e,
+        "asset_gross": (D(str(state["max_asset_notional"]))
+                        - D(str(asset_gross))) / e,
+        "gross_cap": (D(str(state["effective_gross_cap"]))
+                      - D(str(state["gross"]))) / e,
+        "margin": (D(str(state["free_margin"])) / (e * im)
+                   if im > 0 else D("1e18")),
+    }
+    if adv_shares:
+        caps["liquidity"] = D(str(adv_shares)) * D("0.10")
+    binding = min(caps, key=lambda k: caps[k])
+    shares = int(caps[binding] / lot_size) * lot_size
+    shares = max(shares, 0)
+    stop = e - a * D("1.5")
+    return {
+        "shares": shares,
+        "shares_raw": float(caps[binding]),
+        "binding": binding,
+        "caps": {k: float(v) for k, v in caps.items()},
+        "dollar_risk": float(D(shares) * a * D("1.5")),
+        "stop_price": float(stop),
+        "stop_distance": float(a * D("1.5")),
+        "notional": float(D(shares) * e),
+        "margin_required": float(D(shares) * e * im),
+    }
 
 
 # ── Part B: investment holding tests ──
@@ -366,6 +510,7 @@ def check_order(
 
     if order["side"] == "buy":
         notional = order["notional"]
+        notional_d = _d(notional)
         # ── new-docs hard limits (workbook Settings) ──
         # stop validity — spec §24 hard rule
         if order.get("stop_invalid"):
@@ -428,6 +573,52 @@ def check_order(
                 round(float(new_margin), 2),
                 f"<= free margin {float(free_margin):,.0f}",
                 remediation="order needs more margin than is free"))
+        # ── Layer-IV sleeve gates — sleeve-tagged orders are bounded
+        # by the sleeve's own caps (gross incl. margin-call buffer,
+        # per-asset, position count, free margin). Portfolio stop
+        # overrides everything; a capped buffer means the broker's
+        # maintenance margin would fire before our own stop — that
+        # configuration rejects leverage, not the trade idea. ──
+        sleeve = pf.get("sleeve") or {}
+        if order.get("sleeve") and sleeve.get("enabled"):
+            st = sleeve["state"]
+            cfg = sleeve["config"]
+            sg = _d(st["gross"])
+            if sg + notional_d > _d(st["effective_gross_cap"]):
+                breaches.append(Breach(
+                    "sleeve_gross_cap",
+                    round(float(sg + notional_d), 2),
+                    f"<= {st['effective_gross_cap']:,.0f}"
+                    + (" (margin-call buffer)"
+                       if st["buffer_capped"] else ""),
+                    remediation="sleeve gross cap reached — "
+                                + ("broker maint margin is tighter "
+                                   "than the portfolio stop; reduce "
+                                   "leverage" if st["buffer_capped"]
+                                   else "close a leg first")))
+            asset_g = sum(
+                _d(p["market_value"]) for p in sleeve["positions"]
+                if p["symbol"] == order["symbol"])
+            if asset_g + notional_d > _d(st["max_asset_notional"]):
+                breaches.append(Breach(
+                    "sleeve_max_asset",
+                    round(float(asset_g + notional_d), 2),
+                    f"<= {st['max_asset_notional']:,.0f}",
+                    remediation="per-asset sleeve cap (20% of gross)"))
+            new_pos = order["symbol"] not in {
+                p["symbol"] for p in sleeve["positions"]}
+            if new_pos and st["open_positions"] >= cfg["max_positions"]:
+                breaches.append(Breach(
+                    "sleeve_max_positions",
+                    st["open_positions"] + 1, cfg["max_positions"],
+                    remediation="5-position sleeve cap — close one"))
+            order_margin = notional_d * _d(cfg["initial_margin"])
+            if order_margin > _d(st["free_margin"]):
+                breaches.append(Breach(
+                    "sleeve_margin",
+                    round(float(order_margin), 2),
+                    f"<= free {st['free_margin']:,.0f}",
+                    remediation="no sleeve margin headroom"))
         # max position count
         lim = L.get("max_positions")
         if lim is not None and order["symbol"] not in {

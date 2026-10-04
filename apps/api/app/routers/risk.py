@@ -281,7 +281,7 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
             # flagged separately, not silently added to the risk sum
             p["open_risk"] = None
             unstopped += p["market_value"]
-    return {
+    pf = {
         "nav": nav, "cash": display_cash, "positions": positions,
         "unrealized_pnl": unrealized, "daily_pnl": daily,
         "gross": (sum(p["market_value"] for p in positions) / nav
@@ -297,6 +297,10 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
         "fear_greed": regime.fear_greed if regime else None,
         "as_of": utcnow().isoformat(),
     }
+    # Layer-IV sleeve ledger rides on the shared context so every
+    # check_order call site sees sleeve capacity automatically.
+    pf["sleeve"] = await _sleeve_ctx(db, pf, await _active_limits(db))
+    return pf
 
 
 class OrderIn(BaseModel):
@@ -528,10 +532,22 @@ async def create_pyramid(
     adv = body.adv_shares
     if adv is None and inst.avg_dollar_volume_30d and body.entry:
         adv = float(inst.avg_dollar_volume_30d) / body.entry
+    # sleeve mode: size inside the 30% bucket (risk-budget/starter/
+    # gross/margin solver) instead of flat risk_pct
+    sleeve = (await _portfolio_ctx(db))["sleeve"]
+    sizing = None
+    if sleeve["enabled"]:
+        st = sleeve["state"]
+        sizing = re_.sleeve_sizing(
+            body.entry, body.atr, st, sleeve["config"],
+            asset_gross=sum(
+                p["market_value"] for p in sleeve["positions"]
+                if p["symbol"] == inst.symbol),
+            adv_shares=adv)
     t = re_.create_pyramid(
         inst.symbol, body.equity, body.entry, body.atr, body.cash,
         risk_pct=body.risk_pct, t2_policy=body.t2_policy,
-        adv_shares=adv)
+        adv_shares=adv, sizing=sizing)
     rec = PyramidTradeRec(
         instrument_id=inst.id, state=t.state.value, entry=t.entry,
         atr_initial=t.atr_initial, shares=t.shares, stop=t.stop,
@@ -539,7 +555,9 @@ async def create_pyramid(
         engine_version=re_.ENGINE_VERSION, events=t.events,
         params={"risk_pct": body.risk_pct,
                 "leg_shares": t.leg_shares,
-                "atr_current": t.atr_current})
+                "atr_current": t.atr_current,
+                "sleeve": sleeve["enabled"],
+                "binding": sizing["binding"] if sizing else None})
     db.add(rec)
     await audit(db, action="pyramid.create", actor=user,
                 entity_type="pyramid_trade", entity_id=rec.id)
@@ -592,7 +610,8 @@ async def advance_pyramid(
             {"symbol": inst.symbol if inst else "?",
              "side": "buy", "sector": None,
              "notional": leg_shares * body.price * cs,
-             "risk_dollars": leg_risk},
+             "risk_dollars": leg_risk,
+             "sleeve": bool(ctx["sleeve"]["enabled"])},
             ctx, limits=limits)
         add_ok = gate["allowed"]
         if not add_ok:
@@ -618,6 +637,60 @@ async def advance_pyramid(
     await db.commit()
     return {"state": rec.state, "shares": rec.shares, "stop": rec.stop,
             "events": rec.events, "result": result}
+
+
+# ── Layer-IV trading sleeve ──
+
+_OPEN_PYRAMID_STATES = (
+    "watchlist", "trade_eligible", "initial_position", "target_1",
+    "position_addition", "target_2", "trailing_exit", "partial_exit")
+
+
+async def _sleeve_ctx(db: AsyncSession, ctx: dict,
+                      limits: re_.Limits) -> dict:
+    """Sleeve ledger: open pyramid trades marked to last close are the
+    sleeve's gross exposure. Maintenance margin comes from instrument
+    rates when known (broker-ingested), else the configured default —
+    the buffer check keys off whichever is higher-impact."""
+    cfg = re_.sleeve_config(limits)
+    out = {"enabled": cfg["enabled"], "config": cfg}
+    if not cfg["enabled"]:
+        return out
+    rows = (await db.execute(
+        select(PyramidTradeRec, Instrument)
+        .join(Instrument, PyramidTradeRec.instrument_id == Instrument.id)
+        .where(PyramidTradeRec.state.in_(_OPEN_PYRAMID_STATES)))).all()
+    gross = 0.0
+    maint_rates: list[float] = []
+    positions = []
+    for rec, inst in rows:
+        px = (await db.execute(
+            select(OhlcvBar.close)
+            .where(OhlcvBar.instrument_id == inst.id,
+                   OhlcvBar.timeframe == "1d")
+            .order_by(OhlcvBar.time.desc()).limit(1))).scalar()
+        px = float(px) if px else float(rec.entry)
+        cs = float(inst.contract_size or 1)
+        mv = rec.shares * px * cs
+        gross += mv
+        if inst.maintenance_margin_rate is not None:
+            maint_rates.append(float(inst.maintenance_margin_rate))
+        positions.append({"symbol": inst.symbol, "state": rec.state,
+                          "shares": rec.shares, "market_value": mv,
+                          "entry": rec.entry, "stop": rec.stop})
+    state = re_.sleeve_state(
+        ctx["nav"], gross, cfg, open_positions=len(rows),
+        maint_margin=max(maint_rates) if maint_rates else None)
+    out["state"] = state
+    out["positions"] = positions
+    return out
+
+
+@router.get("/sleeve")
+async def sleeve_status(db: AsyncSession = Depends(get_db)) -> dict:
+    """Phase-0 sleeve ledger — equity, gross/margin caps, the
+    maintenance-margin buffer verdict, and open sleeve positions."""
+    return (await _portfolio_ctx(db))["sleeve"]
 
 
 # ── ATR output sheet + pyramid preview ──
@@ -705,9 +778,22 @@ async def pyramid_preview(
     adv_shares = (float(inst.avg_dollar_volume_30d) / entry
                   if inst.avg_dollar_volume_30d and entry else None)
 
-    sz = re_.initial_sizing(
-        equity, body.risk_pct, entry, atr_abs, cash,
-        adv_shares=adv_shares)
+    # Layer-IV sleeve: when enabled the pyramid sizes inside the 30%
+    # sleeve — min(risk-budget, starter, gross/margin/liquidity caps)
+    # instead of the flat risk_pct-of-equity sizing.
+    sleeve = ctx["sleeve"]
+    if sleeve["enabled"]:
+        st = sleeve["state"]
+        asset_gross = sum(
+            p["market_value"] for p in sleeve["positions"]
+            if p["symbol"] == inst.symbol)
+        sz = re_.sleeve_sizing(
+            entry, atr_abs, st, sleeve["config"],
+            asset_gross=asset_gross, adv_shares=adv_shares)
+    else:
+        sz = re_.initial_sizing(
+            equity, body.risk_pct, entry, atr_abs, cash,
+            adv_shares=adv_shares)
 
     # leg ladder — each target hit adds a standard leg at 3×ATR steps
     legs = [{"leg": 1, "fill": entry, "shares": sz["shares"],
@@ -739,11 +825,13 @@ async def pyramid_preview(
             "shares_raw": sz["shares_raw"],
             "binding": sz["binding"],
             "notional": sz["notional"] * cs,
-            "margin_required": sz["notional"] * cs * margin_rate,
+            "margin_required": (sz.get("margin_required")
+                                or sz["notional"] * cs * margin_rate),
             "rr": 3.0 / 1.5,
             "open_risk_pct": (sz["dollar_risk"] / equity
                               if equity else None),
         },
+        "sleeve": sleeve,
         "legs": legs,
         "vol_regime": rep["pyramid"]["vol_regime"],
         "windows": rep["daily"]["windows"],
@@ -1057,6 +1145,16 @@ class LimitsIn(BaseModel):
     max_positions: int | None = None
     starter_fraction: float | None = None
     external_margin_rate: float | None = None
+    # Layer-IV trading sleeve (V2 doc Phase 0)
+    sleeve_enabled: bool | None = None
+    sleeve_pct: float | None = None
+    sleeve_target_leverage: float | None = None
+    sleeve_initial_margin: float | None = None
+    sleeve_maint_margin: float | None = None
+    sleeve_max_positions: int | None = None
+    sleeve_max_asset_gross_pct: float | None = None
+    sleeve_starter_fraction: float | None = None
+    sleeve_portfolio_stop_pct: float | None = None
 
 
 @router.put("/limits", status_code=201)

@@ -290,6 +290,42 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
             </div>
           </div>
 
+          {/* Layer-IV sleeve context — the pyramid runs inside the 30%
+              trading sleeve; show its caps + margin buffer verdict */}
+          {prev?.sleeve?.enabled && prev.sleeve.state && (
+            <div className="glass-tile p-3">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-[10px] uppercase text-dim">
+                  Trading sleeve — {pct(prev.sleeve.config.sleeve_pct)} of equity
+                </span>
+                {prev.sleeve.state.buffer_capped ? (
+                  <span className="rounded bg-neg/20 px-1.5 py-0.5 text-[9px] text-neg">
+                    maint margin caps gross at {fmtNum(prev.sleeve.state.effective_gross_cap / prev.sleeve.state.sleeve_equity, 1)}×
+                  </span>
+                ) : (
+                  <span className="rounded bg-pos/20 px-1.5 py-0.5 text-[9px] text-pos">
+                    margin buffer ok
+                  </span>
+                )}
+              </div>
+              <div className="grid grid-cols-3 gap-x-3 sm:grid-cols-6">
+                {[
+                  ["Sleeve equity", `$${fmtNum(prev.sleeve.state.sleeve_equity, 0)}`],
+                  ["Gross cap", `$${fmtNum(prev.sleeve.state.effective_gross_cap, 0)}`],
+                  ["Max / asset", `$${fmtNum(prev.sleeve.state.max_asset_notional, 0)}`],
+                  ["Starter cap", `$${fmtNum(prev.sleeve.state.starter_notional, 0)}`],
+                  ["Risk budget", `$${fmtNum(prev.sleeve.state.per_trade_risk_budget, 0)}`],
+                  ["Free margin", `$${fmtNum(prev.sleeve.state.free_margin, 0)}`],
+                ].map(([l, v]) => (
+                  <div key={l as string}>
+                    <div className="text-[9px] uppercase text-faint">{l as string}</div>
+                    <div className="num text-[12px] text-text">{v as string}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Trade Risk Sheet output */}
           {prev ? (
             <div className="grid gap-2 sm:grid-cols-2">
