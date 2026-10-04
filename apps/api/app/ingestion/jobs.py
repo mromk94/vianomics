@@ -159,10 +159,17 @@ async def ingest_edgar_facts(
                         continue  # structurally broken → let schema/quarantine handle
 
     # set-based dedupe — one SELECT instead of a remote round-trip
-    # per observation (companyfacts returns tens of thousands)
+    # per observation (companyfacts returns tens of thousands).
+    # DB returns tz-aware datetimes; parsed SEC dates are naive →
+    # normalize to aware-UTC before key comparison or re-runs collide
+    # on the unique constraint instead of deduping.
+    def _aware(dt):
+        return (dt.replace(tzinfo=UTC)
+                if dt is not None and dt.tzinfo is None else dt)
+
     def _key(concept, period_end, published_at):
         return (concept, period_end.isoformat(),
-                published_at.isoformat() if published_at else None)
+                _aware(published_at).isoformat() if published_at else None)
 
     existing = {
         _key(r[0], r[1], r[2]) for r in (await session.execute(
@@ -183,13 +190,13 @@ async def ingest_edgar_facts(
             concept=rec.concept,
             period_end=rec.period_end,
             source="edgar",
-            published_at=rec.published_at,
             value=rec.value,
             unit=rec.unit,
             currency=rec.currency,
             period_start=rec.period_start,
             fiscal_period=rec.fiscal_period,
-            observed_at=rec.observed_at,
+            observed_at=_aware(rec.observed_at),
+            published_at=_aware(rec.published_at),
             source_ref=rec.source_ref,
         ))
 
