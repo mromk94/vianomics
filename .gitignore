@@ -27,3 +27,7 @@ coverage/
 *.sqlite3
 data/
 logs/
+
+# Confidential specs & internal docs — never push to the public repo
+docs/
+new docs/
