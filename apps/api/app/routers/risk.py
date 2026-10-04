@@ -740,6 +740,20 @@ async def exit_pyramid(
     rec.state = (req or {}).get("proposed_state", "closed")
     reason = (req or {}).get("reason", "manual close")
     price = (req or {}).get("price")
+    if price is None and inst is not None:
+        price = (await db.execute(
+            select(OhlcvBar.close)
+            .where(OhlcvBar.instrument_id == inst.id,
+                   OhlcvBar.timeframe == "1d")
+            .order_by(OhlcvBar.time.desc()).limit(1))).scalar()
+        price = float(price) if price else None
+    # Step-13 position record — realized P&L against per-leg cost
+    # basis, booked at the exit price
+    if price:
+        fills = params.get("leg_fills") or [
+            {"fill": float(rec.entry), "shares": rec.shares}]
+        params["realized_pnl"] = round(
+            sum(f["shares"] * (price - f["fill"]) for f in fills), 2)
     rec.params = params
     rec.events = [
         *(rec.events or []),
@@ -907,6 +921,12 @@ async def _sleeve_ctx(db: AsyncSession, ctx: dict,
             "reason": life.cooldown_reason,
             "liquidated_at": (life.liquidated_at.isoformat()
                               if life.liquidated_at else None)}
+    # doc Step-18 metric — how much sleeve drawdown headroom is left
+    # before the portfolio stop floor binds
+    stop_usd = cfg["portfolio_stop_pct"] * state["sleeve_equity"]
+    dd_usd = ((life.drawdown_pct or 0.0) * state["sleeve_equity"]
+              if life else 0.0)
+    out["distance_to_portfolio_stop_usd"] = stop_usd - dd_usd
     return out
 
 

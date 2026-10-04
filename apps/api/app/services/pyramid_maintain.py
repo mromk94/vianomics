@@ -532,6 +532,7 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
         out["sleeve_drawdown_pct"] = dd
         out["sleeve_drawdown_usd"] = dd_usd
         out["sleeve_stop_floor_usd"] = floor
+        out["sleeve_stop_distance_usd"] = floor - dd_usd
         out["sleeve_cooldown"] = (life.state == "cooldown")
 
     out["maintain_version"] = MAINTAIN_VERSION

@@ -32,27 +32,29 @@ def _instant(inst, concept, end_year, value):
 
 
 async def _seed_growth_company(db, inst):
+    # real-world magnitudes — the Step-1.2 screen checks market cap
+    # and P/E off raw filed units (200M shares, billion-scale $)
     for i, yr in enumerate(range(2015, 2027)):
         f = 1.2 ** i
         db.add_all([
-            _fy(inst, "us-gaap:Revenues", yr, 10_000 * f),
-            _fy(inst, "us-gaap:NetIncomeLoss", yr, 1_000 * f),
+            _fy(inst, "us-gaap:Revenues", yr, 10_000_000_000 * f),
+            _fy(inst, "us-gaap:NetIncomeLoss", yr, 1_000_000_000 * f),
             _fy(inst, "us-gaap:NetCashProvidedByUsedInOperatingActivities",
-                yr, 1_200 * f),
+                yr, 1_200_000_000 * f),
             _fy(inst, "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
-                yr, 200 * f),
-            _fy(inst, "us-gaap:OperatingIncomeLoss", yr, 1_500 * f),
+                yr, 200_000_000 * f),
+            _fy(inst, "us-gaap:OperatingIncomeLoss", yr, 1_500_000_000 * f),
             _fy(inst, "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic",
-                yr, 100),
-            _fy(inst, "us-gaap:IncomeTaxExpenseBenefit", yr, 300 * f),
+                yr, 200_000_000),
+            _fy(inst, "us-gaap:IncomeTaxExpenseBenefit", yr, 300_000_000 * f),
             _fy(inst, "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
-                yr, 1_800 * f),
-            _instant(inst, "us-gaap:StockholdersEquity", yr, 5_000 * f),
-            _instant(inst, "us-gaap:LongTermDebt", yr, 500),
+                yr, 1_800_000_000 * f),
+            _instant(inst, "us-gaap:StockholdersEquity", yr, 5_000_000_000 * f),
+            _instant(inst, "us-gaap:LongTermDebt", yr, 500_000_000),
             _instant(inst, "us-gaap:CashAndCashEquivalentsAtCarryingValue",
-                     yr, 2_000 * f),
-            _instant(inst, "us-gaap:AssetsCurrent", yr, 3_000 * f),
-            _instant(inst, "us-gaap:LiabilitiesCurrent", yr, 1_500 * f),
+                     yr, 2_000_000_000 * f),
+            _instant(inst, "us-gaap:AssetsCurrent", yr, 3_000_000_000 * f),
+            _instant(inst, "us-gaap:LiabilitiesCurrent", yr, 1_500_000_000 * f),
         ])
     await db.flush()
 

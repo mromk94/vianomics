@@ -124,6 +124,7 @@ def _status_from_discount(discount: float | None) -> str:
 async def qualification_gate(
     db: AsyncSession, inst: Instrument,
     price: float | None = None, as_of: datetime | None = None,
+    valuation_mode: str = "both",
 ) -> dict:
     from app.db.base import utcnow
     as_of = as_of or utcnow()
@@ -219,6 +220,17 @@ async def qualification_gate(
             "pass": bool(ca is not None and cl and cl > 0
                          and ca / cl > 1)},
     }
+    # Step 1.2 — the screen is part of the qualification chain, not
+    # a decoration: any failed threshold (or missing input, which
+    # reads fail) blocks TRADE_ELIGIBLE
+    screen["all_pass"] = all(v["pass"] for v in screen.values())
+
+    # ── sector/architype — hoisted: method routing AND the Four-M
+    # proxies both need it ──
+    sec = None
+    if inst.sector_id:
+        s = await db.get(Sector, inst.sector_id)
+        sec = s.name if s else None
 
     # ── valuation status + consensus (never averaged) ──
     vrun = (await db.execute(
@@ -234,17 +246,39 @@ async def qualification_gate(
     dni_iv = (o.get("dni") or {}).get("per_share")
     pb_iv = (o.get("pb_intrinsic") or {}).get("per_share")
 
+    # Step 1.3/§5 + §9 — the company type picks the PRIMARY valuation
+    # method (financials → DNI/P-B, operating cos → Rule-1/DCF) and
+    # VALUATION_MODE filters which frameworks may set the bar. The
+    # other methods still display side-by-side — never averaged.
+    from app.services import valuation as sector_val
+    arch = sector_val.archetype_for(sec)
+    mode = (valuation_mode or "both").lower()
+    method_order: list[str] = []
+    if mode != "institutional_dcf":
+        method_order += (["rule1"] if arch != "financial"
+                         else ["dni", "pb", "rule1"])
+    if mode != "rule1_classic":
+        method_order += (["dni", "pb", "dcf"] if arch == "financial"
+                         else ["dcf", "dni", "pb"])
+    iv_map = {"rule1": sticker, "dcf": dcf_iv,
+              "dni": dni_iv, "pb": pb_iv}
+    method_used = next((m for m in method_order if iv_map.get(m)),
+                       None)
+    iv_best = iv_map.get(method_used) if method_used else None
+
     zone_rule1 = None
     if price and mos_px:
         zone_rule1 = ("BUY_ZONE" if price <= mos_px
                       else "WATCH" if sticker and price < sticker
                       else "VALUATION_EXIT")
-    iv_best = sticker or dcf_iv or dni_iv or pb_iv
     discount = fm.intrinsic_discount(price, iv_best) \
         if price and iv_best else None
     valuation = {
         "status": _status_from_discount(
             float(discount) if discount is not None else None),
+        "valuation_mode": mode,
+        "archetype": arch,
+        "method_used": method_used,
         "rule1": {"sticker_price": sticker, "mos_price": mos_px,
                   "zone": zone_rule1},
         "dcf": {"intrinsic_value": dcf_iv},
@@ -264,10 +298,6 @@ async def qualification_gate(
     }
 
     # ── Four M's — machine proxies, explicitly labeled ──
-    sec = None
-    if inst.sector_id:
-        s = await db.get(Sector, inst.sector_id)
-        sec = s.name if s else None
     yrs = len(rev)
     # share-count growth is meaningless across a split — skip the
     # dilution check rather than read a 10:1 as 900% issuance
@@ -314,13 +344,15 @@ async def qualification_gate(
     four_ms["pass"] = all(four_ms[k]["pass"] for k in
                           ("meaning", "moat", "management"))
 
-    # ── verdict (doc Step 1.7) — eligibility needs price ≤ MOS bar.
-    # Rule-1's buy_price is the bar when computed; for methods without
-    # a MOS floor (DCF/DNI/P-B) the equivalent bar is IV × (1−50%). ──
-    elig_bar = mos_px or (iv_best * 0.5 if iv_best else None)
+    # ── verdict (doc Step 1.7) — the chain is ordered: Four M's →
+    # initial screen → five numbers → price ≤ MOS bar. Rule-1's
+    # buy_price is the bar when the routed method is Rule-1; for
+    # DCF-style methods the bar is IV × (1−50%). ──
+    elig_bar = (mos_px if method_used == "rule1"
+                else (iv_best * 0.5 if iv_best else None))
     if not four_ms["pass"]:
         verdict = "REJECTED"
-    elif not five["all_pass"]:
+    elif not screen["all_pass"] or not five["all_pass"]:
         verdict = "WATCH"
     elif price and elig_bar and price <= elig_bar:
         verdict = "TRADE_ELIGIBLE"
@@ -342,7 +374,8 @@ async def qualification_gate(
     }
 
 
-async def gate_with_price(db, inst, auto_baseline: bool = True) -> dict:
+async def gate_with_price(db, inst, auto_baseline: bool = True,
+                          valuation_mode: str = "both") -> dict:
     """Convenience — resolves the latest close for the gate. When no
     ValuationRun exists and a price resolves, seeds a conservative
     auto_baseline run so the eligibility bar is always computable —
@@ -387,4 +420,5 @@ async def gate_with_price(db, inst, auto_baseline: bool = True) -> dict:
             # commit and rollback both expire ORM state — re-load so
             # the gate below never fires a lazy attribute load
             inst = await db.get(Instrument, iid)
-    return await qualification_gate(db, inst, price=price)
+    return await qualification_gate(db, inst, price=price,
+                                    valuation_mode=valuation_mode)

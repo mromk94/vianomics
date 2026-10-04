@@ -78,6 +78,11 @@ class Instrument(Base, IdMixin, TimestampMixin):
     # Eligibility inputs — populated by market-data ingestion
     market_cap: Mapped[float | None] = mapped_column(Numeric(24, 2))
     avg_dollar_volume_30d: Mapped[float | None] = mapped_column(Numeric(24, 2))
+    # Market beta — computed from weekly returns vs ^GSPC (OLS slope,
+    # ~2y window); feeds the CAPM discount rate (doc Step 1.4/6B).
+    beta: Mapped[float | None] = mapped_column(Numeric(10, 4))
+    beta_asof: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None)
     identifiers: Mapped[list["InstrumentIdentifier"]] = relationship(
         back_populates="instrument", lazy="selectin"
     )

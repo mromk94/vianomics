@@ -107,7 +107,8 @@ async def run_job_now(job_key: str,
     parts = job_key.split(":")
     try:
         if job_key in ("technical:scan", "monitor:scan", "pyramid:seed",
-                       "pyramid:maintain"):
+                       "pyramid:maintain", "review:weekly",
+                       "review:monthly", "review:quarterly"):
             from app.ingestion.upsert import get_or_create
             from app.models.ops import Job, JobRun
             from app.db.base import utcnow
@@ -130,6 +131,13 @@ async def run_job_now(job_key: str,
                     res = await pyramid_maintain.maintain_open_pyramids(
                         db)
                     n = res["processed"]
+                elif job_key.startswith("review:"):
+                    # Phase-6 cadence — weekly Four-M's, monthly MOS
+                    # re-rank, quarterly margin review
+                    from app.services import review_jobs
+                    res = await review_jobs.REVIEW_JOBS[job_key](db)
+                    n = (res.get("reviewed") or res.get("repriced")
+                         or 1)
                 else:
                     from app.services import monitoring as mon
                     res = await mon.run_checks(db)

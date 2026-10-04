@@ -97,8 +97,18 @@ async def trade_eligibility(
     last close and its ATR-14 so margin/portfolio gates size a real
     starter leg instead of a hypothetical."""
 
+    # doc §9 — VALUATION_MODE is a versioned LimitConfig setting
+    # (rule1_classic | institutional_dcf | both); it reaches the
+    # qualification gate so the eligibility bar follows the selected
+    # framework
+    from app.models.risk import LimitConfig
+    lcfg = (await db.execute(
+        select(LimitConfig).order_by(LimitConfig.version.desc())
+        .limit(1))).scalar_one_or_none()
+    vmode = ((lcfg.payload or {}).get("valuation_mode")
+             if lcfg else None) or "both"
     gate = await qual.gate_with_price(
-        db, inst, auto_baseline=auto_baseline)
+        db, inst, auto_baseline=auto_baseline, valuation_mode=vmode)
     price = entry or gate["price"]
 
     # ── technical timing ──
@@ -189,6 +199,7 @@ async def trade_eligibility(
     qv = gate["verdict"]
     quality_pass = bool(gate["four_ms"].get("pass"))
     growth_pass = bool(gate["five_numbers"].get("all_pass"))
+    screen_pass = bool(gate["initial_screen"].get("all_pass"))
     valuation_pass = qv == _TL
     # valuation usable but price above the bar → soft gate (WATCHLIST),
     # valuation unusable/missing → hard blocker alongside quality
@@ -198,7 +209,8 @@ async def trade_eligibility(
     gates = {
         "quality": {"pass": quality_pass,
                     "four_ms": gate["four_ms"],
-                    "five_numbers_pass": growth_pass},
+                    "five_numbers_pass": growth_pass,
+                    "initial_screen_pass": screen_pass},
         "valuation": {"pass": valuation_pass,
                       "status": val_status,
                       "zone": gate["valuation"]["rule1"]["zone"],
@@ -213,6 +225,8 @@ async def trade_eligibility(
     blocking = []
     if not quality_pass:
         blocking.append("four_ms_failed")
+    if not screen_pass:
+        blocking.append("initial_screen_failed")
     if not val_usable:
         blocking.append("valuation_insufficient_data")
     if tech["decision"] == "invalid_data":
@@ -236,7 +250,7 @@ async def trade_eligibility(
         # the portfolio stop shut the sleeve — release is a human
         # decision, so this verdict outranks the idea-quality ladder
         verdict = "COOLDOWN"
-    elif not growth_pass or not val_usable:
+    elif not growth_pass or not screen_pass or not val_usable:
         verdict = "WATCH"      # quality ok, proof incomplete
     elif not valuation_pass:
         verdict = "WATCHLIST"  # qualified company, price above MOS

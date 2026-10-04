@@ -31,28 +31,30 @@ def _instant(inst, concept, end_year, value):
 
 
 async def _seed_growth_company(db, inst):
-    """12y of compounding fundamentals — all five numbers pass."""
+    """12y of compounding fundamentals — all five numbers pass, and
+    the Step-1.2 screen thresholds too (real-world magnitudes: 200M
+    shares, billion-scale dollars → $20B cap at $100, P/E ~2.7)."""
     for i, yr in enumerate(range(2015, 2027)):
         f = 1.2 ** i
         db.add_all([
-            _fy(inst, "us-gaap:Revenues", yr, 10_000 * f),
-            _fy(inst, "us-gaap:NetIncomeLoss", yr, 1_000 * f),
+            _fy(inst, "us-gaap:Revenues", yr, 10_000_000_000 * f),
+            _fy(inst, "us-gaap:NetIncomeLoss", yr, 1_000_000_000 * f),
             _fy(inst, "us-gaap:NetCashProvidedByUsedInOperatingActivities",
-                yr, 1_200 * f),
+                yr, 1_200_000_000 * f),
             _fy(inst, "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
-                yr, 200 * f),
-            _fy(inst, "us-gaap:OperatingIncomeLoss", yr, 1_500 * f),
+                yr, 200_000_000 * f),
+            _fy(inst, "us-gaap:OperatingIncomeLoss", yr, 1_500_000_000 * f),
             _fy(inst, "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic",
-                yr, 100),                       # flat — no dilution
-            _fy(inst, "us-gaap:IncomeTaxExpenseBenefit", yr, 300 * f),
+                yr, 200_000_000),               # flat — no dilution
+            _fy(inst, "us-gaap:IncomeTaxExpenseBenefit", yr, 300_000_000 * f),
             _fy(inst, "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
-                yr, 1_800 * f),
-            _instant(inst, "us-gaap:StockholdersEquity", yr, 5_000 * f),
-            _instant(inst, "us-gaap:LongTermDebt", yr, 500),
+                yr, 1_800_000_000 * f),
+            _instant(inst, "us-gaap:StockholdersEquity", yr, 5_000_000_000 * f),
+            _instant(inst, "us-gaap:LongTermDebt", yr, 500_000_000),
             _instant(inst, "us-gaap:CashAndCashEquivalentsAtCarryingValue",
-                     yr, 2_000 * f),
-            _instant(inst, "us-gaap:AssetsCurrent", yr, 3_000 * f),
-            _instant(inst, "us-gaap:LiabilitiesCurrent", yr, 1_500 * f),
+                     yr, 2_000_000_000 * f),
+            _instant(inst, "us-gaap:AssetsCurrent", yr, 3_000_000_000 * f),
+            _instant(inst, "us-gaap:LiabilitiesCurrent", yr, 1_500_000_000 * f),
         ])
     await db.flush()
 
@@ -123,6 +125,81 @@ async def test_insufficient_data_rejects_cleanly(db, inst):
     assert g["verdict"] in ("REJECTED", "WATCH", "WATCHLIST")
     assert g["four_ms"]["pass"] is False
     assert g["valuation"]["status"] == "INSUFFICIENT_DATA"
+
+
+async def test_initial_screen_blocks_eligibility(db, inst):
+    """Step 1.2 — the six thresholds are a real gate: a quality-passing
+    small-cap (market_cap < $10B) can only be WATCH, never eligible."""
+    await _seed_growth_company(db, inst)
+    # shrink the cap: 2e8 → 2e5 shares → $20M cap at $100
+    from sqlalchemy import delete
+    await db.execute(
+        delete(FO).where(
+            FO.instrument_id == inst.id,
+            FO.concept ==
+            "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic"))
+    for yr in range(2015, 2027):
+        db.add(_fy(inst,
+                   "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic",
+                   yr, 200_000))
+    db.add(ValuationRun(
+        group_id="g", instrument_id=inst.id, version=1,
+        methodology="rule1-dcf/v2.0", inputs={}, outputs={
+            "rule1": {"sticker_price": 400.0, "buy_price": 200.0}}))
+    await db.flush()
+    g = await qual.qualification_gate(db, inst, price=100,
+                                      as_of=datetime(2026, 3, 5))
+    assert g["initial_screen"]["market_cap_gt_10b"]["pass"] is False
+    assert g["initial_screen"]["all_pass"] is False
+    assert g["four_ms"]["pass"] is True          # quality is fine…
+    assert g["verdict"] == "WATCH"               # …but the screen bites
+
+
+async def test_method_routing_financial_prefers_dni(db, inst):
+    """Step 1.3/§5 — company type picks the valuation method that
+    sets the bar: financials → DNI/P-B first, not Rule-1."""
+    from app.models.instruments import Sector
+    sec = Sector(name="Financials")
+    db.add(sec)
+    await db.flush()
+    inst.sector_id = sec.id
+    await _seed_growth_company(db, inst)
+    db.add(ValuationRun(
+        group_id="g", instrument_id=inst.id, version=1,
+        methodology="rule1-dcf/v2.0", inputs={}, outputs={
+            "rule1": {"sticker_price": 400.0, "buy_price": 200.0},
+            "dni": {"per_share": 300.0},
+            "pb_intrinsic": {"per_share": 250.0},
+            "dcf": {"per_share": 380.0}}))
+    await db.flush()
+    g = await qual.qualification_gate(db, inst, price=100,
+                                      as_of=datetime(2026, 3, 5))
+    assert g["valuation"]["archetype"] == "financial"
+    assert g["valuation"]["method_used"] == "dni"
+
+
+async def test_valuation_mode_filters_the_bar(db, inst):
+    """§9 VALUATION_MODE — rule1_classic ignores DCF output;
+    institutional_dcf ignores the sticker/MOS chain."""
+    await _seed_growth_company(db, inst)
+    db.add(ValuationRun(
+        group_id="g", instrument_id=inst.id, version=1,
+        methodology="rule1-dcf/v2.0", inputs={}, outputs={
+            "rule1": {"sticker_price": 400.0, "buy_price": 200.0},
+            "dcf": {"per_share": 160.0}}))
+    await db.flush()
+    g = await qual.qualification_gate(
+        db, inst, price=100, as_of=datetime(2026, 3, 5),
+        valuation_mode="institutional_dcf")
+    # DCF-IV 160 → bar 80; price 100 above bar → WATCHLIST
+    assert g["valuation"]["method_used"] == "dcf"
+    assert g["verdict"] == "WATCHLIST"
+    g2 = await qual.qualification_gate(
+        db, inst, price=100, as_of=datetime(2026, 3, 5),
+        valuation_mode="rule1_classic")
+    # MOS 200 → price 100 inside the buy zone
+    assert g2["valuation"]["method_used"] == "rule1"
+    assert g2["verdict"] == "TRADE_ELIGIBLE"
 
 
 async def test_coverage_guard_no_fake_10y(db, inst):

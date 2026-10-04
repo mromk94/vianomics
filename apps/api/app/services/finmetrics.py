@@ -169,3 +169,22 @@ def trend_ok(series: Iterable, increasing: bool, min_points: int = 3) -> bool | 
         return None
     diffs = [vals[i] - vals[i - 1] for i in range(1, len(vals))]
     return all((d >= 0 if increasing else d <= 0) for d in diffs)
+
+
+def beta(stock_returns, bench_returns, min_points: int = 26):
+    """OLS market beta — cov(r_i, r_b) / var(r_b) over paired
+    returns. None when the sample is too thin or the benchmark is
+    flat (variance 0). Callers pair aligned periods; this never
+    fabricates a beta from unmatched data."""
+    rs = [(float(a), float(b)) for a, b in zip(stock_returns,
+                                              bench_returns)
+          if a is not None and b is not None]
+    if len(rs) < min_points:
+        return None
+    mx = sum(b for _, b in rs) / len(rs)      # bench mean
+    my = sum(a for a, _ in rs) / len(rs)      # stock mean
+    var = sum((b - mx) ** 2 for _, b in rs)
+    if var <= 0:
+        return None
+    cov = sum((a - my) * (b - mx) for a, b in rs)
+    return cov / var

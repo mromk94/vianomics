@@ -85,3 +85,15 @@ def test_trend_ok():
     assert fm.trend_ok([3, 2, 3], increasing=True) is False
     assert fm.trend_ok([1, 2], increasing=True) is None  # <3 pts
     assert fm.trend_ok([3, 2, 1], increasing=False) is True
+
+
+def test_beta():
+    # stock moves 2× the benchmark every period → β = 2.0
+    bench = [0.01, -0.02, 0.03, -0.01, 0.02] * 8
+    stock = [r * 2 for r in bench]
+    assert fm.beta(stock, bench) == pytest.approx(2.0)
+    # stock moves opposite → negative beta
+    assert fm.beta([-r for r in bench], bench) == pytest.approx(-1.0)
+    # thin sample / flat benchmark → None, never fabricated
+    assert fm.beta([0.01] * 10, [0.01] * 10) is None
+    assert fm.beta([0.05] * 60, [0.0] * 60) is None
