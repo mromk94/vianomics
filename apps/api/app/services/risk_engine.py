@@ -67,6 +67,13 @@ DEFAULT_LIMITS = {
                                         # deployment — doc Phase 0/2.2)
     "sleeve_atr_timeframe": "1d",         # 1d|1w|1mo — the pyramid's
                                         # operating chart (Phase 0)
+    "sleeve_max_sector_pct": 0.40,        # one sector ≤ 40% of the
+                                        # effective gross cap (Step-18
+                                        # concentration metric, enforced)
+    "sleeve_data_max_age_days": 4,        # "current at every close" —
+                                        # a bar older than this halts
+                                        # maintenance; 4d covers holiday
+                                        # weekends (Fri→Tue)
 }
 
 
@@ -106,10 +113,11 @@ class Breach:
 def initial_sizing(
     equity, risk_pct, entry, atr,
     available_cash, lot_size=1, max_adv_participation=0.10,
-    adv_shares=None, instrument_price=None,
+    adv_shares=None, instrument_price=None, direction="long",
 ) -> dict:
     """Stage 1: $Risk → shares @1.5×ATR stop distance, clamped by
-    cash, lot size, liquidity participation."""
+    cash, lot size, liquidity participation. Direction reversed for
+    shorts — the stop sits ABOVE entry."""
     eq, rp, e, a = map(D, (equity, risk_pct, entry, atr))
     cash = D(str(available_cash))
     if e <= 0 or a <= 0 or eq <= 0:
@@ -123,10 +131,12 @@ def initial_sizing(
                if adv_shares else cash_cap)
     shares = min(raw_shares, cash_cap, liq_cap)
     shares = int(shares / lot_size) * lot_size
+    stop_price = (e + stop_dist) if direction == "short" \
+        else (e - stop_dist)
     return {
         "dollar_risk": float(dollar_risk),
         "stop_distance": float(stop_dist),
-        "stop_price": float(e - stop_dist),
+        "stop_price": float(stop_price),
         "shares_raw": float(raw_shares),
         "shares": int(shares),
         "binding": ("liquidity" if shares == int(liq_cap / lot_size) * lot_size and liq_cap < raw_shares and liq_cap < cash_cap
@@ -146,10 +156,16 @@ def atr_12w_pct(weekly_atr, current_price) -> Decimal | None:
 
 
 def tighten_stop(current_price, current_atr, prev_stop,
-                 mult=1.5) -> dict:
-    """Adaptive trailing: new = price − mult×ATR_cur; never below the
-    previous stop for a long (ratchet only — never loosen)."""
+                 mult=1.5, direction="long") -> dict:
+    """Adaptive trailing: new = price ∓ mult×ATR_cur; ratchet only —
+    never loosen. For shorts the direction is reversed (doc Phase 3):
+    the stop trails ABOVE price and only ever ratchets DOWN."""
     p, a, prev = map(D, (current_price, current_atr, prev_stop))
+    if direction == "short":
+        new = p + a * D(str(mult))
+        return {"new_stop": float(min(new, prev)),
+                "moved": new < prev,
+                "note": "ratchet only — never loosen"}
     new = p - a * D(str(mult))
     return {"new_stop": float(max(new, prev)),
             "moved": new > prev,
@@ -165,7 +181,9 @@ class PyramidTrade:
     atr_initial: float
     shares: int
     stop: float
-    target1: float                        # current target (moves up)
+    target1: float                        # current target (walks with price)
+    direction: str = "long"               # long|short — shorts reverse
+                                        # every inequality (doc Phase 3)
     state: PyramidState = PyramidState.INITIAL
     t2_policy: str | None = None          # legacy v1 field — unused
     additions: int = 0
@@ -192,19 +210,24 @@ _OPEN_STATES = (PyramidState.INITIAL, PyramidState.TARGET1,
 
 def create_pyramid(symbol, equity, entry, atr, cash, risk_pct=0.005,
                    adv_shares=None, t2_policy=None,
-                   sizing: dict | None = None) -> PyramidTrade:
+                   sizing: dict | None = None,
+                   direction: str = "long") -> PyramidTrade:
     sz = sizing or initial_sizing(equity, risk_pct, entry, atr, cash,
-                                  adv_shares=adv_shares)
+                                  adv_shares=adv_shares,
+                                  direction=direction)
+    # direction reversed for shorts: stop ABOVE entry, target BELOW
+    sign = -1 if direction == "short" else 1
     t = PyramidTrade(
         symbol=symbol, entry=float(entry),
         atr_initial=float(atr), shares=sz["shares"],
         stop=sz["stop_price"],
-        target1=float(D(str(entry)) + 3 * D(str(atr))),
+        target1=float(D(str(entry)) + sign * 3 * D(str(atr))),
+        direction=direction,
         state=PyramidState.INITIAL, leg_shares=sz["shares"],
         atr_current=float(atr), t2_policy=t2_policy,
         leg_fills=[{"fill": float(entry), "shares": sz["shares"],
                     "leg": 1}])
-    t.log(f"entry {sz['shares']}sh @ {entry} — stop "
+    t.log(f"entry {direction} {sz['shares']}sh @ {entry} — stop "
           f"{sz['stop_price']:.2f} (1.5×ATR), target "
           f"{t.target1:.2f} (3×ATR)")
     return t
@@ -214,7 +237,8 @@ def maintain(trade: PyramidTrade, price, current_atr) -> dict:
     """Maintenance loop — run at EVERY timeframe close (spec Part 12):
     recalculate the 1.5× current-ATR stop and tighten if it moves in
     the trade's favour. Never loosens."""
-    s = tighten_stop(price, current_atr, trade.stop, mult=1.5)
+    s = tighten_stop(price, current_atr, trade.stop, mult=1.5,
+                     direction=trade.direction)
     if s["moved"]:
         trade.stop = s["new_stop"]
         trade.log(f"maintenance: stop → {s['new_stop']:.2f} "
@@ -229,19 +253,25 @@ def advance(trade: PyramidTrade, price, current_atr, *,
       1. stop hit → EXIT ALL
       2. maintenance loop → ratchet 1.5× current-ATR stop
       3. target hit → ADD a leg (if risk re-check passes) and set the
-         next target 3×ATR above current price"""
+         next target 3×ATR in the trade's direction"""
     p = D(str(price))
     atr = D(str(current_atr))
     t = trade
+    short = t.direction == "short"
+    stop_hit = p >= D(str(t.stop)) if short else p <= D(str(t.stop))
 
-    if t.state in _OPEN_STATES and p <= D(str(t.stop)):
+    if t.state in _OPEN_STATES and stop_hit:
         fill = D(str(fill_price)) if fill_price else p
         t.state = PyramidState.STOPPED
+        gapped = fill > D(str(t.stop)) if short \
+            else fill < D(str(t.stop))
         t.log(f"STOPPED @ {fill} (stop {t.stop}) — exit all "
               f"{t.shares}sh across {t.legs} leg(s)"
-              + (" — gapped" if fill < D(str(t.stop)) else ""))
+              + (" — gapped" if gapped else ""))
         return {"state": t.state, "fill": float(fill),
-                "loss_per_share": float(D(str(t.entry)) - fill)}
+                "loss_per_share": float(
+                    (fill - D(str(t.entry))) if short
+                    else (D(str(t.entry)) - fill))}
 
     if t.state not in _OPEN_STATES:
         return {"state": t.state}
@@ -250,7 +280,11 @@ def advance(trade: PyramidTrade, price, current_atr, *,
     maintain(t, price, current_atr)
 
     # target hit → add a leg (risk re-check still applies)
-    if t.target1 is not None and p >= D(str(t.target1)):
+    sign = -1 if short else 1
+    target_hit = (t.target1 is not None and
+                  (p <= D(str(t.target1)) if short
+                   else p >= D(str(t.target1))))
+    if target_hit:
         if not add_ok:
             t.log("target reached — addition REJECTED by risk checks; "
                   "pyramid continues under trailing stop")
@@ -260,7 +294,7 @@ def advance(trade: PyramidTrade, price, current_atr, *,
         t.additions += 1
         t.state = (PyramidState.TARGET1 if t.additions == 1
                    else PyramidState.ADDITION)
-        t.target1 = float(p + 3 * atr)
+        t.target1 = float(p + sign * 3 * atr)
         add_fill = float(fill_price) if fill_price else float(p)
         t.leg_fills.append({"fill": add_fill, "shares": t.leg_shares,
                             "leg": t.legs})
@@ -303,6 +337,10 @@ def sleeve_config(limits: "Limits | None" = None) -> dict:
             float(L.get("sleeve_gross_stop_pct") or 0.04),
         "atr_timeframe":
             str(L.get("sleeve_atr_timeframe") or "1d"),
+        "max_sector_pct":
+            float(L.get("sleeve_max_sector_pct") or 0.40),
+        "data_max_age_days":
+            int(L.get("sleeve_data_max_age_days") or 4),
     }
 
 
@@ -364,7 +402,8 @@ def sleeve_state(total_equity, sleeve_gross, cfg: dict,
 
 def sleeve_sizing(entry, atr, state: dict, cfg: dict,
                   asset_gross: float = 0.0, adv_shares=None,
-                  lot_size=1) -> dict:
+                  lot_size=1, direction="long",
+                  sector_gross: float = 0.0) -> dict:
     """Doc Step 2.4 — the sleeve constraint solver.
 
     Final starter shares = min(
@@ -373,6 +412,8 @@ def sleeve_sizing(entry, atr, state: dict, cfg: dict,
         asset-gross headroom = (max_asset_notional − asset_gross) ÷ px,
         sleeve-gross headroom= (effective_cap − gross) ÷ px,
         margin headroom      = free_margin ÷ (px × initial_margin),
+        sector headroom      = (sector cap − sector gross) ÷ px
+                               (Step-18 concentration, enforced),
         liquidity            = 10% ADV participation, when known)
 
     Cash is NOT a cap — the sleeve is margin-funded by design; the
@@ -393,13 +434,19 @@ def sleeve_sizing(entry, atr, state: dict, cfg: dict,
                       - D(str(state["gross"]))) / e,
         "margin": (D(str(state["free_margin"])) / (e * im)
                    if im > 0 else D("1e18")),
+        # Step-18 — sector concentration is a hard room check: a name
+        # may only size into the sector's remaining gross allowance
+        "sector": (D(str(state["effective_gross_cap"]))
+                   * D(str(cfg["max_sector_pct"]))
+                   - D(str(sector_gross))) / e,
     }
     if adv_shares:
         caps["liquidity"] = D(str(adv_shares)) * D("0.10")
     binding = min(caps, key=lambda k: caps[k])
     shares = int(caps[binding] / lot_size) * lot_size
     shares = max(shares, 0)
-    stop = e - a * D("1.5")
+    stop = (e + a * D("1.5")) if direction == "short" \
+        else (e - a * D("1.5"))
     return {
         "shares": shares,
         "shares_raw": float(caps[binding]),
@@ -596,68 +643,6 @@ def check_order(
                 round(float(new_margin), 2),
                 f"<= free margin {float(free_margin):,.0f}",
                 remediation="order needs more margin than is free"))
-        # ── Layer-IV sleeve gates — sleeve-tagged orders are bounded
-        # by the sleeve's own caps (gross incl. margin-call buffer,
-        # per-asset, position count, free margin). Portfolio stop
-        # overrides everything; a capped buffer means the broker's
-        # maintenance margin would fire before our own stop — that
-        # configuration rejects leverage, not the trade idea. ──
-        sleeve = pf.get("sleeve") or {}
-        if order.get("sleeve") and sleeve.get("enabled"):
-            st = sleeve["state"]
-            cfg = sleeve["config"]
-            if sleeve.get("cooldown"):
-                breaches.append(Breach(
-                    "sleeve_cooldown", None,
-                    "sleeve in cooldown after portfolio stop",
-                    remediation="requires human reassessment — "
-                                "release via /risk/sleeve/release"))
-            sg = _d(st["gross"])
-            if not sleeve.get("cooldown") \
-                    and sg + notional_d > _d(st["effective_gross_cap"]):
-                breaches.append(Breach(
-                    "sleeve_gross_cap",
-                    round(float(sg + notional_d), 2),
-                    f"<= {st['effective_gross_cap']:,.0f}"
-                    + (" (margin-call buffer)"
-                       if st["buffer_capped"] else ""),
-                    remediation="sleeve gross cap reached — "
-                                + ("broker maint margin is tighter "
-                                   "than the portfolio stop; reduce "
-                                   "leverage" if st["buffer_capped"]
-                                   else "close a leg first")))
-            asset_g = sum(
-                _d(p["market_value"]) for p in sleeve["positions"]
-                if p["symbol"] == order["symbol"])
-            if asset_g + notional_d > _d(st["max_asset_notional"]):
-                breaches.append(Breach(
-                    "sleeve_max_asset",
-                    round(float(asset_g + notional_d), 2),
-                    f"<= {st['max_asset_notional']:,.0f}",
-                    remediation="per-asset sleeve cap (20% of gross)"))
-            new_pos = order["symbol"] not in {
-                p["symbol"] for p in sleeve["positions"]}
-            if new_pos and st["open_positions"] >= cfg["max_positions"]:
-                breaches.append(Breach(
-                    "sleeve_max_positions",
-                    st["open_positions"] + 1, cfg["max_positions"],
-                    remediation="5-position sleeve cap — close one"))
-            order_margin = notional_d * _d(cfg["initial_margin"])
-            if order_margin > _d(st["free_margin"]):
-                breaches.append(Breach(
-                    "sleeve_margin",
-                    round(float(order_margin), 2),
-                    f"<= free {st['free_margin']:,.0f}",
-                    remediation="no sleeve margin headroom"))
-            # Step-17 regime check — entries and pyramid adds are
-            # refused while the market regime is hostile; exits are
-            # never gated by regime (side==buy reaches here only)
-            if pf.get("market_regime") == "risk_off":
-                breaches.append(Breach(
-                    "sleeve_macro_risk_off", pf.get("market_regime"),
-                    "market_regime != risk_off",
-                    remediation="risk-off regime — no new sleeve "
-                                "exposure until regime clears"))
         # max position count
         lim = L.get("max_positions")
         if lim is not None and order["symbol"] not in {
@@ -749,6 +734,90 @@ def check_order(
                 "vol_reduction", vol, L.get("vol_reduction_vol"),
                 blocking=False,
                 remediation="elevated vol — halve size"))
+
+    # ── Layer-IV sleeve gates — sleeve-tagged orders are bounded by
+    # the sleeve's own caps (gross incl. margin-call buffer, per-asset,
+    # position count, free margin, sector concentration). Runs for BOTH
+    # directions: a sleeve-tagged sell is a short ENTRY or pyramid add
+    # — still new exposure; exits never carry the sleeve flag.
+    # Portfolio stop overrides everything; a capped buffer means the
+    # broker's maintenance margin would fire before our own stop —
+    # that configuration rejects leverage, not the trade idea. ──
+    sleeve = pf.get("sleeve") or {}
+    if order.get("sleeve") and sleeve.get("enabled"):
+        st = sleeve["state"]
+        cfg = sleeve["config"]
+        notional_d = _d(order["notional"])
+        if sleeve.get("cooldown"):
+            breaches.append(Breach(
+                "sleeve_cooldown", None,
+                "sleeve in cooldown after portfolio stop",
+                remediation="requires human reassessment — "
+                            "release via /risk/sleeve/release"))
+        sg = _d(st["gross"])
+        if not sleeve.get("cooldown") \
+                and sg + notional_d > _d(st["effective_gross_cap"]):
+            breaches.append(Breach(
+                "sleeve_gross_cap",
+                round(float(sg + notional_d), 2),
+                f"<= {st['effective_gross_cap']:,.0f}"
+                + (" (margin-call buffer)"
+                   if st["buffer_capped"] else ""),
+                remediation="sleeve gross cap reached — "
+                            + ("broker maint margin is tighter "
+                               "than the portfolio stop; reduce "
+                               "leverage" if st["buffer_capped"]
+                               else "close a leg first")))
+        asset_g = sum(
+            _d(p["market_value"]) for p in sleeve["positions"]
+            if p["symbol"] == order["symbol"])
+        if asset_g + notional_d > _d(st["max_asset_notional"]):
+            breaches.append(Breach(
+                "sleeve_max_asset",
+                round(float(asset_g + notional_d), 2),
+                f"<= {st['max_asset_notional']:,.0f}",
+                remediation="per-asset sleeve cap (20% of gross)"))
+        # Step-18 sector concentration — a single sector may not
+        # exceed sleeve_max_sector_pct of the EFFECTIVE gross cap
+        # (absolute room, not share-of-book — the bound can't shrink
+        # just because the book does)
+        sector_cap = _d(st["effective_gross_cap"]) * _d(
+            cfg["max_sector_pct"])
+        if order.get("sector"):
+            sec_g = sum(
+                _d(p["market_value"]) for p in sleeve["positions"]
+                if p.get("sector") == order["sector"])
+            if sec_g + notional_d > sector_cap:
+                breaches.append(Breach(
+                    "sleeve_sector",
+                    round(float(sec_g + notional_d), 2),
+                    f"<= {float(sector_cap):,.0f} "
+                    f"({cfg['max_sector_pct']:.0%} of effective cap)",
+                    remediation="sector concentration cap — diversify "
+                                "the sleeve before adding"))
+        new_pos = order["symbol"] not in {
+            p["symbol"] for p in sleeve["positions"]}
+        if new_pos and st["open_positions"] >= cfg["max_positions"]:
+            breaches.append(Breach(
+                "sleeve_max_positions",
+                st["open_positions"] + 1, cfg["max_positions"],
+                remediation="5-position sleeve cap — close one"))
+        order_margin = notional_d * _d(cfg["initial_margin"])
+        if order_margin > _d(st["free_margin"]):
+            breaches.append(Breach(
+                "sleeve_margin",
+                round(float(order_margin), 2),
+                f"<= free {st['free_margin']:,.0f}",
+                remediation="no sleeve margin headroom"))
+        # Step-17 regime check — entries and pyramid adds are refused
+        # while the market regime is hostile, whichever direction the
+        # exposure runs; exits are never gated by regime
+        if pf.get("market_regime") == "risk_off":
+            breaches.append(Breach(
+                "sleeve_macro_risk_off", pf.get("market_regime"),
+                "market_regime != risk_off",
+                remediation="risk-off regime — no new sleeve "
+                            "exposure until regime clears"))
 
     return {
         "allowed": not any(b.blocking for b in breaches),

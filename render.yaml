@@ -36,6 +36,70 @@ services:
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
+      # scheduler auth — POST /api/v1/internal/jobs/* requires this
+      - key: CRON_SECRET
+        sync: false
+
+# ── Phase-4/6 cadence (doc): the pyramid maintenance loop runs after
+# every US cash close; the Three Reviews run weekly/monthly/quarterly.
+# Each cronjob POSTs the job key to the API's secret-gated internal
+# endpoint — the job itself is the same code the UI's "run now" calls.
+  - type: cronjob
+    name: vaiip-pyramid-maintain
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    # 22:30 UTC Mon–Fri — after both EDT (20:00) and EST (21:00) closes
+    schedule: "30 22 * * 1-5"
+    startCommand: python -m app.cron_trigger pyramid:maintain
+    envVars:
+      - key: API_URL
+        value: https://vianomics.onrender.com
+      - key: CRON_SECRET
+        sync: false
+
+  - type: cronjob
+    name: vaiip-review-weekly
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    schedule: "0 8 * * 0"            # Sunday — weekly Four-M's review
+    startCommand: python -m app.cron_trigger review:weekly
+    envVars:
+      - key: API_URL
+        value: https://vianomics.onrender.com
+      - key: CRON_SECRET
+        sync: false
+
+  - type: cronjob
+    name: vaiip-review-monthly
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    schedule: "0 9 1 * *"            # 1st — monthly MOS re-rank
+    startCommand: python -m app.cron_trigger review:monthly
+    envVars:
+      - key: API_URL
+        value: https://vianomics.onrender.com
+      - key: CRON_SECRET
+        sync: false
+
+  - type: cronjob
+    name: vaiip-review-quarterly
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    schedule: "0 10 1 1,4,7,10 *"    # quarter starts — margin review
+    startCommand: python -m app.cron_trigger review:quarterly
+    envVars:
+      - key: API_URL
+        value: https://vianomics.onrender.com
+      - key: CRON_SECRET
+        sync: false
 
 # Postgres lives on Supabase — set DATABASE_URL in the dashboard:
 # postgresql+asyncpg://postgres.<ref>:<pw>@aws-0-us-east-1.pooler.supabase.com:5432/postgres

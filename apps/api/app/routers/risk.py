@@ -3,6 +3,7 @@ check_order — there is no alternate path (execute routes go through
 this gate; an AI agent call cannot approve)."""
 
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -516,6 +517,7 @@ class PyramidIn(BaseModel):
     risk_pct: float = Field(0.005, gt=0, le=0.05)
     t2_policy: str = "trailing"
     adv_shares: float | None = None
+    direction: Literal["long", "short"] = "long"
     force: bool = False   # authorized override of the eligibility gate
 
 
@@ -591,6 +593,10 @@ async def create_pyramid(
                        "pyramid requires TRADE_ELIGIBLE")),
                  "eligibility": eligibility})
 
+    sec_name = None
+    if inst.sector_id:
+        s = await db.get(Sector, inst.sector_id)
+        sec_name = s.name if s else None
     sizing = None
     if sleeve["enabled"]:
         st = sleeve["state"]
@@ -599,18 +605,22 @@ async def create_pyramid(
             asset_gross=sum(
                 p["market_value"] for p in sleeve["positions"]
                 if p["symbol"] == inst.symbol),
-            adv_shares=adv)
+            sector_gross=sum(
+                p["market_value"] for p in sleeve["positions"]
+                if p.get("sector") == sec_name) if sec_name else 0.0,
+            adv_shares=adv, direction=body.direction)
     else:
         # flat sizing path — still gated: every entry passes the
         # portfolio risk engine, sleeve or no sleeve (doc Step 18)
         sizing = re_.initial_sizing(
             body.equity, body.risk_pct, body.entry, body.atr,
-            body.cash, adv_shares=adv)
+            body.cash, adv_shares=adv, direction=body.direction)
         limits = await _active_limits(db)
         cs = float(inst.contract_size or 1)
+        side = "sell" if body.direction == "short" else "buy"
         gate = re_.check_order(
-            {"symbol": inst.symbol, "side": "buy",
-             "sector": None,
+            {"symbol": inst.symbol, "side": side,
+             "sector": sec_name,
              "notional": sizing["notional"] * cs,
              "risk_dollars": sizing["dollar_risk"] * cs},
             ctx, limits=limits)
@@ -625,7 +635,7 @@ async def create_pyramid(
                 409, {"detail": "risk gate refused the order",
                       "breaches": gate["breaches"]})
         db.add(RiskCheck(
-            symbol=inst.symbol, side="buy",
+            symbol=inst.symbol, side=side,
             notional=sizing["notional"] * cs,
             allowed=True, breaches=gate["breaches"],
             limits_snapshot=dict(limits.values),
@@ -649,11 +659,12 @@ async def create_pyramid(
     t = re_.create_pyramid(
         inst.symbol, body.equity, body.entry, body.atr, body.cash,
         risk_pct=body.risk_pct, t2_policy=body.t2_policy,
-        adv_shares=adv, sizing=sizing)
+        adv_shares=adv, sizing=sizing, direction=body.direction)
     rec = PyramidTradeRec(
         instrument_id=inst.id, state=t.state.value, entry=t.entry,
         atr_initial=t.atr_initial, shares=t.shares, stop=t.stop,
         target1=t.target1, t2_policy=t.t2_policy or "adaptive",
+        direction=body.direction,
         engine_version=re_.ENGINE_VERSION, events=t.events,
         params={"risk_pct": body.risk_pct,
                 "leg_shares": t.leg_shares,
@@ -748,12 +759,14 @@ async def exit_pyramid(
             .order_by(OhlcvBar.time.desc()).limit(1))).scalar()
         price = float(price) if price else None
     # Step-13 position record — realized P&L against per-leg cost
-    # basis, booked at the exit price
+    # basis, booked at the exit price (sign reversed for shorts)
     if price:
         fills = params.get("leg_fills") or [
             {"fill": float(rec.entry), "shares": rec.shares}]
+        sign = -1 if (rec.direction or "long") == "short" else 1
         params["realized_pnl"] = round(
-            sum(f["shares"] * (price - f["fill"]) for f in fills), 2)
+            sign * sum(f["shares"] * (price - f["fill"])
+                       for f in fills), 2)
     rec.params = params
     rec.events = [
         *(rec.events or []),
@@ -784,16 +797,21 @@ async def advance_pyramid(
     rec = await db.get(PyramidTradeRec, trade_id)
     if rec is None:
         raise HTTPException(404, "pyramid trade not found")
-    # same rule as the maintenance loop — a price at/under the stop
-    # proposes an exit; it never closes the position itself
-    if (rec.stop is not None and body.price <= rec.stop
+    direction = rec.direction or "long"
+    # same rule as the maintenance loop — a price through the stop
+    # proposes an exit; it never closes the position itself. For
+    # shorts the stop sits ABOVE the price.
+    stop_hit = (body.price >= rec.stop if direction == "short"
+                else body.price <= rec.stop)
+    if (rec.stop is not None and stop_hit
             and not (rec.params or {}).get("exit_request")):
         from app.services.pyramid_maintain import _propose_exit
         inst = await db.get(Instrument, rec.instrument_id)
+        cmp = "≥" if direction == "short" else "≤"
         await _propose_exit(
             db, rec, inst,
             reason=(f"stop breached — price {body.price:.2f} "
-                    f"≤ stop {rec.stop:.2f}"),
+                    f"{cmp} stop {rec.stop:.2f}"),
             trigger="stop_breach", price=body.price,
             proposed_state="stopped_out", now=utcnow())
         await db.commit()
@@ -809,6 +827,7 @@ async def advance_pyramid(
     t = re_.PyramidTrade(
         symbol="?", entry=rec.entry, atr_initial=rec.atr_initial,
         shares=rec.shares, stop=rec.stop, target1=rec.target1,
+        direction=direction,
         state=re_.PyramidState(rec.state), t2_policy=rec.t2_policy,
         additions=rec.additions, leg_shares=leg_shares,
         atr_current=params.get("atr_current"),
@@ -823,16 +842,23 @@ async def advance_pyramid(
     # because price moved in our favour.
     add_ok = body.add_ok
     gate = None
-    if (add_ok and t.target1 is not None
-            and body.price >= t.target1):
+    target_hit = (t.target1 is not None and
+                  (body.price <= t.target1 if direction == "short"
+                   else body.price >= t.target1))
+    if add_ok and target_hit:
         inst = await db.get(Instrument, rec.instrument_id)
         cs = float(inst.contract_size or 1) if inst else 1.0
+        sec_name = None
+        if inst is not None and inst.sector_id:
+            s = await db.get(Sector, inst.sector_id)
+            sec_name = s.name if s else None
         ctx = await _portfolio_ctx(db)
         limits = await _active_limits(db)
         leg_risk = abs(body.price - t.stop) * leg_shares * cs
         gate = re_.check_order(
             {"symbol": inst.symbol if inst else "?",
-             "side": "buy", "sector": None,
+             "side": "sell" if direction == "short" else "buy",
+             "sector": sec_name,
              "notional": leg_shares * body.price * cs,
              "risk_dollars": leg_risk,
              "sleeve": bool(ctx["sleeve"]["enabled"])},
@@ -898,11 +924,17 @@ async def _sleeve_ctx(db: AsyncSession, ctx: dict,
         cs = float(inst.contract_size or 1)
         mv = rec.shares * px * cs
         gross += mv
+        sec = None
+        if inst.sector_id:
+            s = await db.get(Sector, inst.sector_id)
+            sec = s.name if s else None
         if inst.maintenance_margin_rate is not None:
             maint_rates.append(float(inst.maintenance_margin_rate))
         positions.append({"symbol": inst.symbol, "state": rec.state,
                           "shares": rec.shares, "market_value": mv,
-                          "entry": rec.entry, "stop": rec.stop})
+                          "entry": rec.entry, "stop": rec.stop,
+                          "direction": rec.direction or "long",
+                          "sector": sec})
     state = re_.sleeve_state(
         ctx["nav"], gross, cfg, open_positions=len(rows),
         maint_margin=max(maint_rates) if maint_rates else None)
@@ -1021,6 +1053,7 @@ async def list_pyramids(db: AsyncSession = Depends(get_db)) -> list[dict]:
     )).all()
     return [
         {"id": r.id, "symbol": sym, "state": r.state,
+         "direction": r.direction or "long",
          "entry": r.entry, "shares": r.shares, "stop": r.stop,
          "target1": r.target1, "atr_initial": r.atr_initial,
          "atr_current": (r.params or {}).get("atr_current"),
@@ -1038,6 +1071,7 @@ class PyramidPreviewIn(BaseModel):
     equity: float | None = Field(None, gt=0)    # default: live NAV
     cash: float | None = None                   # default: live cash
     atr_override: float | None = Field(None, gt=0)  # edited-period ATR
+    direction: Literal["long", "short"] = "long"
 
 
 @router.post("/pyramid/preview")
@@ -1083,20 +1117,30 @@ async def pyramid_preview(
         asset_gross = sum(
             p["market_value"] for p in sleeve["positions"]
             if p["symbol"] == inst.symbol)
+        sec_name = None
+        if inst.sector_id:
+            s = await db.get(Sector, inst.sector_id)
+            sec_name = s.name if s else None
         sz = re_.sleeve_sizing(
             entry, atr_abs, st, sleeve["config"],
-            asset_gross=asset_gross, adv_shares=adv_shares)
+            asset_gross=asset_gross, adv_shares=adv_shares,
+            direction=body.direction,
+            sector_gross=sum(
+                p["market_value"] for p in sleeve["positions"]
+                if p.get("sector") == sec_name) if sec_name else 0.0)
     else:
         sz = re_.initial_sizing(
             equity, body.risk_pct, entry, atr_abs, cash,
-            adv_shares=adv_shares)
+            adv_shares=adv_shares, direction=body.direction)
 
     # leg ladder — each target hit adds a standard leg at 3×ATR steps
+    # in the trade's direction (below entry for shorts)
+    sign = -1 if body.direction == "short" else 1
     legs = [{"leg": 1, "fill": entry, "shares": sz["shares"],
              "cumulative": sz["shares"]}]
     px = entry
     for n in range(2, 5):
-        px = px + 3 * atr_abs
+        px = px + sign * 3 * atr_abs
         legs.append({"leg": n, "fill": px, "shares": sz["shares"],
                      "cumulative": sz["shares"] * n})
 
@@ -1112,6 +1156,7 @@ async def pyramid_preview(
             eligibility = None
     return {
         "symbol": inst.symbol,
+        "direction": body.direction,
         "as_of": rep["as_of"],
         "atr": {"abs": atr_abs,
                 "pct": (atr_abs / entry if entry else None)
@@ -1122,8 +1167,8 @@ async def pyramid_preview(
         "sheet": {
             "stop": sz["stop_price"],
             "stop_distance": sz["stop_distance"],
-            "target": entry + 3 * atr_abs,
-            "risk_per_share": entry - sz["stop_price"],
+            "target": entry + sign * 3 * atr_abs,
+            "risk_per_share": abs(entry - sz["stop_price"]),
             "dollar_risk": sz["dollar_risk"],
             "shares": sz["shares"],
             "shares_raw": sz["shares_raw"],

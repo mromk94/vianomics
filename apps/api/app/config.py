@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     ibkr_port: int | None = None
     ibkr_client_id: int | None = None
 
+    # Machine-to-machine cron trigger — POST /api/v1/internal/jobs/*
+    # requires X-Cron-Secret matching this. Empty = endpoint refuses
+    # every request (fail closed; never defaults to open).
+    cron_secret: str | None = None
+
     @property
     def ibkr_configured(self) -> bool:
         return bool(self.execution_enabled and self.ibkr_host

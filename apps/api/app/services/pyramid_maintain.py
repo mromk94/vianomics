@@ -35,7 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
-from app.models.instruments import Instrument
+from app.models.instruments import Instrument, Sector
 from app.models.market import OhlcvBar
 from app.models.risk import (
     LimitConfig, PyramidTradeRec, RiskCheck, SleeveState)
@@ -87,6 +87,10 @@ def _cost_basis(rec: PyramidTradeRec) -> float:
     return sum(f["shares"] * f["fill"] for f in _leg_fills(rec))
 
 
+def _rec_direction(rec: PyramidTradeRec) -> str:
+    return getattr(rec, "direction", None) or "long"
+
+
 def _rebuild(rec: PyramidTradeRec) -> re_.PyramidTrade:
     """Same hydration the advance endpoint uses — params carries the
     fields the dataclass needs but the row doesn't."""
@@ -96,6 +100,7 @@ def _rebuild(rec: PyramidTradeRec) -> re_.PyramidTrade:
     return re_.PyramidTrade(
         symbol="?", entry=rec.entry, atr_initial=rec.atr_initial,
         shares=rec.shares, stop=rec.stop, target1=rec.target1,
+        direction=_rec_direction(rec),
         state=re_.PyramidState(rec.state), t2_policy=rec.t2_policy,
         additions=rec.additions, leg_shares=leg,
         atr_current=params.get("atr_current"),
@@ -117,6 +122,7 @@ async def _sleeve_ctx(db: AsyncSession, nav: float,
         .where(PyramidTradeRec.state.in_(_MAINTAIN_STATES)))).all()
     gross = pnl = 0.0
     maint_rates, positions = [], []
+    sector_gross: dict[str, float] = {}
     for rec, inst in rows:
         px = (await db.execute(
             select(OhlcvBar.close)
@@ -128,18 +134,37 @@ async def _sleeve_ctx(db: AsyncSession, nav: float,
         mv = rec.shares * px * cs
         gross += mv
         # per-leg cost basis — legs 2+ filled at target prices, not
-        # the leg-1 entry; booking all shares at entry overstates P&L
-        pnl += (mv - _cost_basis(rec) * cs)
+        # the leg-1 entry; booking all shares at entry overstates P&L.
+        # Short P&L is reversed: profit when price falls.
+        basis = _cost_basis(rec) * cs
+        pnl += (basis - mv) if _rec_direction(rec) == "short" \
+            else (mv - basis)
+        sec = None
+        if inst.sector_id:
+            s = await db.get(Sector, inst.sector_id)
+            sec = s.name if s else None
+        sector_gross[sec or "?"] = sector_gross.get(sec or "?", 0) + mv
         if inst.maintenance_margin_rate is not None:
             maint_rates.append(float(inst.maintenance_margin_rate))
         positions.append({"symbol": inst.symbol, "state": rec.state,
-                          "market_value": mv})
+                          "direction": _rec_direction(rec),
+                          "sector": sec, "market_value": mv})
     state = re_.sleeve_state(
         nav, gross, cfg, open_positions=len(rows),
         maint_margin=max(maint_rates) if maint_rates else None)
     state["sleeve_open_pnl"] = pnl
     state["sleeve_pnl_pct"] = (pnl / state["sleeve_equity"]
                              if state["sleeve_equity"] else None)
+    # Step-18 metric — sector concentration inside the sleeve
+    top_sec, top_g = (max(sector_gross.items(), key=lambda kv: kv[1])
+                      if sector_gross else (None, 0.0))
+    state["sector_concentration"] = {
+        "by_sector_gross": {k: round(v, 2) for k, v in
+                            sector_gross.items()},
+        "top_sector": top_sec,
+        "top_sector_share_of_gross": (top_g / gross if gross else None),
+        "cap_pct": cfg["max_sector_pct"],
+        "cap_usd": state["effective_gross_cap"] * cfg["max_sector_pct"]}
     life = await get_sleeve_state(db)
     out["cooldown"] = life.state == "cooldown"
     out["state"], out["positions"] = state, positions
@@ -238,7 +263,11 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
     limits = await _active_limits(db)
     pf = await _portfolio_ctx(db)
     sleeve = pf.get("sleeve") or {}
-    max_age = PARAMS["max_bar_age_days"]
+    # doc: data must be "current at every close" — the freshness
+    # window is an operator config (default 4 calendar days, covering
+    # holiday weekends), not the looser display-level PARAMS value
+    max_age = (sleeve.get("config") or {}).get(
+        "data_max_age_days") or PARAMS["max_bar_age_days"]
 
     recs = (await db.execute(
         select(PyramidTradeRec, Instrument)
@@ -343,8 +372,13 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
             # stay open on chart strength alone. Two re-tests every
             # close: fundamentals (four_m proxies) and valuation zone
             # (price ≥ sticker → "VALUATION EXIT / DO NOT ADD").
+            # Direction reversed for shorts: a short COVERS at/below
+            # intrinsic value (price ≤ sticker — profit realised), and
+            # the four-ms deterioration exit does not apply — a short's
+            # thesis IS deterioration; the exit would be improvement.
             # Missing data is NOT deterioration — an unresearched name
             # can't be condemned by a gate that couldn't see it. ──
+            direction = _rec_direction(rec)
             exit_reason = None
             try:
                 gate = await qual.qualification_gate(
@@ -356,7 +390,8 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
                                       "latest"))
                     for row in gate["five_numbers"].values())
                 reasons = []
-                if has_fund and not gate["four_ms"]["pass"]:
+                if direction != "short" \
+                        and has_fund and not gate["four_ms"]["pass"]:
                     # deterioration = pass → fail. Only a position that
                     # was TRADE_ELIGIBLE at entry has a passing
                     # baseline; a never-qualified record gets a review
@@ -377,7 +412,13 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
                             instrument_id=inst.id,
                             action="review fundamentals — position "
                                    "predates the qualification gate")
-                if (gate["valuation"]["rule1"].get("zone")
+                sticker = (gate["valuation"]["rule1"]
+                           .get("sticker_price"))
+                if direction == "short":
+                    if sticker and close <= sticker:
+                        reasons.append("valuation cover "
+                                       "(price ≤ sticker)")
+                elif (gate["valuation"]["rule1"].get("zone")
                         == "VALUATION_EXIT"):
                     reasons.append("valuation exit (price ≥ sticker)")
                 exit_reason = " + ".join(reasons) or None
@@ -402,12 +443,16 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
 
             # stop breach is a close trigger — it queues an exit
             # request like every other close path; advance() only
-            # runs when no close is pending on this bar
-            if t.stop is not None and close <= t.stop:
+            # runs when no close is pending on this bar. Direction
+            # reversed for shorts: the stop sits ABOVE price.
+            stop_hit = (close >= t.stop if direction == "short"
+                        else close <= t.stop)
+            if t.stop is not None and stop_hit:
+                cmp = "≥" if direction == "short" else "≤"
                 if await _propose_exit(
                         db, rec, inst,
                         reason=(f"stop breached — close {close:.2f} "
-                                f"≤ stop {t.stop:.2f}"),
+                                f"{cmp} stop {t.stop:.2f}"),
                         trigger="stop_breach", price=close,
                         proposed_state="stopped_out", now=now):
                     out["exits_proposed"] += 1
@@ -418,20 +463,30 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
                 continue
 
             # earn the right — a target hit only earns a leg if the
-            # sleeve + portfolio gates still have room (doc Phase 4.6)
+            # sleeve + portfolio gates still have room (doc Phase 4.6).
+            # For shorts the target sits BELOW price and the add is a
+            # sell-side order through the same capacity gates.
+            target_hit = (t.target1 is not None and
+                          (close <= t.target1 if direction == "short"
+                           else close >= t.target1))
             add_ok = True
-            if t.target1 is not None and close >= t.target1:
+            if target_hit:
                 cs = float(inst.contract_size or 1)
                 leg_risk = abs(close - t.stop) * t.leg_shares * cs
+                side = "sell" if direction == "short" else "buy"
+                sec_name = None
+                if inst.sector_id:
+                    s = await db.get(Sector, inst.sector_id)
+                    sec_name = s.name if s else None
                 gate = re_.check_order(
-                    {"symbol": inst.symbol, "side": "buy",
-                     "sector": None,
+                    {"symbol": inst.symbol, "side": side,
+                     "sector": sec_name,
                      "notional": t.leg_shares * close * cs,
                      "risk_dollars": leg_risk,
                      "sleeve": bool(sleeve.get("enabled"))},
                     pf, limits=limits)
                 db.add(RiskCheck(
-                    symbol=inst.symbol, side="buy",
+                    symbol=inst.symbol, side=side,
                     notional=t.leg_shares * close * cs,
                     allowed=gate["allowed"],
                     breaches=gate["breaches"],
@@ -491,7 +546,12 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
     out["sleeve"] = sleeve.get("state")
     if sleeve.get("enabled"):
         st = sleeve["state"]
-        # margin-call proximity: used > 90% of equity → critical
+        # margin-call proximity: used > 90% of equity → the doc's
+        # "reduce exposure before the broker calls". Reductions are
+        # PROPOSED, not executed: queue exits on the largest positions
+        # (biggest gross first) until projected gross sits back under
+        # the broker-call bound — a human approves each close via
+        # POST /risk/pyramid/{id}/exit.
         if st["margin_utilisation"] and st["margin_utilisation"] > 0.9:
             await emit_alert(
                 db, severity="critical", source="monitor:portfolio",
@@ -501,6 +561,37 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
                 dedup_key="sleeve_margin_hot",
                 observed=st["margin_utilisation"], required=0.9,
                 action="reduce gross before broker forces it")
+            target = st.get("margin_call_at_gross")
+            if target:
+                # hold a 10% buffer inside the broker bound
+                target *= 0.9
+                proj_gross = st["gross"]
+                queued = 0
+                by_symbol = {inst.symbol: (rec, inst)
+                             for rec, inst in recs}
+                for pos in sorted(sleeve["positions"],
+                                  key=lambda p: p["market_value"],
+                                  reverse=True):
+                    if proj_gross <= target:
+                        break
+                    pair = by_symbol.get(pos["symbol"])
+                    if pair is None:
+                        continue
+                    rec, inst = pair
+                    px = (pos["market_value"] / rec.shares
+                          if rec.shares else rec.entry)
+                    # positions already pending count toward the cut
+                    if await _propose_exit(
+                            db, rec, inst,
+                            reason=("margin-call proximity — sleeve "
+                                    "gross must come down before the "
+                                    "broker forces it"),
+                            trigger="margin_call", price=px,
+                            proposed_state="closed", now=now):
+                        queued += 1
+                    proj_gross -= pos["market_value"]
+                if queued:
+                    out["margin_reduction_queued"] = queued
         # ── doc portfolio stop — ABSOLUTE about risk: a breach drops
         # the sleeve into cooldown immediately (no new exposure) and
         # queues every open position for liquidation. Closes still

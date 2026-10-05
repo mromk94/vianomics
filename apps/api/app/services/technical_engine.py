@@ -30,7 +30,7 @@ from app.models.market import OhlcvBar
 from app.services import technical as ti
 from app.services.technical import Bar
 
-PARAMS_VERSION = "technical/v1.0"
+PARAMS_VERSION = "technical/v1.1"
 
 PARAMS = {
     "rsi_period": 10, "rsi_trigger": 30,
@@ -40,7 +40,10 @@ PARAMS = {
     "adx_min": 25, "sr_lookback": 60, "breakout_lookback": 20,
     "vol_mult": 1.5,
     "mr_require": ["rsi", "cmi", "wr"],  # configurable confirmations
-    "max_bar_age_days": 7,               # freshness gate
+    # freshness gate — doc: data "must be current at every close".
+    # 4 calendar days covers holiday weekends (Fri close → Tue close);
+    # anything older means a broken feed, not a quiet market.
+    "max_bar_age_days": 4,
 }
 
 

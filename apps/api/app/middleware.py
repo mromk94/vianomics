@@ -16,6 +16,7 @@ from starlette.responses import JSONResponse
 PUBLIC_PREFIXES = (
     "/api/v1/auth/login",
     "/api/v1/external/",      # MT4 push + bamboo (own secrets)
+    "/api/v1/internal/",      # scheduler triggers (X-Cron-Secret)
     "/api/v1/webhooks/",      # TradingView (own secret)
     "/api/v1/health",
     "/healthz", "/livez", "/readyz", "/ping",

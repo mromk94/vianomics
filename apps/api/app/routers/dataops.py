@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -91,6 +91,32 @@ async def runs_for(job_key: str, limit: int = 20,
          "quarantined": r.records_quarantined,
          "error": r.error}
         for r in rows]
+
+
+# ── machine-to-machine scheduler trigger ──
+# External cron (Render cronjobs, GitHub Actions, cron-of-any-kind)
+# calls POST /api/v1/internal/jobs/{key} with X-Cron-Secret. The path
+# is whitelisted from session auth (middleware PUBLIC_PREFIXES) so a
+# scheduler never needs a human session token; the secret is enforced
+# HERE — unset CRON_SECRET means every call fails closed (503).
+internal_router = APIRouter(prefix="/internal", tags=["internal"])
+
+
+@internal_router.post("/jobs/{job_key:path}", status_code=202)
+async def cron_trigger(job_key: str,
+                       request: Request,
+                       db: AsyncSession = Depends(get_db)):
+    import hmac
+
+    from app.config import get_settings
+    secret = get_settings().cron_secret
+    if not secret:
+        raise HTTPException(503, "CRON_SECRET not configured — "
+                               "internal job endpoint disabled")
+    sent = request.headers.get("x-cron-secret", "")
+    if not hmac.compare_digest(sent, secret):
+        raise HTTPException(401, "invalid cron secret")
+    return await run_job_now(job_key, db)
 
 
 @router.post("/run/{job_key}", status_code=202)

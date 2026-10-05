@@ -185,4 +185,6 @@ def test_band_boundaries_documented():
     """Params are explicit — changing them changes version contract."""
     assert te.PARAMS["rsi_trigger"] == 30
     assert te.PARAMS["aroon_trigger"] == 99
-    assert te.PARAMS_VERSION == "technical/v1.0"
+    # v1.1 — freshness gate tightened to 4 calendar days (doc: data
+    # must be "current at every close")
+    assert te.PARAMS_VERSION == "technical/v1.1"

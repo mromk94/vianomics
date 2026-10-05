@@ -489,3 +489,92 @@ def test_equity_stats_drawdown_panel():
     assert s["current_dd_pct"] == pytest.approx(57_000/60_000 - 1)
     assert s["mdd_pct"] is not None
     assert "weekly_dd_pct" in s and "monthly_dd_pct" in s
+
+
+# ── direction reversal — doc: "for shorts, direction must be
+# reversed" ──
+
+def test_short_pyramid_levels_reversed():
+    t = re_.create_pyramid("S", 100_000, 100, 10, 100_000,
+                           direction="short")
+    assert t.stop == pytest.approx(100 + 15)      # stop ABOVE entry
+    assert t.target1 == pytest.approx(100 - 30)   # target BELOW
+    assert t.direction == "short"
+
+
+def test_short_stop_ratchet_and_breach():
+    t = re_.create_pyramid("S", 100_000, 100, 10, 100_000,
+                           direction="short")
+    # price falls → stop ratchets DOWN (95+15=110 < 115)
+    re_.advance(t, 80, 10)
+    assert t.stop == pytest.approx(95)
+    # a later rally must NOT widen it
+    re_.advance(t, 88, 10)
+    assert t.stop == pytest.approx(95)
+    # close above the stop → STOPPED, loss per share = fill − entry
+    r = re_.advance(t, 97, 10)
+    assert r["state"] == re_.PyramidState.STOPPED
+    assert r["loss_per_share"] == pytest.approx(-3.0)
+
+
+def test_short_target_adds_leg_downward():
+    t = re_.create_pyramid("S", 100_000, 100, 10, 100_000,
+                           direction="short")
+    r = re_.advance(t, 68, 10)          # ≤ target1 70 → add
+    assert r["state"] in (re_.PyramidState.TARGET1,
+                          re_.PyramidState.ADDITION)
+    assert t.additions == 1
+    assert t.target1 == pytest.approx(68 - 30)   # ladder walks DOWN
+    assert t.leg_fills[-1]["fill"] == pytest.approx(68)
+
+
+def test_sleeve_gates_apply_to_sell_side():
+    """A sleeve-tagged sell is a SHORT ENTRY — still new exposure; the
+    capacity gates can't be dodged by flipping the side."""
+    pf = _pf()
+    pf["sleeve"] = {
+        "enabled": True, "cooldown": True,
+        "state": re_.sleeve_state(100_000, 0,
+                                re_.sleeve_config(
+                                    re_.Limits(values={
+                                        "sleeve_enabled": True}))),
+        "config": re_.sleeve_config(
+            re_.Limits(values={"sleeve_enabled": True})),
+        "positions": []}
+    r = re_.check_order(
+        {"symbol": "X", "side": "sell", "sector": "Tech",
+         "notional": 10_000, "sleeve": True}, pf)
+    assert not r["allowed"]
+    assert "sleeve_cooldown" in [b["rule"] for b in r["breaches"]]
+
+
+def test_sleeve_sector_cap_blocks():
+    cfg = re_.sleeve_config(re_.Limits(values={
+        "sleeve_enabled": True, "sleeve_max_sector_pct": 0.40}))
+    st = re_.sleeve_state(100_000, 30_000, cfg)   # eff cap 150k → 60k
+    pf = _pf()
+    pf["sleeve"] = {"enabled": True, "state": st, "config": cfg,
+                    "positions": [
+                        {"symbol": "A", "sector": "Tech",
+                         "market_value": 30_000}]}
+    # 30k Tech + 35k order = 65k > 60k cap
+    r = re_.check_order(
+        {"symbol": "B", "side": "buy", "sector": "Tech",
+         "notional": 35_000, "sleeve": True}, pf)
+    assert not r["allowed"]
+    assert "sleeve_sector" in [b["rule"] for b in r["breaches"]]
+    # a different sector clears the cap
+    r2 = re_.check_order(
+        {"symbol": "C", "side": "buy", "sector": "Energy",
+         "notional": 35_000, "sleeve": True}, pf)
+    assert "sleeve_sector" not in [b["rule"] for b in r2["breaches"]]
+
+
+def test_sleeve_sizing_sector_cap_binds():
+    cfg = re_.sleeve_config(re_.Limits(values={
+        "sleeve_enabled": True, "sleeve_max_sector_pct": 0.40}))
+    st = re_.sleeve_state(100_000, 30_000, cfg)
+    sz = re_.sleeve_sizing(100, 10, st, cfg, sector_gross=60_000)
+    # sector room is 60k − 60k = 0 → no shares
+    assert sz["shares"] == 0
+    assert sz["binding"] == "sector"

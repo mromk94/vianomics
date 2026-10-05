@@ -158,10 +158,21 @@ async def trade_eligibility(
             if p["symbol"] == inst.symbol)
         already_held = asset_gross > 0
 
+        # Step-18 — sector concentration room for THIS name's sector
+        sec_name = None
+        if inst.sector_id:
+            from app.models.instruments import Sector
+            s = await db.get(Sector, inst.sector_id)
+            sec_name = s.name if s else None
+        sector_gross = sum(
+            p["market_value"] for p in sleeve["positions"]
+            if p.get("sector") == sec_name) if sec_name else 0.0
+
         if entry and atr:
             sizing = re_.sleeve_sizing(
                 entry, atr, st, cfg,
                 asset_gross=asset_gross,
+                sector_gross=sector_gross,
                 adv_shares=(
                     float(inst.avg_dollar_volume_30d) / entry
                     if inst.avg_dollar_volume_30d else None))
@@ -177,13 +188,15 @@ async def trade_eligibility(
             "skipped": False,
         }
         in_cooldown = bool(sleeve.get("cooldown"))
+        sector_cap = st["effective_gross_cap"] * cfg["max_sector_pct"]
         portfolio_gate = {
             "pass": bool(
                 not in_cooldown
                 and (already_held
                      or st["open_positions"] < cfg["max_positions"])
                 and st["gross"] < st["effective_gross_cap"]
-                and asset_gross < st["max_asset_notional"]),
+                and asset_gross < st["max_asset_notional"]
+                and sector_gross < sector_cap),
             "cooldown": in_cooldown,
             "open_positions": st["open_positions"],
             "max_positions": cfg["max_positions"],
@@ -191,6 +204,9 @@ async def trade_eligibility(
             "effective_gross_cap": st["effective_gross_cap"],
             "asset_gross": asset_gross,
             "max_asset_notional": st["max_asset_notional"],
+            "sector": sec_name,
+            "sector_gross": sector_gross,
+            "sector_cap": sector_cap,
             "buffer_capped": st["buffer_capped"],
             "skipped": False,
         }

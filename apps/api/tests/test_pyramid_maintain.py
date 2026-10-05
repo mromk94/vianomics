@@ -591,3 +591,102 @@ async def test_summary_shape(db):
     assert set(out) >= {"processed", "tightened", "added", "stopped",
                         "add_blocked", "stale_skipped", "actions",
                         "sleeve", "maintain_version"}
+
+
+# ── direction reversal (doc: "for shorts, direction must be
+# reversed") ──
+
+async def test_short_ratchet_tightens_down(db):
+    """Short pyramid: stop trails ABOVE price, ratchets DOWN only."""
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    # price falls +1/day reversed → 82; new stop 82 + 15 = 97 < 115
+    await _bars(db, inst, [100] * 40 + list(range(99, 81, -1)))
+    rec = _rec(inst, direction="short", stop=115.0, target1=70.0)
+    db.add(rec)
+    await db.flush()
+
+    out = await pm.maintain_open_pyramids(db)
+    assert out["tightened"] == 1
+    assert rec.stop == pytest.approx(82 + 15)
+    assert rec.state == "initial_position"
+
+
+async def test_short_stop_breach_proposes_exit(db):
+    """Short stop sits above — a close ≥ stop queues a human-approved
+    exit, never an automatic close."""
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    await _bars(db, inst, [100] * 40 + [120] * 3)   # close ≥ 115 stop
+    rec = _rec(inst, direction="short", stop=115.0, target1=70.0)
+    db.add(rec)
+    await db.flush()
+
+    out = await pm.maintain_open_pyramids(db)
+    assert out["exits_proposed"] == 1
+    assert rec.state == "initial_position"          # still open
+    assert rec.params["exit_request"]["trigger"] == "stop_breach"
+
+
+async def test_short_target_hit_adds_leg(db):
+    """A short's target sits BELOW price — hitting it earns a leg."""
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    await _funded_book(db)
+    db.add(LimitConfig(version=1, payload={"min_sectors": 0}))
+    # ramp down to 65 — through the 70 target
+    await _bars(db, inst, [100] * 40 + list(range(99, 64, -1)))
+    rec = _rec(inst, direction="short", stop=115.0, target1=70.0)
+    db.add(rec)
+    await db.flush()
+
+    out = await pm.maintain_open_pyramids(db)
+    assert out["added"] == 1
+    assert rec.shares == 20
+    # next target below the close; the recorded check ran side=sell
+    assert rec.target1 == pytest.approx(65 - 30)
+    checks = (await db.execute(select(RiskCheck))).scalars().all()
+    assert len(checks) == 1 and checks[0].side == "sell"
+
+
+# ── margin-call reduction — proposals, never autonomous closes ──
+
+async def test_margin_breach_queues_reduction_exits(db):
+    """used margin >90% of sleeve equity → the doc's 'reduce before
+    the broker calls': exits proposed largest-first until projected
+    gross sits under the broker bound."""
+    inst = Instrument(symbol="TEST", name="T", asset_class="equity")
+    db.add(inst)
+    await db.flush()
+    await _funded_book(db)          # nav 100k → sleeve eq 30k
+    await _bars(db, inst, [100] * 43)
+    # maint 50% → broker call at gross = 30k/0.5 = 60k. Two positions
+    # at 90k+90k gross → utilisation 180k×20%/30k = 120% > 90%;
+    # target = 54k → both must be proposed to get under.
+    db.add(LimitConfig(version=1, payload={
+        "sleeve_enabled": True, "min_sectors": 0,
+        "sleeve_maint_margin": 0.5}))
+    big = _rec(inst, shares=900, stop=85.0,
+               params={"leg_shares": 900})
+    db.add(big)
+    inst2 = Instrument(symbol="TST2", name="T2", asset_class="equity")
+    db.add(inst2)
+    await db.flush()
+    await _bars(db, inst2, [100] * 43)
+    big2 = _rec(inst2, shares=900, stop=85.0,
+                params={"leg_shares": 900})
+    db.add(big2)
+    await db.flush()
+    # force the sleeve positions into maintenance-margin reality
+    inst.maintenance_margin_rate = 0.5
+    inst2.maintenance_margin_rate = 0.5
+
+    out = await pm.maintain_open_pyramids(db)
+    assert out.get("margin_reduction_queued", 0) >= 1
+    # all exits proposed, none executed — still open
+    assert big.state == "initial_position"
+    assert "exit_request" in (big.params or {}) or \
+           "exit_request" in (big2.params or {})

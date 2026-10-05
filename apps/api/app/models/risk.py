@@ -23,6 +23,7 @@ class PyramidTradeRec(Base, IdMixin, TimestampMixin):
     stop: Mapped[float]
     target1: Mapped[float]
     t2_policy: Mapped[str]
+    direction: Mapped[str] = mapped_column(default="long")  # long|short
     additions: Mapped[int] = mapped_column(default=0)
     engine_version: Mapped[str] = mapped_column(default="risk-pyramid/v2.0")
     events: Mapped[list] = mapped_column(JSON, default=list)
