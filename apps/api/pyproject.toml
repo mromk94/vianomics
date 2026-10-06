@@ -1,7 +1,7 @@
 [project]
-name = "vianomics-api"
+name = "vesturs-api"
 version = "0.1.0"
-description = "VAIIP — Vianomics AI Investment Intelligence Platform API"
+description = "VAIIP — Vesturs AI Investment Intelligence Platform API"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",

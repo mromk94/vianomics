@@ -128,13 +128,14 @@ async def create_user(body: UserIn,
                       admin: User = Depends(require("admin:*"))):
     if len(body.password) < 10:
         raise HTTPException(400, "min 10 chars")
+    email = body.email.strip().lower()
     exists = (await db.execute(
-        select(User).where(User.email == body.email))).scalar_one_or_none()
+        select(User).where(User.email == email))).scalar_one_or_none()
     if exists:
         raise HTTPException(409, "email already registered")
     role = (await db.execute(
         select(Role).where(Role.name == body.role))).scalar_one_or_none()
-    u = User(email=body.email, display_name=body.display_name,
+    u = User(email=email, display_name=body.display_name,
              password_hash=hash_password(body.password))
     if role:
         u.roles.append(role)

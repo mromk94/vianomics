@@ -1,4 +1,4 @@
-The goal is to turn your Vianomics investment framework into a working, institutional-style Trader OS, with a coherent architecture, reliable financial calculations, auditable AI decisions, and a polished interface.
+The goal is to turn your Vesturs investment framework into a working, institutional-style Trader OS, with a coherent architecture, reliable financial calculations, auditable AI decisions, and a polished interface.
 
 I've received the guide, and the material available to me includes the complete 35-part VAIIP framework, its eight architectural layers, and the investment governance and execution principles. I'll use that as the product's foundation rather than inventing a different investment methodology.
 
@@ -25,7 +25,7 @@ Defines the actual investment methodology, eight layers, financial screening rul
 The build has three distinct product horizons
 Phase 1 · Internal OS
 
-Vianomics institutional investment engine
+Vesturs institutional investment engine
 
 A complete, private investment workstation for the founding trader: universe screening, research, valuation, portfolio management, risk, AI-assisted decisions, trade records, and eventually broker execution.
 
@@ -87,7 +87,7 @@ The CIO cannot directly place an order. The Risk Manager's veto must be enforced
 
 The most important architecture decision
 
-I would structure Vianomics as a modular, API-first financial platform with a Python quantitative and AI backend, a TypeScript web application, and a durable relational data foundation.
+I would structure Vesturs as a modular, API-first financial platform with a Python quantitative and AI backend, a TypeScript web application, and a durable relational data foundation.
 
 The technology should be selected based on the existing repository if one already exists. We should not let an AI coding IDE replace a working stack simply because a prompt mentions a different framework.
 
@@ -95,7 +95,7 @@ The technology should be selected based on the existing repository if one alread
 
 This is the proposed starting architecture for the coding IDE. The first prompt will require the IDE to inspect your actual environment and validate these choices before implementing anything.
 
-Vianomics · VAIIP
+Vesturs · VAIIP
 
 Proposed modular architecture · Phase 1 designed for Phase 2 SaaS expansion
 

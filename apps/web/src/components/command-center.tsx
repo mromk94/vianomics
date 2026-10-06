@@ -564,7 +564,7 @@ export function CommandCenter() {
               </span>
             ))}
             <span className="w-full text-center sm:w-auto">
-              VAIIP · Vianomics AI{demo.size > 0 ? " · simulated sections labeled DEMO" : ""}
+              VAIIP · Vesturs AI{demo.size > 0 ? " · simulated sections labeled DEMO" : ""}
             </span>
           </div>
         </>

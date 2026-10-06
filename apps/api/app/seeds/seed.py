@@ -3,14 +3,15 @@
 Every seeded row is real reference data (roles, exchanges, sectors,
 the 24-ticker approved universe from the framework PDF, mandate
 defaults, provider registry) — NOT fabricated market data. The admin
-password comes from ADMIN_PASSWORD env (default documented below for
-local dev only).
+user is upserted from ADMIN_EMAIL/ADMIN_PASSWORD env when set
+(runs at every boot — see Dockerfile/startCommand).
 """
 
 import asyncio
 import os
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.db.session import SessionFactory
 from app.ingestion.upsert import get_or_create
@@ -85,20 +86,38 @@ async def seed() -> None:
             {"permissions": ["data:read", "universe:read", "mandate:read"]},
         )
 
-        # ── Admin user (dev password — override via ADMIN_PASSWORD) ──
-        pw = os.environ["ADMIN_PASSWORD"]
-        email = os.environ.get("ADMIN_EMAIL", "admin@vianomics.com")
-        admin = (
-            await db.execute(select(User).where(User.email == email))
-        ).scalar_one_or_none()
-        if admin is None:
-            admin = User(
-                email=email,
-                display_name="VAIIP Admin",
-                password_hash=hash_password(pw),
-            )
-            admin.roles.append(admin_role)
-            db.add(admin)
+        # ── Admin user — env is source of truth. ADMIN_EMAIL/ADMIN_PASSWORD
+        # are upserted every run: creating the user if missing, rotating the
+        # password if it exists (a password changed via the UI reverts to env
+        # on the next seed). Without ADMIN_PASSWORD set, the step is skipped
+        # so an unset env can't wipe access. Email is lowercased to match the
+        # login lookup (auth.login queries email == input.lower()).
+        pw = os.environ.get("ADMIN_PASSWORD")
+        email = os.environ.get("ADMIN_EMAIL", "admin@vesturs.com")
+        email = email.strip().lower()
+        if pw:
+            admin = (
+                await db.execute(
+                    select(User)
+                    .where(User.email == email)
+                    .options(selectinload(User.roles))
+                )
+            ).scalar_one_or_none()
+            if admin is None:
+                admin = User(
+                    email=email,
+                    display_name="VAIIP Admin",
+                    password_hash=hash_password(pw),
+                )
+                admin.roles.append(admin_role)
+                db.add(admin)
+            else:
+                admin.password_hash = hash_password(pw)
+                admin.is_active = True
+                if admin_role not in admin.roles:
+                    admin.roles.append(admin_role)
+        else:
+            email = None
 
         # ── Exchanges ──
         nasdaq, _ = await get_or_create(
@@ -230,7 +249,7 @@ async def seed() -> None:
             )
 
         await db.commit()
-        print(f"seed complete: roles=3 admin={email} "
+        print(f"seed complete: roles=3 admin={email or 'skipped (no ADMIN_PASSWORD)'} "
               f"instruments={len(SEED_TICKERS)} sectors={len(GICS_SECTORS)} "
               f"providers={len(PROVIDERS)} mandate=v1")
 

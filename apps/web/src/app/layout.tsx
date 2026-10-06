@@ -6,9 +6,9 @@ import { ToastProvider } from "@/components/ui/toast";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "VAIIP — Vianomics Trader OS",
+  title: "VAIIP — Vesturs Trader OS",
   description:
-    "Vianomics AI Investment Intelligence Platform — institutional investment workstation",
+    "Vesturs AI Investment Intelligence Platform — institutional investment workstation",
   icons: {
     icon: [
       { url: "/icon.svg", type: "image/svg+xml" },

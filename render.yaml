@@ -11,6 +11,7 @@ services:
     healthCheckPath: /healthz
     startCommand: >
       sh -c "alembic upgrade head &&
+             python -m app.seeds.seed &&
              uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     envVars:
       # Supabase pooler (session mode :5432 — migrations need it).
@@ -18,7 +19,7 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: CORS_ORIGINS
-        value: https://vianomics.com,https://app.vianomics.com
+        value: https://vesturs.com,https://app.vesturs.com
       - key: EXECUTION_ENABLED
         value: "false"          # stays off until IBKR verified
       - key: DEMO_FIXTURES
@@ -26,7 +27,7 @@ services:
       - key: ADMIN_PASSWORD
         sync: false             # set in render dashboard
       - key: ADMIN_EMAIL
-        value: admin@vianomics.com
+        value: admin@vesturs.com
       # provider keys — set in render dashboard (never in git):
       - key: TIINGO_API_KEY
         sync: false

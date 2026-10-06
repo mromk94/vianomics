@@ -34,8 +34,8 @@ const BLOCKS: Block[] = [
     title: "Getting started — your first 5 minutes",
     body: (
       <>
-        <P>Welcome to VAIIP — the <B>Vianomics AI Investment Intelligence Platform</B>. It turns your investment framework into a complete, auditable Trader OS: from finding a stock, through research and valuation, to a human-approved order — with every step recorded.</P>
-        <P><B>1. Sign in.</B> Go to <B>Settings</B> (last item in the sidebar) and sign in. Your account email is the one the admin created — for the seeded system, <Code>admin@vianomics.com</Code>. Signing in unlocks actions like running research, approving orders and submitting paper trades.</P>
+        <P>Welcome to VAIIP — the <B>Vesturs AI Investment Intelligence Platform</B>. It turns your investment framework into a complete, auditable Trader OS: from finding a stock, through research and valuation, to a human-approved order — with every step recorded.</P>
+        <P><B>1. Sign in.</B> Go to <B>Settings</B> (last item in the sidebar) and sign in. Your account email is the one the admin created — for the seeded system, <Code>admin@vesturs.com</Code>. Signing in unlocks actions like running research, approving orders and submitting paper trades.</P>
         <P><B>2. Look at the Command Center.</B> It&apos;s the landing page and shows the market regime, open alerts, pending approvals, your watchlist and the latest decisions — all from real stored data.</P>
         <P><B>3. Understand the principle.</B> Nothing here trades by itself. The pipeline is <B>analyze → risk check → human approval → execution</B>. AI can only recommend; only you can approve.</P>
       </>
@@ -214,7 +214,7 @@ export function DocsPage() {
       ))}
 
       <p className="pb-6 text-center text-[11px] text-faint">
-        VAIIP · Vianomics AI Investment Intelligence Platform — every
+        VAIIP · Vesturs AI Investment Intelligence Platform — every
         decision auditable, every number sourced, every trade yours.
       </p>
     </div>

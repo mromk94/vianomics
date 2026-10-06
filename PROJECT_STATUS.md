@@ -40,7 +40,7 @@
 - **Providers:** `ProviderAdapter` protocol; EDGAR + FRED + Tiingo adapters; PaperBroker + IBKR (refuses until configured). Credentials env-only.
 - **Ingestion:** validated→normalized→quarantined pipeline, idempotent upserts, revision chains, retry/backoff, per-provider throttle, JobRun counts, SyncStatus freshness.
 - **Security:** argon2 hashes, revocable server sessions, `/api/v1/auth/{login,logout,me}`, `require()` RBAC (domain wildcards + admin:*), audit events, `tenant_id` on owned tables.
-- **Seed:** 3 roles, admin@vianomics.io (env ADMIN_PASSWORD), NASDAQ/NYSE, 11 GICS sectors, 24-ticker approved universe, mandate v1 (incl. PDF risk limits — C9), 5 providers `unconfigured`.
+- **Seed:** 3 roles, admin@vesturs.com (env ADMIN_PASSWORD), NASDAQ/NYSE, 11 GICS sectors, 24-ticker approved universe, mandate v1 (incl. PDF risk limits — C9), 5 providers `unconfigured`.
 - **Live-verified:** real SEC EDGAR ingest — NVDA XBRL, 980 records in / 980 valid / 730 persisted; provider health now DB-driven in Command Center.
 
 ## Session log
@@ -62,3 +62,4 @@
 - **2026-09-27** — M1 data layer implemented per core-data prompt. 28 pytest tests green; Postgres migration + seed verified on docker; live EDGAR ingestion proven. Next: scheduled-ingestion daemon + mandate/universe APIs + market-data provider key (Tiingo/FMP — needs owner).
 - **2026-09-27** — UI completion pass: all placeholders real — /portfolio (positions+fill attribution), /allocation (mandate vs actual), /market (snapshot of 25 instruments), /technical (scan board), /data-ops (64 jobs, sync freshness, quarantine). Fills now book into the Position ledger. CC de-demoed: split/agents/sectors real; calendar dropped (no provider). Sidebar pill shows signed-in user. Admin → admin@vianomics.com. 200 pytest green.
 - **2026-09-27** — Docs & usability pass: /docs page (plain-language: pipeline, every module, API keys, execution safety, glossary, FAQ, collapsible), InfoTip ⓘ tooltips on all 16 page headers, Settings expanded (env-key status w/ where-to-get-each + models list, values never shown), sidebar+topbar show real signed-in user. 200 pytest green.
+- **2026-10-06** — Rebrand Vianomics → Vesturs (primary domain vesturs.com): CORS_ORIGINS/ADMIN_EMAIL/placeholders/docs updated; brand strings across UI, LICENSE, README, goals, manifests (vesturs-web, vesturs-api). Auth fix: seed admin is now an env-driven upsert — ADMIN_EMAIL/ADMIN_PASSWORD applied at every boot (wired into Dockerfiles + render startCommand); existing admin gets password rotated + reactivated; emails lowercased to match login lookup; ADMIN_PASSWORD unset = skip (no crash). `create_user` lowercases email too.

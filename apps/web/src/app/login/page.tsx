@@ -58,7 +58,7 @@ export default function LoginPage() {
               <span className="text-dim font-normal"> · Trader OS</span>
             </div>
             <div className="mt-1 text-[11px] tracking-wide text-faint uppercase">
-              Vianomics AI Investment Intelligence
+              Vesturs AI Investment Intelligence
             </div>
           </div>
 
@@ -70,7 +70,7 @@ export default function LoginPage() {
                 value={form.email}
                 onChange={(e) => setForm({ ...form, email: e.target.value })}
                 className="mt-1 w-full rounded-lg border border-border bg-[#0b0f1a] px-3 py-2.5 text-[14px] normal-case tracking-normal outline-none transition focus:border-accent focus:ring-1 focus:ring-accent/40"
-                placeholder="you@vianomics.com" />
+                placeholder="you@vesturs.com" />
             </label>
             <label className="block text-[11px] font-medium uppercase tracking-wider text-dim">
               Password
@@ -102,7 +102,7 @@ export default function LoginPage() {
         </div>
 
         <div className="mt-4 text-center text-[10px] text-faint">
-          Vianomics AI © 2026
+          Vesturs AI © 2026
         </div>
       </div>
 

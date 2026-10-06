@@ -75,7 +75,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
       </button>
 
       <Link href="/" className="mr-2 text-lg font-bold text-accent">
-        VAIIP <span className="font-light text-text">| Vianomics AI</span>
+        VAIIP <span className="font-light text-text">| Vesturs AI</span>
       </Link>
 
       <nav className="hidden items-center gap-1 md:flex" aria-label="Quick links">

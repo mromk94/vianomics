@@ -1,12 +1,12 @@
-# Vianomics — VAIIP Trader OS
+# Vesturs — VAIIP Trader OS
 
-**Vianomics AI Investment Intelligence Platform** — an institutional-style
+**Vesturs AI Investment Intelligence Platform** — an institutional-style
 investment operating system: one auditable decision chain from mandate to
 execution, monitoring, and attribution.
 
 ## License
 
-**Vianomics is proprietary software.**
+**Vesturs is proprietary software.**
 
 The source code is publicly available for inspection and evaluation only.
 It is **not open-source software** and may not be copied, modified, redistributed,

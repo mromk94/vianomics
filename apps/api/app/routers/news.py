@@ -17,7 +17,7 @@ from app.services.secrets import get_secret
 
 router = APIRouter(prefix="/news", tags=["news"])
 
-UA = {"User-Agent": "VAIIP/0.1 research contact@vianomics"}
+UA = {"User-Agent": "VAIIP/0.1 research contact@vesturs.com"}
 
 
 async def _alpaca_news(db: AsyncSession, sym: str) -> list[dict]:

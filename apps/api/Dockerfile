@@ -12,5 +12,5 @@ COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
 
 EXPOSE 8000
-# Render supplies $PORT; start runs migrations then serves
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Render supplies $PORT; start runs migrations + idempotent seed then serves
+CMD ["sh", "-c", "alembic upgrade head && python -m app.seeds.seed && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
