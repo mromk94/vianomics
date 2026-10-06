@@ -7,6 +7,7 @@ from app.db.base import utcnow
 from app.db.session import get_db
 from app.models.fundamentals import FundamentalObservation
 from app.models.instruments import Instrument, Sector
+from app.models.market import OhlcvBar
 from app.models.ops import Job, JobRun
 from app.models.screening import (
     ScreeningPolicy,
@@ -173,6 +174,21 @@ async def drilldown(symbol: str, db: AsyncSession = Depends(get_db)) -> dict:
             )
         )
     ).scalar()
+    # data coverage — makes "is the input complete?" answerable per
+    # symbol without opening the DB (bars depth, obs count, ADV/mcap)
+    bar_stats = (
+        await db.execute(
+            select(func.count(OhlcvBar.id), func.max(OhlcvBar.time))
+            .where(OhlcvBar.instrument_id == inst.id,
+                   OhlcvBar.timeframe == "1d")
+        )
+    ).one()
+    obs_n = (
+        await db.execute(
+            select(func.count(FundamentalObservation.id)).where(
+                FundamentalObservation.instrument_id == inst.id)
+        )
+    ).scalar() or 0
     sector = None
     if inst.sector_id:
         sec = await db.get(Sector, inst.sector_id)
@@ -191,6 +207,17 @@ async def drilldown(symbol: str, db: AsyncSession = Depends(get_db)) -> dict:
         "mandate_version": run_obj.mandate_version,
         "as_of": res.as_of.isoformat(),
         "data_freshness": freshest.isoformat() if freshest else None,
+        "data_coverage": {
+            "bars_1d": bar_stats[0],
+            "latest_bar": (bar_stats[1].isoformat()
+                           if bar_stats[1] else None),
+            "fundamental_obs": obs_n,
+            "avg_dollar_volume_30d": (float(inst.avg_dollar_volume_30d)
+                                      if inst.avg_dollar_volume_30d
+                                      else None),
+            "market_cap": (float(inst.market_cap)
+                           if inst.market_cap else None),
+        },
     }
 
 

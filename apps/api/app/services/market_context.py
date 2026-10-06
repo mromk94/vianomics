@@ -123,9 +123,22 @@ async def ensure_market_context(db: AsyncSession) -> int:
     return n
 
 
+# share-count concepts (EDGAR aliases) — market_cap = shares × close
+_SHARES_CONCEPTS = [
+    "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic",
+    "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
+    "us-gaap:CommonStockSharesOutstanding",
+]
+
+
 async def update_adv(db: AsyncSession) -> int:
-    """Refresh avg_dollar_volume_30d = mean(close×volume) over the
-    instrument's last 30 daily bars. Drives the liquidity dimension."""
+    """Refresh derived market stats per instrument:
+      - avg_dollar_volume_30d = mean(close×volume) over the last 30
+        daily bars — drives the liquidity dimension
+      - market_cap = latest EDGAR share count × last close — feeds the
+        universe eligibility gate (was never written → 'market_cap
+        unknown' blocked every eligible-tier promotion)"""
+    from app.services.fundamentals_query import latest_instant
     insts = (await db.execute(select(Instrument))).scalars().all()
     updated = 0
     for inst in insts:
@@ -139,6 +152,12 @@ async def update_adv(db: AsyncSession) -> int:
         if vals:
             inst.avg_dollar_volume_30d = sum(vals) / len(vals)
             updated += 1
+        if bars:
+            shares = await latest_instant(
+                db, inst.id, _SHARES_CONCEPTS, datetime.now(UTC))
+            close = float(bars[0][0])
+            if shares and close:
+                inst.market_cap = shares * close
     return updated
 
 

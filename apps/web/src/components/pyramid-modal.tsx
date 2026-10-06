@@ -24,12 +24,14 @@ function pct(v: number | null | undefined, d = 2) {
 }
 
 /** One timeframe table from the Excel "ATR Output" sheet — editable
- * SMA period (3d, 8d, 2w, 5m…) + horizon-average rows. */
-function AtrTable({ title, unit, data, labels, period, onPeriod }:
+ * SMA period (3d, 8d, 2w, 5m…) applied via the ⟳ button or Enter. */
+function AtrTable({ title, unit, data, labels, period, onPeriod, onApply }:
   { title: string; unit: string; data: any;
     labels: Record<string, string>;
-    period: number; onPeriod: (v: number) => void }) {
+    period: number; onPeriod: (v: number) => void;
+    onApply: () => void }) {
   const wins = Object.entries(data?.windows ?? {});
+  const pending = data?.period != null && period !== data.period;
   return (
     <div className="glass-tile p-3">
       <div className="flex items-center justify-between">
@@ -37,9 +39,16 @@ function AtrTable({ title, unit, data, labels, period, onPeriod }:
         <label className="flex items-center gap-1 text-[9px] text-faint">
           SMA
           <input type="number" min={1} max={200} value={period}
-            onChange={(e) => onPeriod(parseInt(e.target.value) || 14)}
+            onChange={(e) => onPeriod(parseInt(e.target.value) || 1)}
+            onKeyDown={(e) => e.key === "Enter" && onApply()}
             className="num w-11 rounded border border-border bg-surface-2 px-1 py-0.5 text-[10px] focus:border-accent focus:outline-none" />
           {unit}
+          <button type="button" onClick={onApply} title="Recalculate with this period"
+            className={`rounded px-1.5 py-0.5 text-[10px] transition ${
+              pending ? "bg-accent font-semibold text-[#0b0f1a]"
+                      : "border border-border text-faint hover:text-text"}`}>
+            ⟳
+          </button>
         </label>
       </div>
       <div className="num mt-1 text-lg font-semibold">
@@ -86,9 +95,11 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
   const [riskPct, setRiskPct] = useState("0.5");
   const [entry, setEntry] = useState("");
   const [equity, setEquity] = useState("");
-  const [dP, setDP] = useState(14);
-  const [wP, setWP] = useState(14);
-  const [mP, setMP] = useState(14);
+  // workbook-canonical windows — 'current ATR' = first horizon
+  // column (6 sessions / 12 weeks / 6 months), not SMA14
+  const [dP, setDP] = useState(6);
+  const [wP, setWP] = useState(12);
+  const [mP, setMP] = useState(6);
   const [tvOpen, setTvOpen] = useState(false);
   const [force, setForce] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -114,27 +125,40 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
     return () => { if (debRef.current) clearTimeout(debRef.current); };
   }, [q]);
 
-  // ATR period changes → refetch the sheet (debounced)
-  useEffect(() => {
+  // SMA period edits are explicit — the ⟳ button (or Enter in the
+  // input) refetches the sheet; no silent recompute mid-typing
+  async function applyPeriods() {
     if (!sym) return;
+    try {
+      const a = await apiGet<any>(
+        `/api/v1/risk/atr/${sym}?d=${dP}&w=${wP}&m=${mP}`);
+      setAtrRep(a);
+      if (a?.daily?.atr_abs) await recalc(a.daily.atr_abs);
+    } catch { /* keep last good sheet */ }
+  }
+
+  // sheet inputs changed → the whole sheet (sleeve, eligibility,
+  // risk sheet) refreshes itself — no manual trigger needed
+  useEffect(() => {
+    if (!sym || !atrRep || atrRep.insufficient) return;
+    // skip the echo of our own autofill — only real edits recompute
+    if (prev
+        && parseFloat(entry || "0") === prev.inputs.entry
+        && parseFloat(equity || "0") === Math.round(prev.inputs.equity)
+        && (parseFloat(riskPct) / 100) === prev.inputs.risk_pct) return;
     if (atrRef.current) clearTimeout(atrRef.current);
-    atrRef.current = setTimeout(async () => {
-      try {
-        const a = await apiGet<any>(
-          `/api/v1/risk/atr/${sym}?d=${dP}&w=${wP}&m=${mP}`);
-        setAtrRep(a);
-        // pyramid levels follow the daily ATR — refresh the sheet
-        if (a?.daily?.atr_abs) recalc(a.daily.atr_abs);
-      } catch { /* keep last good sheet */ }
-    }, 350);
+    atrRef.current = setTimeout(
+      () => recalc(atrRep?.daily?.atr_abs), 450);
     return () => { if (atrRef.current) clearTimeout(atrRef.current); };
-  }, [dP, wP, mP]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [entry, equity, riskPct]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function selectSym(s: string, hitName?: string) {
     const up = s.toUpperCase();
     setSym(up); setName(hitName ?? null);
     setQ(""); setHits([]);
     setErr(null); setPrev(null); setAtrRep(null); setForce(false);
+    setEntry("");        // ← stale entry poisoned the next symbol's
+                         //    sheet (AMD's price sized NVDA's trade)
     setLoaded(true);
     try {
       const a = await apiGet<any>(
@@ -261,11 +285,14 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
           {/* ATR Output sheet — editable periods */}
           <div className="grid gap-2 sm:grid-cols-3">
             <AtrTable title="Daily ATR" unit="d" data={atrRep.daily}
-              labels={DAY_LABELS} period={dP} onPeriod={setDP} />
+              labels={DAY_LABELS} period={dP} onPeriod={setDP}
+              onApply={applyPeriods} />
             <AtrTable title="Weekly ATR" unit="w" data={atrRep.weekly}
-              labels={WK_LABELS} period={wP} onPeriod={setWP} />
+              labels={WK_LABELS} period={wP} onPeriod={setWP}
+              onApply={applyPeriods} />
             <AtrTable title="Monthly ATR" unit="m" data={atrRep.monthly}
-              labels={MO_LABELS} period={mP} onPeriod={setMP} />
+              labels={MO_LABELS} period={mP} onPeriod={setMP}
+              onApply={applyPeriods} />
           </div>
 
           {/* inputs — Trade Risk Sheet parameters */}
@@ -343,8 +370,8 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
                 </StatusBadge>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {(["quality", "valuation", "technical", "margin",
-                   "portfolio"] as const).map((g) => {
+                {(["quality", "valuation", "technical", "macro",
+                   "margin", "portfolio"] as const).map((g) => {
                   const gate = prev.eligibility.gates?.[g];
                   if (!gate) return null;
                   return (
