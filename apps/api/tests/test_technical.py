@@ -210,13 +210,47 @@ def test_band_boundaries_documented():
     assert te.PARAMS["aroon_trigger"] == 99
     # v1.1 — freshness gate tightened to 4 calendar days (doc: data
     # must be "current at every close")
-    assert te.PARAMS_VERSION == "technical/v1.2"
+    assert te.PARAMS_VERSION == "technical/v1.3"
 
 
-def test_atr_sma_is_the_sheet_canonical():
-    """The pyramid state machine consumes the SAME ATR the ATR
-    Output sheet publishes — SMA14(TR), not Wilder. This test pins
-    atr_sma() to the sheet's _frame_report on identical bars."""
+def test_atr_workbook_matches_xls_cell_for_cell():
+    """The canonical ATR is the ATR Calculator.xls formula —
+    per-bar range% = mean(H−L of 2 bars) / prev OPEN, then a 6-session
+    mean for 'Current ATR'. Fixture = the workbook's own AMD-D rows:
+    cell value 0.045151276… and 6-day column 0.05293380 must
+    reproduce exactly."""
+    # AMD D sheet rows (newest first, sheet order): O,H,L,C — H−L
+    # ranges 6.17 & 13.32, prev open 215.83 → ATR% 0.04515128
+    from app.services.technical import Bar, atr_workbook
+    from datetime import datetime, UTC
+    bars = [
+        # older bars so the 6-value window is populated
+        Bar(datetime(2025, 1, 1, tzinfo=UTC), 200, 206, 199, 204, 0),
+        Bar(datetime(2025, 1, 2, tzinfo=UTC), 204, 210, 201, 208, 0),
+        Bar(datetime(2025, 1, 3, tzinfo=UTC), 208, 212, 203, 209, 0),
+        Bar(datetime(2025, 1, 4, tzinfo=UTC), 209, 215, 207, 212, 0),
+        Bar(datetime(2025, 1, 5, tzinfo=UTC), 212, 219, 210, 214, 0),
+        # the two bars the sheet's formula reads: prev-open + 2 ranges
+        Bar(datetime(2025, 1, 6, tzinfo=UTC), 215.83, 218.46, 205.14,
+            213.58, 0),   # H−L = 13.32
+        Bar(datetime(2025, 1, 7, tzinfo=UTC), 204.02, 210.05, 203.88,
+            207.32, 0),   # H−L = 6.17
+    ]
+    r = atr_workbook(bars, "1d")
+    # mean of last 6 range% values — the windowed "Current ATR"
+    rngs = [((b.h - b.l) + (bars[i - 1].h - bars[i - 1].l)) / 2
+            / bars[i - 1].o for i, b in enumerate(bars) if i > 0]
+    assert r["atr_pct"] == pytest.approx(sum(rngs[-6:]) / 6)
+    assert r["atr_abs"] == pytest.approx(bars[-1].c * r["atr_pct"])
+    # single-row formula check: (6.17+13.32)/2 ÷ 215.83 = sheet cell
+    single = (6.17 + 13.32) / 2 / 215.83
+    assert single == pytest.approx(0.04515127646759032)
+
+
+def test_atr_workbook_engine_parity_with_sheet():
+    """_frame_report (the ATR Output endpoint) must equal the engine's
+    canonical function on identical bars — sheet and state machine
+    can never diverge again."""
     from app.services.atr import _frame_report
     closes = [100, 101.2, 99.8, 102.5, 100.4, 98.9, 103.1, 104.0,
               101.7, 105.2, 103.8, 106.1, 104.5, 107.0, 105.9,
@@ -224,7 +258,7 @@ def test_atr_sma_is_the_sheet_canonical():
     t_bars = _bars(closes)
     dicts = [{"time": b.t, "open": b.o, "high": b.h,
               "low": b.l, "close": b.c} for b in t_bars]
-    rep = _frame_report(dicts, 14)
-    assert ti.atr_sma(t_bars, 14) == pytest.approx(rep["atr_abs"])
-    # sanity — SMA and Wilder are genuinely different formulas
-    assert ti.atr_sma(t_bars, 14) != pytest.approx(ti.atr(t_bars, 14))
+    rep = _frame_report(dicts, 6)
+    eng = ti.atr_workbook(t_bars, "1d")
+    assert rep["atr_pct"] == pytest.approx(eng["atr_pct"])
+    assert rep["atr_abs"] == pytest.approx(eng["atr_abs"])

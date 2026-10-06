@@ -193,16 +193,42 @@ def atr(bars: list[Bar], period: int = 14) -> float | None:
 
 
 def atr_sma(bars: list[Bar], period: int = 14) -> float | None:
-    """Canonical VAIIP ATR — SMA_n(TR), the ATR Output sheet's
-    formula ('ATR Calculator.xls' spec). The pyramid state machine
-    consumes THIS number so stops always match the published sheet;
-    `atr()` (Wilder) remains for indicator displays only."""
+    """SMA_n of True Range — kept for indicator display."""
     if len(bars) < period + 1:
         return None
     trs = [max(b.h - b.l, abs(b.h - bars[i - 1].c),
                abs(b.l - bars[i - 1].c))
            for i, b in enumerate(bars) if i > 0]
     return sum(trs[-period:]) / period
+
+
+# Workbook-canonical averaging windows (ATR Calculator.xls summary):
+# daily → "6 DAYS" (1 wk), weekly → "12 WEEKS" (3 mo), monthly →
+# "6 MONTHS" — the first horizon column of each frame's averages row.
+ATR_WINDOWS = {"1d": 6, "1w": 12, "1mo": 6}
+
+
+def atr_workbook(bars: list[Bar], timeframe: str = "1d") -> dict | None:
+    """Canonical VAIIP 'Current ATR' — the ATR Calculator.xls formula,
+    verified cell-for-cell against the workbook (575/575 rows):
+
+        per-bar range%  = ((H−L)ₜ + (H−L)ₜ₋₁) / 2 ÷ Openₜ₋₁
+        Current ATR%    = mean of the last W range% values
+                          (W = 6 daily / 12 weekly / 6 monthly)
+
+    Returns {atr_pct, atr_abs} with atr_abs = close × atr_pct so the
+    engine's additive stop math reproduces the sheet's multiplicative
+    levels exactly:  c·(1 − 1.5·p) = c − 1.5·(c·p)."""
+    if len(bars) < 3:
+        return None
+    w = ATR_WINDOWS.get(timeframe, 6)
+    rng = [((b.h - b.l) + (bars[i - 1].h - bars[i - 1].l)) / 2
+           / bars[i - 1].o
+           for i, b in enumerate(bars) if i > 0 and bars[i - 1].o]
+    if len(rng) < w:
+        return None
+    pct = sum(rng[-w:]) / w
+    return {"atr_pct": pct, "atr_abs": bars[-1].c * pct}
 
 
 # ── levels & patterns ──

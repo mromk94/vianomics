@@ -124,14 +124,17 @@ async def trade_eligibility(
                                .get("decision"),
             "data_fresh": t.get("data_fresh"),
             "last_close": t.get("last_close"),
-            "atr_14": (t.get("indicators") or {}).get("atr_14"),
+            # 'atr' is canonical; 'atr_14' is the persisted alias in
+            # older TechnicalScanResult payloads
+            "atr": ((t.get("indicators") or {}).get("atr")
+                    or (t.get("indicators") or {}).get("atr_14")),
         }
     except Exception as e:
         tech = {"pass": False, "decision": "invalid_data",
                 "error": str(e)[:200]}
 
     if atr is None:
-        atr = tech.get("atr_14")
+        atr = tech.get("atr")
     if entry is None:
         entry = tech.get("last_close") or price
 

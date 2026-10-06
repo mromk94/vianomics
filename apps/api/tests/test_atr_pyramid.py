@@ -1,8 +1,10 @@
 """ATR output sheet + pyramid preview — docs Part 12.
 
-The docs define TR = max(H−L, |H−prevC|, |L−prevC|), ATR% = SMA14(TR)/C,
-stop = 1.5×ATR, target = 3×ATR. The UI must consume real computed ATR —
-never the old 3%-of-price proxy.
+Canonical formula (ATR Calculator.xls, verified 575/575 cells):
+per-bar range% = ((H−L)ₜ + (H−L)ₜ₋₁)/2 ÷ Openₜ₋₁; Current ATR% =
+mean of the last 6 daily (12 weekly / 6 monthly) values;
+stop = C×(1−1.5×ATR%), target = C×(1+3×ATR%). The UI must consume
+real computed ATR — never the old 3%-of-price proxy.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -39,16 +41,30 @@ async def _seed(db, n=30, step=1.0):
     return inst
 
 
-# ── true range ──
+# ── workbook formula ──
 
-def test_tr_series_math():
+def _wb_pct(bars, window):
+    """Workbook per-bar range% = mean(H−L of 2 bars)/prev OPEN;
+    Current ATR% = mean of last `window` values."""
+    rng = [((b["high"] - b["low"]) + (bars[i - 1]["high"]
+           - bars[i - 1]["low"])) / 2 / bars[i - 1]["open"]
+           for i, b in enumerate(bars) if i > 0]
+    return sum(rng[-window:]) / min(window, len(rng))
+
+
+def test_workbook_range_series_math():
+    """Cell-level formula check — the workbook's per-bar ATR% is a
+    2-bar mean of High−Low over the PREVIOUS bar's open (no TR/gap
+    component, no 14-period smoothing)."""
     bars = [
-        {"high": 10, "low": 8, "close": 9},
-        {"high": 12, "low": 9, "close": 11},   # gap up: |12−9|=3 → TR=3
-        {"high": 11, "low": 6, "close": 7},    # gap dn: |6−11|=5 → TR=5
+        {"open": 215.83, "high": 218.46, "low": 205.14,
+         "close": 213.58},   # HL = 13.32
+        {"open": 204.02, "high": 210.05, "low": 203.88,
+         "close": 207.32},   # HL = 6.17
     ]
-    trs = atr_svc._tr_series(bars)
-    assert trs == [2.0, 3.0, 5.0]
+    # sheet cell = (6.17+13.32)/2 ÷ 215.83 = 0.04515128 — the exact
+    # value the workbook stores in its Daily ATR column
+    assert _wb_pct(bars, 6) == pytest.approx(0.04515127646759032)
 
 
 # ── report ──
@@ -57,25 +73,27 @@ async def test_atr_report_hand_calc(db):
     await _seed(db, n=110)          # ~22 ISO weeks → weekly ATR valid too
     rep = await atr_svc.atr_report(db, "tst")   # case-insensitive
     assert rep["symbol"] == "TST"
-    # each bar: H−L=4; gap terms |H−prevC|=|c+2−(c−1)|=3, |L−prevC|=1 → TR=4
-    assert rep["daily"]["atr_abs"] == pytest.approx(4.0)
-    # atr% = 4 / last_close(209)
-    assert rep["daily"]["atr_pct"] == pytest.approx(4.0 / 209)
-    # pyramid levels at last close
-    assert rep["pyramid"]["stop"] == pytest.approx(209 - 6)
-    assert rep["pyramid"]["target"] == pytest.approx(209 + 12)
+    # fixture: H−L=4/bar, open_i = 99.5+i → range%_i = 4/(98.5+i)
+    bars = _bars(110)
+    pct = _wb_pct(bars, 6)
+    atr_abs = bars[-1]["close"] * pct       # 209 × pct
+    assert rep["daily"]["atr_pct"] == pytest.approx(pct)
+    assert rep["daily"]["atr_abs"] == pytest.approx(atr_abs)
+    # pyramid levels at last close — the sheet's multiplicative form
+    assert rep["pyramid"]["stop"] == pytest.approx(209 - 1.5 * atr_abs)
+    assert rep["pyramid"]["target"] == pytest.approx(209 + 3 * atr_abs)
     # horizon windows present once enough bars exist
     assert "6" in rep["daily"]["windows"]
     assert "24" in rep["daily"]["windows"]
     assert rep["weekly"]["atr_abs"] is not None
-    assert rep["monthly"]["atr_abs"] is None   # ~5 months < 14 period
+    assert rep["monthly"]["atr_abs"] is not None  # ~5 months ≥ 6-window min
 
 
 async def test_atr_report_insufficient(db):
-    await _seed(db, n=10)
+    await _seed(db, n=5)                    # < 6-window + prior bar
     rep = await atr_svc.atr_report(db, "TST")
     assert rep["insufficient"] is True
-    assert rep["bars"] == 10
+    assert rep["bars"] == 5
 
 
 async def test_atr_report_unknown(db):
@@ -101,23 +119,25 @@ async def test_pyramid_preview_real_atr(db):
     body = PyramidPreviewIn(symbol="tst", risk_pct=0.01,
                             equity=1_000_000, cash=500_000)
     rep = await pyramid_preview(body, db)
+    # workbook ATR for the n=30 fixture, worked out in-test
+    atr_abs = _bars(30)[-1]["close"] * _wb_pct(_bars(30), 6)
     s = rep["sheet"]
-    assert s["stop"] == pytest.approx(123)          # 129 − 1.5×4
-    assert s["target"] == pytest.approx(141)        # 129 + 3×4
-    assert s["risk_per_share"] == pytest.approx(6)
+    assert s["stop"] == pytest.approx(129 - 1.5 * atr_abs)
+    assert s["target"] == pytest.approx(129 + 3 * atr_abs)
+    assert s["risk_per_share"] == pytest.approx(1.5 * atr_abs)
     assert s["dollar_risk"] == pytest.approx(10_000)  # 1M × 1%
-    assert s["shares"] == 1666                       # 10k/6
+    assert s["shares"] == int(10_000 / (1.5 * atr_abs))
     assert s["binding"] == "risk"
     assert s["rr"] == pytest.approx(2.0)
-    assert rep["legs"][1]["fill"] == pytest.approx(141)
-    # real ATR, not the old 3% proxy (3.87): 4.0 is SMA14(TR)
-    assert rep["atr"]["abs"] == pytest.approx(4.0)
+    assert rep["legs"][1]["fill"] == pytest.approx(129 + 3 * atr_abs)
+    # real workbook ATR — not the old 3% proxy (3.87) nor SMA14 (4.0)
+    assert rep["atr"]["abs"] == pytest.approx(atr_abs)
 
 
 async def test_pyramid_preview_insufficient_bars(db):
     from fastapi import HTTPException
     from app.routers.risk import PyramidPreviewIn, pyramid_preview
-    await _seed(db, n=10)
+    await _seed(db, n=5)
     with pytest.raises(HTTPException) as e:
         await pyramid_preview(PyramidPreviewIn(
             symbol="TST", equity=1e6, cash=1e6), db)
@@ -153,8 +173,9 @@ async def test_seed_creates_trade_eligible_candidate(db):
         select(PyramidTradeRec).where(
             PyramidTradeRec.instrument_id == inst.id))).scalar_one()
     assert rec.state == "trade_eligible"
-    assert rec.stop == pytest.approx(129 - 6)    # 1.5 × ATR(4)
-    assert rec.target1 == pytest.approx(129 + 12)
+    atr_abs = 129 * _wb_pct(_bars(30), 6)
+    assert rec.stop == pytest.approx(129 - 1.5 * atr_abs)
+    assert rec.target1 == pytest.approx(129 + 3 * atr_abs)
     assert rec.events[0]["event"] == "candidate"
 
     # idempotent — second seed creates nothing

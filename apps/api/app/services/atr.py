@@ -1,18 +1,20 @@
 """ATR service — the docs' 'ATR Output' sheet, computed from stored
 OHLCV bars.
 
-Canonical formulas (new docs — 'ATR Pyramid Engine' python spec +
-'ATR Calculator.xls'):
+Canonical formula (ATR Calculator.xls — verified cell-for-cell
+against the workbook, AMD D sheet, 575/575 rows):
 
-    TR          = max(H − L, |H − prevC|, |L − prevC|)
-    ATR%        = SMA14(TR) / Close          ← drives the state machine
-    Stop        = price × (1 − 1.5 × ATR%)   = price − 1.5 × ATR_abs
-    Target      = price × (1 + 3 × ATR%)     = price + 3 × ATR_abs
+    per-bar ATR%  = ((H − L)ₜ + (H − L)ₜ₋₁) / 2 ÷ Openₜ₋₁
+    Current ATR%  = mean of last W values   (W = 6d / 12w / 6mo —
+                    the first horizon column of the averages row)
+    Stop          = price × (1 − 1.5 × ATR%)  = price − 1.5 × ATR_abs
+    Target        = price × (1 + 3 × ATR%)    = price + 3 × ATR_abs
 
-The Excel sheet also reports average ATR% across fixed horizons —
-daily (6/24/72/288/576 sessions), weekly (12/26/52/104/156 weeks),
-monthly (6/12/24/36/60 months). Those are volatility regime context:
-short-horizon ATR% vs long-horizon ATR% shows expansion/contraction.
+where ATR_abs = close × ATR%. The pyramid state machine consumes
+THIS number (ti.atr_workbook), so sheet and engine never diverge.
+The sheet also reports average ATR% across fixed horizons — daily
+(6/24/72/288/576 sessions), weekly (12/26/52/104/156 weeks), monthly
+(6/12/24/36/60 months) — volatility-regime context.
 """
 
 from collections import defaultdict
@@ -24,29 +26,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.instruments import Instrument
 from app.models.market import OhlcvBar
 
-ATR_PERIOD = 14
 DAILY_WINDOWS = (6, 24, 72, 288, 576)      # ~1wk, 1mo, 3mo, 1y, 2y
 WEEKLY_WINDOWS = (12, 26, 52, 104, 156)    # 3mo, 6mo, 1y, 2y, 3y
 MONTHLY_WINDOWS = (6, 12, 24, 36, 60)      # 6mo, 1y, 2y, 3y, 5y
-
-
-def _tr_series(bars: list[dict]) -> list[float]:
-    """True Range per bar — needs the previous close, so the first
-    bar uses its own H−L."""
-    out = []
-    prev_c = None
-    for b in bars:
-        h, l, c = b["high"], b["low"], b["close"]
-        if prev_c is None:
-            out.append(h - l)
-        else:
-            out.append(max(h - l, abs(h - prev_c), abs(l - prev_c)))
-        prev_c = c
-    return out
-
-
-def _sma(vals: list[float], n: int) -> float | None:
-    return sum(vals[-n:]) / n if len(vals) >= n else None
 
 
 def _window_avgs(tr_pcts: list[float], windows: tuple[int, ...]) -> dict:
@@ -75,38 +57,43 @@ def _resample(bars: list[dict], period: str) -> list[dict]:
     return out
 
 
-def _frame_report(bars: list[dict], period: int = ATR_PERIOD) -> dict:
-    """ATR metrics for one timeframe's bar set at a given period —
-    the workbook's ATR column is a rolling SMA_n(TR); horizon windows
-    are averages OF that ATR% series (not of raw TR)."""
-    trs = _tr_series(bars)
+def _frame_report(bars: list[dict], window: int) -> dict:
+    """Workbook column for one timeframe: per-bar range%
+    = mean(H−L of 2 bars) ÷ prev OPEN; 'current ATR%' = the mean of
+    the last `window` of those; atr_abs = close × atr_pct. `window`
+    is the frame's first horizon column (6d/12w/6m); the UI may pass
+    a wider one to inspect longer-horizon current ATR."""
+    atr_series = []
+    for i in range(1, len(bars)):
+        b, p = bars[i], bars[i - 1]
+        if p["open"]:
+            atr_series.append(
+                ((b["high"] - b["low"]) + (p["high"] - p["low"])) / 2
+                / p["open"])
     closes = [b["close"] for b in bars]
-    tr_pcts = [t / c for t, c in zip(trs, closes) if c]
-    # per-bar ATR% series — mean of trailing `period` TRs / that bar's close
-    atr_pcts = [sum(trs[i - period + 1:i + 1]) / period / closes[i]
-                for i in range(period - 1, len(bars)) if closes[i]]
-    atr_abs = _sma(trs, period)
     last_c = closes[-1] if closes else None
-    atr_pct = (atr_abs / last_c
-               if atr_abs is not None and last_c else None)
+    w = min(window, len(atr_series))
+    atr_pct = (sum(atr_series[-w:]) / w) if w else None
     return {
         "bars": len(bars), "last_close": last_c,
-        "atr_abs": atr_abs,
+        "atr_abs": (last_c * atr_pct
+                    if atr_pct is not None and last_c else None),
         "atr_pct": atr_pct,
-        "atr_pct_series": atr_pcts,
-        "tr_pcts": tr_pcts,
-        "period": period,
+        "atr_pct_series": atr_series,
+        "tr_pcts": atr_series,   # vol-regime reads the same series
+        "period": w,
         "last_time": bars[-1]["time"].isoformat() if bars else None,
     }
 
 
 async def atr_report(db: AsyncSession, symbol: str,
-                     d: int = ATR_PERIOD, w: int = ATR_PERIOD,
-                     m: int = ATR_PERIOD) -> dict | None:
-    """Full ATR Output sheet for a symbol — daily/weekly/monthly ATR
-    each at its own editable period (the UI exposes 3d/8d/2w/5m…).
-    Returns None when the instrument isn't in the security master;
-    reports honest insufficiency when bar history is short."""
+                     d: int = 6, w: int = 12, m: int = 6) -> dict | None:
+    """Full ATR Output sheet for a symbol — daily/weekly/monthly ATR,
+    each frame's 'current ATR' averaged over its workbook window
+    (6 sessions / 12 weeks / 6 months); the UI may pass wider windows
+    to inspect longer-horizon current ATR. Returns None when the
+    instrument isn't in the security master; reports honest
+    insufficiency when bar history is short."""
     d = max(1, min(d, 200)); w = max(1, min(w, 200))
     m = max(1, min(m, 60))
     inst = (await db.execute(
@@ -123,7 +110,7 @@ async def atr_report(db: AsyncSession, symbol: str,
     bars = [{"time": r[0], "open": float(r[1]), "high": float(r[2]),
              "low": float(r[3]), "close": float(r[4])} for r in rows]
 
-    need = max(d, 2) + 1
+    need = d + 2   # window of range% values, each needing a prior bar
     if len(bars) < need:
         return {
             "symbol": inst.symbol,

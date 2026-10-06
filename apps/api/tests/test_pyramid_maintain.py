@@ -48,13 +48,24 @@ async def _funded_book(db):
     await db.flush()
 
 
+def _wb_atr(closes, width=5.0, window=6):
+    """Workbook ATR$ for _bars() fixtures, computed independently of
+    the engine: per-bar range% = mean(H−L of 2 bars) ÷ prev OPEN —
+    _bars emits H−L = 2×width and open = close − 1. Current ATR% =
+    mean of the last `window` values; atr_abs = close × pct."""
+    hl = width * 2
+    rngs = [hl / (closes[i - 1] - 1) for i in range(1, len(closes))]
+    return closes[-1] * (sum(rngs[-window:]) / window)
+
+
 async def test_ratchet_tightens_stop(db):
     inst = Instrument(symbol="TEST", name="T", asset_class="equity")
     db.add(inst)
     await db.flush()
-    # price climbs +1/day to 118, below the 130 target; TR stays 10 →
-    # new stop 118 − 15 = 103 > 85 → ratchet
-    await _bars(db, inst, [100] * 40 + list(range(101, 119)))
+    # price climbs +1/day to 118, below the 130 target; workbook ATR
+    # ≈ 10.4 → new stop ≈ 102.4 > 85 → ratchet
+    closes = [100] * 40 + list(range(101, 119))
+    await _bars(db, inst, closes)
     rec = _rec(inst)
     db.add(rec)
     await db.flush()
@@ -62,7 +73,7 @@ async def test_ratchet_tightens_stop(db):
     out = await pm.maintain_open_pyramids(db)
     assert out["processed"] == 1
     assert out["tightened"] == 1
-    assert rec.stop == pytest.approx(118 - 15)
+    assert rec.stop == pytest.approx(118 - 1.5 * _wb_atr(closes))
     assert rec.state == "initial_position"
     assert any("maintenance: stop" in e for e in rec.events)
 
@@ -117,8 +128,9 @@ async def test_target_hit_adds_leg_after_risk_recheck(db):
     await db.flush()
     await _funded_book(db)
     db.add(LimitConfig(version=1, payload={"min_sectors": 0}))
-    # +1/day ramp to 135 keeps TR at 10 → next target = 135 + 30
-    await _bars(db, inst, [100] * 40 + list(range(101, 136)))
+    # +1/day ramp to 135 → next target = 135 + 3×workbook-ATR
+    closes = [100] * 40 + list(range(101, 136))
+    await _bars(db, inst, closes)
     rec = _rec(inst)
     db.add(rec)
     await db.flush()
@@ -127,8 +139,8 @@ async def test_target_hit_adds_leg_after_risk_recheck(db):
     assert out["added"] == 1
     assert rec.shares == 20
     assert rec.additions == 1
-    # next target = close + 3×ATR(10) — the doc's moving ladder
-    assert rec.target1 == pytest.approx(135 + 30)
+    # next target = close + 3×ATR — the doc's moving ladder
+    assert rec.target1 == pytest.approx(135 + 3 * _wb_atr(closes))
     # earn-the-right re-check is persisted — the audit trail
     checks = (await db.execute(select(RiskCheck))).scalars().all()
     assert len(checks) == 1 and checks[0].allowed is True
@@ -601,15 +613,16 @@ async def test_short_ratchet_tightens_down(db):
     inst = Instrument(symbol="TEST", name="T", asset_class="equity")
     db.add(inst)
     await db.flush()
-    # price falls +1/day reversed → 82; new stop 82 + 15 = 97 < 115
-    await _bars(db, inst, [100] * 40 + list(range(99, 81, -1)))
+    # price falls +1/day reversed → 82; new stop = 82 + 1.5×wbATR < 115
+    closes = [100] * 40 + list(range(99, 81, -1))
+    await _bars(db, inst, closes)
     rec = _rec(inst, direction="short", stop=115.0, target1=70.0)
     db.add(rec)
     await db.flush()
 
     out = await pm.maintain_open_pyramids(db)
     assert out["tightened"] == 1
-    assert rec.stop == pytest.approx(82 + 15)
+    assert rec.stop == pytest.approx(82 + 1.5 * _wb_atr(closes))
     assert rec.state == "initial_position"
 
 
@@ -638,7 +651,8 @@ async def test_short_target_hit_adds_leg(db):
     await _funded_book(db)
     db.add(LimitConfig(version=1, payload={"min_sectors": 0}))
     # ramp down to 65 — through the 70 target
-    await _bars(db, inst, [100] * 40 + list(range(99, 64, -1)))
+    closes = [100] * 40 + list(range(99, 64, -1))
+    await _bars(db, inst, closes)
     rec = _rec(inst, direction="short", stop=115.0, target1=70.0)
     db.add(rec)
     await db.flush()
@@ -647,7 +661,7 @@ async def test_short_target_hit_adds_leg(db):
     assert out["added"] == 1
     assert rec.shares == 20
     # next target below the close; the recorded check ran side=sell
-    assert rec.target1 == pytest.approx(65 - 30)
+    assert rec.target1 == pytest.approx(65 - 3 * _wb_atr(closes))
     checks = (await db.execute(select(RiskCheck))).scalars().all()
     assert len(checks) == 1 and checks[0].side == "sell"
 

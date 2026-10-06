@@ -361,11 +361,13 @@ async def maintain_open_pyramids(db: AsyncSession) -> dict:
                 t_bars = [ti.Bar(t=g["time"], o=g["open"], h=g["high"],
                                  l=g["low"], c=g["close"], v=0.0)
                           for g in closed_groups]
-                atr = ti.atr_sma(t_bars, 14) or rec.atr_initial
+                atr = ((ti.atr_workbook(t_bars, tf) or {})
+                       .get("atr_abs")) or rec.atr_initial
                 close = float(closed_groups[-1]["close"])
             else:
                 t_bars = t_bars_all
-                atr = ti.atr_sma(t_bars, 14) or rec.atr_initial
+                atr = ((ti.atr_workbook(t_bars, "1d") or {})
+                       .get("atr_abs")) or rec.atr_initial
                 close = float(last.close)
 
             # ── independent exits (doc Step 20) — a position does not

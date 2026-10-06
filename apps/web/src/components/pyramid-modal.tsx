@@ -252,7 +252,7 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
       {sym && atrRep?.insufficient && (
         <div className="mt-4">
           <EmptyState title={`${sym}: insufficient bars`}
-            hint={atrRep.note ?? "needs ≥15 daily bars for SMA14(TR)"} />
+            hint={atrRep.note ?? "needs ≥8 daily bars for the workbook ATR"} />
         </div>
       )}
 

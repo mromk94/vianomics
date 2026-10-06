@@ -30,7 +30,7 @@ from app.models.market import OhlcvBar
 from app.services import technical as ti
 from app.services.technical import Bar
 
-PARAMS_VERSION = "technical/v1.2"  # v1.2: atr_14 → canonical SMA14(TR)
+PARAMS_VERSION = "technical/v1.3"  # v1.3: atr → workbook canonical
 
 PARAMS = {
     "rsi_period": 10, "rsi_trigger": 30,
@@ -225,7 +225,12 @@ async def evaluate(
                 "explanation": f"only {len(daily)} bars (<60)"}
     mr = evaluate_mean_reversion(daily)
     tf = evaluate_trend_following(daily)
-    base["indicators"] = {"atr_14": ti.atr_sma(daily)}
+    wb = ti.atr_workbook(daily, "1d") or {}
+    base["indicators"] = {"atr": wb.get("atr_abs"),
+                          "atr_pct": wb.get("atr_pct"),
+                          # compat alias — the canonical workbook ATR,
+                          # not a 14-period TR average
+                          "atr_14": wb.get("atr_abs")}
     if not fresh:
         mr["decision"] = "invalid_data" if mr["decision"] != "invalid_data" else mr["decision"]
         tf["decision"] = "invalid_data" if tf["decision"] != "invalid_data" else tf["decision"]

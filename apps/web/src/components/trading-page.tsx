@@ -353,7 +353,7 @@ export function TradingPage() {
             <div className="space-y-2 text-[13px]">
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {[
-                  ["ATR14", `${fmtNum(prev.atr.abs, 2)} (${((prev.atr.pct ?? 0) * 100).toFixed(2)}%)`],
+                  ["ATR", `${fmtNum(prev.atr.abs, 2)} (${((prev.atr.pct ?? 0) * 100).toFixed(2)}%)`],
                   ["Entry (last)", `$${fmtNum(prev.inputs.entry, 2)}`],
                   ["Stop (−1.5×ATR)", `$${fmtNum(prev.sheet.stop, 2)}`],
                   ["Target (+3×ATR)", `$${fmtNum(prev.sheet.target, 2)}`],
@@ -382,7 +382,7 @@ export function TradingPage() {
             </div>
           ) : atrRep?.insufficient ? (
             <EmptyState title="Insufficient bars"
-              hint={`${symbol} has ${atrRep.bars} daily bars — ATR needs ≥15.`} />
+              hint={`${symbol} has ${atrRep.bars} daily bars — the workbook ATR needs ≥8.`} />
           ) : <EmptyState title="No ATR data" hint="Ingest daily bars for this symbol first." />}
         </SectionCard>
       </div>

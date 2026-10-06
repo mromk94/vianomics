@@ -29,7 +29,7 @@ async def signal_row(db: AsyncSession, inst: Instrument) -> dict | None:
     last = closes[-1]
     sma50 = ti.sma(closes, 50)
     sma200 = ti.sma(closes, 200)
-    atr_v = ti.atr_sma(t_bars, 14)
+    atr_v = (ti.atr_workbook(t_bars, "1d") or {}).get("atr_abs")
     hi52 = max(closes[-250:]) if len(closes) >= 30 else None
     lo52 = min(closes[-250:]) if closes else None
     vols = [b.v for b in t_bars[-20:] if b.v]
