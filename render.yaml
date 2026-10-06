@@ -37,6 +37,11 @@ services:
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
+      # IBKR — VPS bridge (apps/bridge); gateway never runs here
+      - key: IBKR_BRIDGE_URL
+        sync: false
+      - key: IBKR_BRIDGE_SECRET
+        sync: false
       # scheduler auth — POST /api/v1/internal/jobs/* requires this
       - key: CRON_SECRET
         sync: false

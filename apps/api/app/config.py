@@ -23,10 +23,13 @@ class Settings(BaseSettings):
     execution_broker: str = "paper"   # paper|ibkr — only 'paper' works
     max_order_notional: float = 100_000
     max_order_qty: float = 100_000
-    # IBKR — all required before the adapter instantiates
+    # IBKR — the adapter talks HTTPS to the VPS bridge (apps/bridge);
+    # host/port/client_id configure the GATEWAY on that VPS, not here.
     ibkr_host: str | None = None
     ibkr_port: int | None = None
     ibkr_client_id: int | None = None
+    ibkr_bridge_url: str | None = None      # e.g. https://gw.vesturs.com
+    ibkr_bridge_secret: str | None = None   # shared bearer token
 
     # Machine-to-machine cron trigger — POST /api/v1/internal/jobs/*
     # requires X-Cron-Secret matching this. Empty = endpoint refuses
@@ -35,8 +38,11 @@ class Settings(BaseSettings):
 
     @property
     def ibkr_configured(self) -> bool:
-        return bool(self.execution_enabled and self.ibkr_host
-                    and self.ibkr_port and self.ibkr_client_id)
+        # os.environ (not the bound fields) so secrets loaded from the
+        # DB store at startup count too — same convention as the adapters
+        import os
+        return bool(os.environ.get("IBKR_BRIDGE_URL")
+                    and os.environ.get("IBKR_BRIDGE_SECRET"))
 
     @property
     def cors_origin_list(self) -> list[str]:

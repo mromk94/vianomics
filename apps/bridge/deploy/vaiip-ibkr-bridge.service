@@ -1,0 +1,16 @@
+[Unit]
+Description=VAIIP IBKR bridge (HTTPS -> ib_insync -> localhost Gateway)
+After=network.target ib-gateway.service
+Wants=ib-gateway.service
+
+[Service]
+Type=simple
+User=vaiip
+WorkingDirectory=/opt/vaiip-bridge
+EnvironmentFile=/opt/vaiip-bridge/.env
+ExecStart=/opt/vaiip-bridge/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8600
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

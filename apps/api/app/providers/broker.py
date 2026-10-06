@@ -198,39 +198,118 @@ class PaperBroker(BrokerAdapter):
 # ── live broker stubs — fail loudly, never fake ──
 
 class IbkrAdapter(BrokerAdapter):
-    """Interactive Brokers via ib_insync/TWS Gateway — requires:
-    IBKR_HOST/PORT/CLIENT_ID env, TWS or IB Gateway running, API
-    enabled, market-data entitlements, EXECUTION_ENABLED=true.
-    Not configured → every call raises ProviderConfigError."""
+    """Interactive Brokers via the VPS bridge (apps/bridge).
+
+    The TWS socket needs a running IB Gateway — a daemon that can't
+    live on a stateless host — so the gateway runs on a VPS behind a
+    small HTTPS bridge service. This adapter is a thin client to it,
+    same shape as AlpacaAdapter.
+
+    Config (env or DB secret store):
+      IBKR_BRIDGE_URL     e.g. https://gw.vesturs.com
+      IBKR_BRIDGE_SECRET  shared bearer token with the bridge
+    Reads work with EXECUTION_ENABLED=false (the submit gate in the
+    execution service still blocks orders); the bridge additionally
+    refuses orders while its own IBKR_READONLY=true — two switches."""
 
     key = "ibkr"
     live = True
 
     def __init__(self):
-        from app.config import get_settings
-        if not get_settings().ibkr_configured:
+        import os
+        self._base = (os.environ.get("IBKR_BRIDGE_URL")
+                      or "").rstrip("/")
+        self._secret = os.environ.get("IBKR_BRIDGE_SECRET")
+        if not (self._base and self._secret):
             raise ProviderConfigError(
-                "ibkr: not configured — set IBKR_HOST/PORT/CLIENT_ID "
-                "and EXECUTION_ENABLED=true after verifying TWS "
-                "permissions, market-data subscriptions and the "
-                "paper account first")
+                "ibkr: set IBKR_BRIDGE_URL + IBKR_BRIDGE_SECRET "
+                "(VPS bridge — see apps/bridge/README.md)")
+
+    def _h(self):
+        return {"Authorization": f"Bearer {self._secret}"}
 
     def capabilities(self):
-        return {"mode": "live-capable", "configured": False,
-                "requires": ["TWS/IB Gateway running",
-                             "IBKR_* env vars",
-                             "EXECUTION_ENABLED=true",
-                             "market-data entitlements"]}
+        return {"mode": "live-capable", "configured": True,
+                "via": "vps bridge",
+                "requires": ["bridge reachable",
+                             "EXECUTION_ENABLED=true for orders",
+                             "IBKR_READONLY=false on the VPS"]}
 
-    async def _unconfigured(self, *a, **k):
-        raise ProviderConfigError("ibkr: adapter not configured")
-    account_summary = _unconfigured
-    positions = _unconfigured
-    margin_requirements = _unconfigured
-    submit_order = _unconfigured
-    cancel_order = _unconfigured
-    order_status = _unconfigured
-    executions = _unconfigured
+    async def _get(self, path: str, **kw):
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get(f"{self._base}{path}",
+                            headers=self._h(), **kw)
+            if r.status_code == 404:
+                raise KeyError(f"bridge 404 on {path}")
+            if r.status_code >= 400:
+                raise ProviderConfigError(
+                    f"bridge {r.status_code}: {r.text[:200]}")
+            return r.json()
+
+    async def _post(self, path: str, **kw):
+        async with httpx.AsyncClient(timeout=25) as c:
+            r = await c.post(f"{self._base}{path}",
+                             headers=self._h(), **kw)
+            if r.status_code == 404:
+                raise KeyError(f"bridge 404 on {path}")
+            if r.status_code >= 400:
+                raise ProviderConfigError(
+                    f"bridge {r.status_code}: {r.text[:200]}")
+            return r.json()
+
+    async def account_summary(self) -> dict[str, Any]:
+        return await self._get("/account")
+
+    async def positions(self) -> list[dict[str, Any]]:
+        return await self._get("/positions")
+
+    async def margin_requirements(self, symbol: str) -> dict:
+        """What-if margin from the bridge — a hypothetical order that
+        IBKR evaluates but never places."""
+        return await self._get(f"/margin/{symbol.upper()}")
+
+    @staticmethod
+    def _apply(o: BrokerOrder, d: dict) -> BrokerOrder:
+        o.broker_order_id = d.get("broker_order_id") or o.broker_order_id
+        o.status = d.get("status") or o.status
+        o.filled_qty = float(d.get("filled_qty") or 0)
+        o.avg_fill_price = d.get("avg_fill_price")
+        o.commission = float(d.get("commission") or 0)
+        o.reject_reason = d.get("reject_reason")
+        return o
+
+    async def submit_order(self, o: BrokerOrder) -> BrokerOrder:
+        body = {"symbol": o.symbol, "side": o.side, "qty": o.qty,
+                "order_type": o.order_type, "limit_price": o.limit_price}
+        try:
+            d = await self._post("/orders", json=body)
+        except (ProviderConfigError, KeyError) as e:
+            o.status = "error"
+            o.reject_reason = str(e)[:200]
+            o.events.append({"t": datetime.utcnow().isoformat(),
+                             "stage": "error", "detail": str(e)[:200]})
+            return o
+        self._apply(o, d)
+        o.submitted_at = datetime.utcnow()
+        o.events.append({"t": o.submitted_at.isoformat(),
+                         "stage": "submitted",
+                         "detail": o.broker_order_id})
+        return o
+
+    async def cancel_order(self, broker_order_id: str) -> BrokerOrder:
+        d = await self._post(f"/orders/{broker_order_id}/cancel")
+        return self._apply(
+            BrokerOrder(broker_order_id=broker_order_id, symbol="",
+                        side="", qty=0), d)
+
+    async def order_status(self, broker_order_id: str) -> BrokerOrder:
+        d = await self._get(f"/orders/{broker_order_id}")
+        return self._apply(
+            BrokerOrder(broker_order_id=broker_order_id, symbol="",
+                        side="", qty=0), d)
+
+    async def executions(self) -> list[dict]:
+        return await self._get("/executions")
 
 
 class AlpacaAdapter(BrokerAdapter):

@@ -63,7 +63,7 @@ PROVIDERS = [
     ("yahoo", "Yahoo Finance (delayed EOD)", "market",
      {"requires_credentials": False, "delayed": True}),
     ("paper_broker", "Paper Broker (simulated)", "broker", {"simulated": True}),
-    ("ibkr", "Interactive Brokers", "broker", {"requires_gateway": True}),
+    ("ibkr", "Interactive Brokers", "broker", {"requires_bridge": True}),
 ]
 
 

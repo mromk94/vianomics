@@ -130,8 +130,11 @@ Three lanes behind one approval gate:
 - **paper** — deterministic in-process simulator (default)
 - **alpaca** — full REST v2 adapter: account, positions, orders,
   fills, asset flags; paper or live by `ALPACA_BASE_URL`
-- **ibkr** — adapter contract reserved for TWS/IB Gateway
-  (`IBKR_HOST/PORT/CLIENT_ID`); fails loudly until configured
+- **ibkr** — thin HTTPS client to the VPS bridge (`apps/bridge`:
+  FastAPI + ib_insync → localhost IB Gateway; TWS can't run on a
+  stateless host). Config: `IBKR_BRIDGE_URL` + `IBKR_BRIDGE_SECRET`;
+  orders additionally need `EXECUTION_ENABLED=true` here and
+  `IBKR_READONLY=false` on the bridge — two switches, both must open
 
 `EXECUTION_ENABLED=true` + configured broker are both required for any
 real order path. Agents can never call adapters directly.

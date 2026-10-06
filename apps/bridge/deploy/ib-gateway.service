@@ -1,0 +1,15 @@
+[Unit]
+Description=IB Gateway via IBC (auto-relogin)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vaiip
+# IBC's gatewaystart.sh handles the virtual display itself
+ExecStart=/opt/ibc/gatewaystart.sh -inline
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
