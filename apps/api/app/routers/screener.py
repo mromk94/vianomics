@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.base import utcnow
 from app.db.session import get_db
 from app.models.fundamentals import FundamentalObservation
 from app.models.instruments import Instrument, Sector
@@ -55,6 +57,11 @@ def _result_row(res: ScreeningResult, inst: Instrument) -> dict:
         # per-status criterion tally + names — the row explains itself
         # without opening the drilldown
         "counts": counts,
+        # doc gate: ≥18/20 unambiguous pass, 15–17 conditional
+        "band": ("strong" if res.applicable
+                 and res.score >= gz.STRONG_PASS_FRACTION * res.applicable
+                 else "conditional" if res.verdict in ("pass", "review")
+                 else "below"),
         "failed": [c["name"] for c in crits
                    if c.get("status") == "fail"],
         "review_items": [c["name"] for c in crits
@@ -185,6 +192,75 @@ async def drilldown(symbol: str, db: AsyncSession = Depends(get_db)) -> dict:
         "as_of": res.as_of.isoformat(),
         "data_freshness": freshest.isoformat() if freshest else None,
     }
+
+
+class ConfirmIn(BaseModel):
+    criterion: str
+    note: str | None = None
+
+
+@router.post("/results/{symbol}/confirm")
+async def confirm(
+    symbol: str,
+    body: ConfirmIn,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require("research:write")),
+) -> dict:
+    """Human confirmation of a REVIEW criterion (e.g. the moat's
+    deterministic evidence). Clears review → pass=1, recomputes the
+    verdict/qualified flag — the doc's 'pending human review' path."""
+    inst = (
+        await db.execute(
+            select(Instrument).where(Instrument.symbol == symbol.upper())
+        )
+    ).scalar_one_or_none()
+    if inst is None:
+        raise HTTPException(404, f"{symbol} not in security master")
+    res = (
+        await db.execute(
+            select(ScreeningResult)
+            .where(ScreeningResult.instrument_id == inst.id)
+            .order_by(ScreeningResult.created_at.desc())
+        )
+    ).scalars().first()
+    if res is None:
+        raise HTTPException(404, f"no screening result for {symbol}")
+
+    crits = [dict(c) for c in (res.criteria or [])]
+    hit = next((c for c in crits
+                if c.get("key") == body.criterion
+                and c.get("status") == "review"), None)
+    if hit is None:
+        raise HTTPException(
+            409, f"no pending review for '{body.criterion}' on {symbol}")
+
+    hit["status"] = "pass"
+    hit["score"] = 1.0
+    hit["review_required"] = False
+    ev = hit.setdefault("evidence", {})
+    ev["confirmed_by"] = user.email
+    ev["confirmed_at"] = utcnow().isoformat()
+    if body.note:
+        ev["confirmation_note"] = body.note
+    res.criteria = crits  # reassigned so SQLAlchemy tracks the JSON change
+
+    mandate = await mandate_svc.get_active(db)
+    threshold = mandate.green_zone_pass_score if mandate else 15
+    agg = gz.aggregate_verdict(
+        crits, threshold, inst.listing_status,
+        non_equity=(inst.asset_class or "equity")
+        in gz.NON_FUNDAMENTAL_CLASSES)
+    res.score = agg["score"]
+    res.verdict = agg["verdict"]
+    res.qualified = agg["qualified"]
+
+    await audit(db, action="screening.criterion.confirm", actor=user,
+                entity_type="screening_result", entity_id=res.id,
+                detail={"symbol": inst.symbol,
+                        "criterion": body.criterion,
+                        "new_verdict": res.verdict})
+    await db.commit()
+    return _result_row(res, inst)
 
 
 @router.get("/policies")

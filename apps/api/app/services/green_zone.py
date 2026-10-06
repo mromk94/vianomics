@@ -118,6 +118,80 @@ NON_FUNDAMENTAL_CLASSES = {"etf", "index"}
 # screening judges the same bar as a FRACTION of applicable criteria.
 EQUITY_SCREEN_CRITERIA = 20
 
+# Doc gate (Part 4): <18/20 → REJECT/WATCHLIST, ≥15/20 → DEEP
+# RESEARCH. Requirements C1 resolves the 15–17 band as "conditional
+# → watchlist pending review" — i.e. only ≥90% of applicable
+# criteria earns an outright PASS; clearing the mandate floor with
+# less is REVIEW, never silent qualification.
+STRONG_PASS_FRACTION = 0.9
+
+
+def aggregate_verdict(crits: list, threshold: float,
+                      listing_status: str = "active",
+                      non_equity: bool = False) -> dict:
+    """Shared verdict aggregation — used by screen_instrument AND the
+    human-confirm endpoint (which recomputes from stored criterion
+    dicts). Accepts CritResult objects or stored dicts."""
+    def _st(c): return c.status if hasattr(c, "status") else c.get("status")
+    def _sc(c): return c.score if hasattr(c, "score") else c.get("score", 0)
+    def _key(c): return c.key if hasattr(c, "key") else c.get("key")
+
+    applicable = [c for c in crits if _st(c) != "not_applicable"]
+    score = sum(_sc(c) for c in crits)
+    insufficient = sum(1 for c in applicable
+                       if _st(c) == "insufficient_data")
+    review_n = sum(1 for c in applicable if _st(c) == "review")
+
+    blocked: list[str] = []
+    if listing_status != "active":
+        blocked.append(f"listing_status={listing_status}")
+
+    if non_equity:
+        max_pts = max(1, len(applicable))
+        frac = score / max_pts
+        bar = threshold / EQUITY_SCREEN_CRITERIA
+        macro = next((c for c in applicable
+                      if _key(c) == "macro_sector_alignment"), None)
+        thesis_ok = macro is None or _st(macro) == "pass"
+        passed = frac >= STRONG_PASS_FRACTION and review_n == 0 \
+            and thesis_ok
+        conditional = frac >= bar
+    else:
+        frac = None
+        bar = None
+        strong_bar = STRONG_PASS_FRACTION * len(applicable)
+        passed = score >= strong_bar and review_n == 0
+        conditional = score >= threshold
+
+    if blocked:
+        verdict = "blocked_by_risk"
+    elif insufficient >= max(1, len(applicable) // 2):
+        verdict = "insufficient_data"
+    elif passed:
+        verdict = "pass"
+    elif conditional:
+        # hits the floor but is either in the 15–17 conditional band
+        # or waiting on human confirmation — deep-research path, not
+        # qualified
+        verdict = "review"
+    else:
+        verdict = "fail"
+
+    out = {
+        "score": score,
+        "applicable": len(applicable),
+        "verdict": verdict,
+        "qualified": verdict == "pass",
+        "blocked_reasons": blocked,
+        "threshold": threshold,
+        "band": ("strong" if passed else
+                 "conditional" if conditional else "below"),
+    }
+    if non_equity:
+        out["score_fraction"] = frac
+        out["pass_fraction"] = bar
+    return out
+
 
 async def screen_instrument(
     db: AsyncSession,
@@ -527,38 +601,9 @@ async def screen_instrument(
                                  "bars": len(closes)}))
 
     # ── aggregate ──
-    applicable = [c for c in crits if c.status != "not_applicable"]
-    score = sum(c.score for c in crits)
-    insufficient = sum(1 for c in applicable if c.status == "insufficient_data")
-    review_n = sum(1 for c in applicable if c.status == "review")
     threshold = mandate.green_zone_pass_score if mandate else 15
-
-    blocked: list[str] = []
-    if inst.listing_status != "active":
-        blocked.append(f"listing_status={inst.listing_status}")
-
-    if blocked:
-        verdict = "blocked_by_risk"
-    elif insufficient >= max(1, len(applicable) // 2):
-        verdict = "insufficient_data"
-    elif score >= threshold and review_n == 0:
-        verdict = "pass"
-    elif score >= threshold and review_n > 0:
-        verdict = "review"   # hits threshold but pending human confirmation
-    else:
-        verdict = "fail"
-
-    qualified = verdict == "pass"  # review ≠ qualified until human confirms
-
-    return {
-        "criteria": [c.to_dict() for c in crits],
-        "score": score,
-        "applicable": len(applicable),
-        "verdict": verdict,
-        "qualified": qualified,
-        "blocked_reasons": blocked,
-        "threshold": threshold,
-    }
+    out = aggregate_verdict(crits, threshold, inst.listing_status)
+    return {"criteria": [c.to_dict() for c in crits], **out}
 
 
 async def _screen_non_equity(
@@ -678,47 +723,54 @@ async def _screen_non_equity(
             {"adv30": float(adv)}))
 
     # ── aggregate — pass bar as a fraction of applicable criteria ──
-    applicable = [c for c in crits if c.status != "not_applicable"]
-    score = sum(c.score for c in crits)
-    max_pts = max(1, len(applicable))
     threshold = mandate.green_zone_pass_score if mandate else 15
-    frac = score / max_pts
-    bar = threshold / EQUITY_SCREEN_CRITERIA
-    insufficient = sum(1 for c in applicable if c.status == "insufficient_data")
-    review_n = sum(1 for c in applicable if c.status == "review")
+    out = aggregate_verdict(crits, threshold, inst.listing_status,
+                            non_equity=True)
+    return {"criteria": [c.to_dict() for c in crits], **out}
 
-    blocked: list[str] = []
-    if inst.listing_status != "active":
-        blocked.append(f"listing_status={inst.listing_status}")
 
-    macro = next((c for c in applicable
-                  if c.key == "macro_sector_alignment"), None)
-    thesis_ok = macro is None or macro.status == "pass"
+async def _latest_close(db: AsyncSession, inst_id: str,
+                        as_of: datetime) -> float | None:
+    px = (await db.execute(
+        select(OhlcvBar.close)
+        .where(OhlcvBar.instrument_id == inst_id,
+               OhlcvBar.timeframe == "1d",
+               OhlcvBar.time <= as_of)
+        .order_by(OhlcvBar.time.desc()).limit(1))).scalar_one_or_none()
+    return float(px) if px is not None else None
 
-    if blocked:
-        verdict = "blocked_by_risk"
-    elif insufficient >= max(1, len(applicable) // 2):
-        verdict = "insufficient_data"
-    elif frac >= bar and review_n == 0 and thesis_ok:
-        verdict = "pass"
-    elif frac >= bar:
-        # score cleared but a thesis/macro or review criterion is
-        # unresolved — human confirmation path, never silent pass
-        verdict = "review"
-    else:
-        verdict = "fail"
 
-    return {
-        "criteria": [c.to_dict() for c in crits],
-        "score": score,
-        "applicable": len(applicable),
-        "verdict": verdict,
-        "qualified": verdict == "pass",
-        "blocked_reasons": blocked,
-        "threshold": threshold,
-        "score_fraction": frac,
-        "pass_fraction": bar,
+async def _latest_iv(db: AsyncSession, inst: Instrument,
+                     sector_name: str | None) -> float | None:
+    """Latest ValuationRun's intrinsic value, resolved by the same
+    company-type precedence as the qualification gate (financials →
+    DNI/P-B, operating cos → Rule-1/DCF)."""
+    from app.models.valuation import ValuationRun
+    from app.services import valuation as sector_val
+
+    vrun = (await db.execute(
+        select(ValuationRun)
+        .where(ValuationRun.instrument_id == inst.id)
+        .order_by(ValuationRun.created_at.desc()).limit(1))
+    ).scalar_one_or_none()
+    if vrun is None:
+        return None
+    o = vrun.outputs or {}
+    vals = {
+        "rule1": (o.get("rule1") or {}).get("sticker_price")
+                 or o.get("sticker"),
+        "dcf": (o.get("dcf") or {}).get("per_share")
+               or (o.get("dcf_multistage") or {}).get("per_share"),
+        "dni": (o.get("dni") or {}).get("per_share"),
+        "pb": (o.get("pb_intrinsic") or {}).get("per_share"),
     }
+    order = (["dni", "pb", "rule1", "dcf"]
+             if sector_val.archetype_for(sector_name or "") == "financial"
+             else ["rule1", "dcf", "dni", "pb"])
+    for m in order:
+        if vals.get(m):
+            return float(vals[m])
+    return None
 
 
 async def run_screen(
@@ -763,9 +815,12 @@ async def run_screen(
     )
 
     for inst, _m in members:
+        sector_name = sector_names.get(inst.sector_id)
         res = await screen_instrument(
             db, inst, policy.params or POLICY_DEFAULTS, mandate, as_of,
-            sector_name=sector_names.get(inst.sector_id),
+            price=await _latest_close(db, inst.id, as_of),
+            intrinsic_value=await _latest_iv(db, inst, sector_name),
+            sector_name=sector_name,
         )
         db.add(
             ScreeningResult(

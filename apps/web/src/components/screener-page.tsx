@@ -29,6 +29,8 @@ interface Row {
   failed?: string[];
   review_items?: string[];
   missing?: string[];
+  /** "strong" (≥90% of applicable) | "conditional" (15–17 band) | "below" */
+  band?: string;
 }
 
 interface Criterion {
@@ -69,7 +71,7 @@ const VERDICT_LABEL: Record<Verdict, string> = {
 
 const VERDICT_MEANING: Record<Verdict, string> = {
   pass: "Cleared the bar — qualifies for deeper research. A pass is a research green light, not a buy order.",
-  review: "Score cleared the bar but at least one criterion needs a human to confirm the evidence before it counts.",
+  review: "Cleared the floor but not the full bar — either a 15–17 conditional band (doc: watchlist pending review) or a criterion awaiting human confirmation.",
   fail: "Did not clear the pass bar — see the failed criteria below for exactly why.",
   insufficient_data: "Not enough reported data to judge half the criteria — ingest EDGAR facts before trusting any verdict.",
   blocked_by_risk: "Excluded by risk regardless of fundamentals — the listing itself is not tradable.",
@@ -263,6 +265,27 @@ export function ScreenerPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+  const [confirming, setConfirming] = useState<string | null>(null);
+
+  const openDetail = (sym: string) =>
+    apiGet<Detail>(`/api/v1/screener/results/${sym}`).then(setDetail);
+
+  /* Human sign-off on a REVIEW criterion (e.g. moat evidence) —
+     clears it to pass and recomputes the verdict server-side. */
+  const confirmCriterion = async (criterion: string) => {
+    if (!detail) return;
+    setConfirming(criterion);
+    try {
+      await apiPost(`/api/v1/screener/results/${detail.symbol}/confirm`,
+                    { criterion });
+      await openDetail(detail.symbol);
+      load();
+    } catch (e) {
+      setNotice((e as Error).message);
+    } finally {
+      setConfirming(null);
+    }
+  };
 
   const load = () => {
     apiGet<{ run: never; results: Row[] }>("/api/v1/screener/latest")
@@ -298,7 +321,7 @@ export function ScreenerPage() {
     {
       key: "symbol", header: "Ticker",
       render: (r) => (
-        <button onClick={() => apiGet<Detail>(`/api/v1/screener/results/${r.symbol}`).then(setDetail)}
+        <button onClick={() => openDetail(r.symbol)}
           className="font-semibold text-accent hover:underline">
           {r.symbol}
         </button>
@@ -436,6 +459,16 @@ export function ScreenerPage() {
                 <span className="text-[12px] text-faint">
                   score of applicable criteria{detail.sector ? ` · ${detail.sector}` : ""}
                 </span>
+                {detail.band === "conditional" && (
+                  <span className="rounded-full bg-warn-bg px-2 py-0.5 text-[11px] font-semibold text-warn">
+                    15–17 conditional band
+                  </span>
+                )}
+                {detail.band === "strong" && detail.verdict === "review" && (
+                  <span className="rounded-full bg-warn-bg px-2 py-0.5 text-[11px] font-semibold text-warn">
+                    awaiting confirmation
+                  </span>
+                )}
               </div>
               {/* score bar — pass/review/fail proportions at a glance */}
               {detail.criteria.length > 0 && (() => {
@@ -498,6 +531,16 @@ export function ScreenerPage() {
                       <div className="num mt-1 text-[10px] uppercase tracking-wide text-faint">
                         {c.formula}
                       </div>
+                      {c.status === "review" && (
+                        <button
+                          onClick={() => confirmCriterion(c.key)}
+                          disabled={confirming === c.key}
+                          className="mt-1.5 rounded-full border border-warn/50 px-2.5 py-0.5 text-[11px] font-semibold text-warn transition hover:bg-warn/10 disabled:opacity-50">
+                          {confirming === c.key
+                            ? "Confirming…"
+                            : "Confirm evidence → count as pass"}
+                        </button>
+                      )}
                       {evidenceChips(c).length > 0 && (
                         <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 border-t border-border/40 pt-1.5">
                           {evidenceChips(c).map(({ k, v }) => (

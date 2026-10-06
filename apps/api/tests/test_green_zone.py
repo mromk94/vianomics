@@ -203,21 +203,31 @@ async def test_dividend_na_for_non_payer(db):
     assert _crit(res, "dividend_growth")["status"] == "not_applicable"
 
 
-async def test_score_15_qualifies_but_risk_gates_standalone(db):
-    """15/20 qualifies for research; it does NOT bypass risk gates —
-    blocked instruments stay blocked regardless of score."""
-    res_threshold = {
-        "criteria": [{"key": f"c{i}", "status": "pass", "score": 1.0}
-                     for i in range(15)]
-        + [{"key": f"f{i}", "status": "fail", "score": 0.0}
-           for i in range(5)],
-        "score": 15, "applicable": 20,
-        "verdict": "pass", "qualified": True,
-    }
-    # engine-level: qualification is a screening verdict only —
-    # risk veto applies downstream (Part 14/16), tested via blocked path
-    assert res_threshold["qualified"] is True
-    assert res_threshold["verdict"] == "pass"
+async def test_score_15_is_conditional_18_is_strong(db):
+    """Doc gate: <18/20 → WATCHLIST, ≥15/20 → DEEP RESEARCH. The
+    15–17 band is REVIEW (conditional, pending human read), never a
+    silent pass; ≥90% of applicable criteria passes outright."""
+    from app.services.green_zone import aggregate_verdict
+
+    crits15 = ([{"key": f"c{i}", "status": "pass", "score": 1.0}
+                for i in range(15)]
+               + [{"key": f"f{i}", "status": "fail", "score": 0.0}
+                  for i in range(5)])
+    r15 = aggregate_verdict(crits15, 15)
+    assert r15["verdict"] == "review" and r15["band"] == "conditional"
+    assert r15["qualified"] is False
+
+    crits18 = ([{"key": f"c{i}", "status": "pass", "score": 1.0}
+                for i in range(18)]
+               + [{"key": f"f{i}", "status": "fail", "score": 0.0}
+                  for i in range(2)])
+    r18 = aggregate_verdict(crits18, 15)
+    assert r18["verdict"] == "pass" and r18["band"] == "strong"
+    assert r18["qualified"] is True
+
+    # a risk-blocked listing stays blocked regardless of score
+    rb = aggregate_verdict(crits18, 15, listing_status="delisted")
+    assert rb["verdict"] == "blocked_by_risk"
 
 
 # ── ETF / non-fundamental screening (macro + technical channels) ──
@@ -306,3 +316,92 @@ async def test_equity_path_unchanged_by_etf_branch(db):
     res = await screen_instrument(db, eq, POLICY_DEFAULTS, None, ASOF)
     assert res["verdict"] == "insufficient_data"
     assert len(res["criteria"]) == 20
+
+
+# ── batch price/IV feed + human confirm path ──
+
+async def test_run_screen_feeds_price_and_iv(db):
+    """The batch screen must feed latest close + latest ValuationRun
+    IV — otherwise P/FCF and IV-discount can never score (the doc's
+    margin-of-safety criterion was silently zeroed)."""
+    from app.models.market import OhlcvBar
+    from app.models.screening import ScreeningResult
+    from app.models.universe import Universe, UniverseMembership
+    from app.models.valuation import ValuationRun
+    from app.services.green_zone import run_screen
+
+    u = Universe(name="approved", tier="approved")
+    inst = Instrument(symbol="FEED", name="FeedCo")
+    db.add_all([u, inst])
+    await db.flush()
+    db.add(UniverseMembership(universe_id=u.id, instrument_id=inst.id))
+    db.add(OhlcvBar(instrument_id=inst.id, timeframe="1d", time=ASOF,
+                    open=1, high=1, low=1, close=50, volume=1,
+                    source="yahoo"))
+    # minimal fundamentals so FCF/share is computable
+    _add_obs(db, inst,
+             {"ocf": [(2025, 170)], "capex": [(2025, 30)],
+              "shares": [(2025, 100)]})
+    db.add(ValuationRun(
+        group_id="g1", instrument_id=inst.id, version=1,
+        methodology="rule1", mandate_version=None,
+        inputs={}, outputs={"rule1": {"sticker_price": 100}}))
+    policy = ScreeningPolicy(version=1, is_active=True,
+                             params=POLICY_DEFAULTS)
+    db.add(policy)
+    await db.flush()
+
+    run = await run_screen(db, policy, None, as_of=ASOF)
+    res = (await db.execute(
+        select(ScreeningResult)
+        .where(ScreeningResult.run_id == run.id))).scalar_one()
+    crits = {c["key"]: c for c in res.criteria}
+    assert crits["p_fcf"]["status"] != "insufficient_data"
+    assert crits["iv_discount"]["status"] != "insufficient_data"
+    assert crits["iv_discount"]["evidence"]["iv"] == 100.0
+    assert crits["iv_discount"]["evidence"]["price"] == 50.0
+
+
+async def test_confirm_clears_review_and_recomputes(db):
+    """Human sign-off on a REVIEW criterion (the doc's 'pending human
+    confirmation' path): moat → pass, verdict recomputed, audited."""
+    from app.models.identity import User
+    from app.models.screening import ScreeningResult, ScreeningRun
+    from app.routers.screener import ConfirmIn, confirm
+
+    run = ScreeningRun(universe="approved", policy_version=1,
+                       mandate_version=None, status="complete")
+    inst = Instrument(symbol="CONF", name="ConfCo")
+    db.add_all([run, inst])
+    await db.flush()
+    res = ScreeningResult(
+        run_id=run.id, instrument_id=inst.id,
+        score=18.5, applicable=20,
+        qualified=False, verdict="review",
+        blocked_reasons=[],
+        criteria=[{"key": f"c{i}", "name": f"c{i}", "status": "pass",
+                   "score": 1.0, "formula": "", "evidence": {}}
+                  for i in range(18)]
+                 + [{"key": "moat", "name": "Economic moat",
+                     "status": "review", "score": 0.5, "formula": "",
+                     "evidence": {}, "review_required": True},
+                    {"key": "f0", "name": "f0", "status": "fail",
+                     "score": 0.0, "formula": "", "evidence": {}}],
+        as_of=ASOF)
+    db.add(res)
+    await db.flush()
+
+    out = await confirm("conf", ConfirmIn(criterion="moat", note="ok"),
+                        db, User(id="u-t", email="a@x", is_active=True))
+    assert out["verdict"] == "pass" and out["qualified"] is True
+    moat = next(c for c in res.criteria if c["key"] == "moat")
+    assert moat["status"] == "pass" and moat["score"] == 1.0
+    assert moat["evidence"]["confirmed_by"] == "a@x"
+
+    # confirming a non-pending criterion → 409
+    import pytest as _pt
+    from fastapi import HTTPException
+    with _pt.raises(HTTPException) as ei:
+        await confirm("conf", ConfirmIn(criterion="moat"), db,
+                      User(id="u-t2", email="b@x", is_active=True))
+    assert ei.value.status_code == 409
