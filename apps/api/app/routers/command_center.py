@@ -236,21 +236,36 @@ async def command_center(
     else:
         has_positions = bool(pf["positions"])
 
-    # external sources (MT4 push, Bamboo sync) — merge per ?source=
+    # external sources (MT4 push, Bamboo sync, IBKR bridge…) — merge
+    # per ?source=; "all" includes EVERY connected account
     if source != "internal":
         from app.models.portfolio import ExternalAccount
-        ext = (await db.execute(
-            select(ExternalAccount)
-            .where(ExternalAccount.connected,
-                   ExternalAccount.source.in_(
-                       ["mt4", "bamboo"] if source == "all"
-                       else [source])))
-        ).scalars().all()
-        ext_nav = sum(float(a.equity or a.balance or 0) for a in ext)
-        ext_cash = sum(float(a.balance or 0) for a in ext)
+        from app.models.market import MarketQuote
+        q = select(ExternalAccount).where(ExternalAccount.connected)
+        if source != "all":
+            q = q.where(ExternalAccount.source == source)
+        ext = (await db.execute(q)).scalars().all()
+        # FX-normalize to USD — accounts can be GBP/EUR denominated;
+        # stored '{CCY}USD=X' quotes convert, else raw (documented)
+        fxq = dict((await db.execute(
+            select(MarketQuote.symbol, MarketQuote.mid)
+            .where(MarketQuote.source == "yahoo"))).all())
+
+        def _usd(v, ccy):
+            if v is None:
+                return 0.0
+            v = float(v)
+            if (ccy or "USD") == "USD":
+                return v
+            r = fxq.get(f"{ccy}USD=X")
+            return v * float(r) if r else v
+
+        ext_nav = sum(_usd(a.equity or a.balance, a.currency) for a in ext)
+        ext_cash = sum(_usd(a.balance, a.currency) for a in ext)
         # external unrealized = equity − balance; daily = eq delta vs
         # first snapshot today (equity_history)
-        ext_unreal = sum(float(a.equity or 0) - float(a.balance or 0)
+        ext_unreal = sum(_usd(float(a.equity or 0) - float(a.balance or 0),
+                              a.currency)
                          for a in ext if a.equity is not None)
         today = datetime.now(UTC).date().isoformat()
         ext_daily = 0.0
@@ -258,7 +273,8 @@ async def command_center(
             hist = a.equity_history or []
             past = [h for h in hist if h.get("t", "")[:10] < today]
             if past and a.equity is not None:
-                ext_daily += float(a.equity) - float(past[-1]["equity"])
+                ext_daily += _usd(float(a.equity)
+                                  - float(past[-1]["equity"]), a.currency)
         if source == "all":
             # ctx already includes external — add only INTERNAL nav
             nav = (intl_nav or 0) + ext_nav \

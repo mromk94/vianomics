@@ -288,13 +288,37 @@ async def sync_ibkr_bridge(db: AsyncSession) -> dict:
             "currency": p.get("currency"),
         })
 
+    # store the FX quote so aggregations can USD-normalize
+    # non-dollar accounts (test acct is GBP-denominated)
+    ccy = a.get("currency") or "USD"
+    if ccy != "USD":
+        try:
+            from app.providers.yahoo import YahooAdapter
+            snap = await YahooAdapter().fetch_quote(f"{ccy}USD=X")
+            if snap and snap.get("mid"):
+                sym = f"{ccy}USD=X"
+                row = (await db.execute(
+                    select(MarketQuote).where(
+                        MarketQuote.source == "yahoo",
+                        MarketQuote.symbol == sym))).scalar_one_or_none()
+                if row is None:
+                    row = MarketQuote(source="yahoo", symbol=sym,
+                                      ts=utcnow())
+                    db.add(row)
+                row.bid, row.ask = snap.get("bid"), snap.get("ask")
+                row.mid = snap.get("mid")
+                row.ts = utcnow()
+        except Exception:
+            pass      # FX marking best-effort — the sync already worked
+
     acc = await _ext_account(db, "ibkr")
     acct = a.get("account") or ""
     kind = "paper" if acct.upper().startswith("DU") else "live"
-    acc.label = f"IBKR {kind} {acct}" if acct else "IBKR bridge"
+    acc.label = (f"IBKR {kind} {acct} ({ccy})" if acct
+                 else "IBKR bridge")
     acc.balance = a.get("cash")
     acc.equity = a.get("equity") or a.get("cash")
-    acc.currency = a.get("currency") or "USD"
+    acc.currency = ccy
     acc.positions = positions
     _roll_equity(acc, acc.equity)
     acc.synced_at = utcnow()
