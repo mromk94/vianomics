@@ -128,11 +128,34 @@ def test_aggregation_conserves_volume():
 
 
 def test_2d_3d_aggregation():
-    """Ordinal-anchored buckets: 12 days → ≤6 2d groups, ≤5 3d."""
+    """Trading-session buckets: 12 daily bars → exactly 6 2d and
+    4 3d groups; the newest bucket is complete, not provisional."""
     bars = _bars([100 + i for i in range(12)])
     d2, d3 = ti.aggregate(bars, "2d"), ti.aggregate(bars, "3d")
-    assert len(d2) in (5, 6) and len(d3) in (4, 5)
-    assert d2[-1].provisional and d3[-1].provisional
+    assert len(d2) == 6 and len(d3) == 4
+    assert not d2[-1].provisional and not d3[-1].provisional
+    # each bucket covers exactly n consecutive sessions
+    assert d2[-1].o == pytest.approx(110) and d2[-1].c == pytest.approx(111)
+    assert d3[-1].o == pytest.approx(109) and d3[-1].c == pytest.approx(111)
+
+
+def test_2d_3d_buckets_span_weekends_as_sessions():
+    """Friday + Monday are consecutive TRADING sessions — a 2d bucket
+    must group them, not split on the calendar gap."""
+    import datetime as _dt
+    days = [_dt.datetime(2025, 3, 7, tzinfo=UTC),     # Fri
+            _dt.datetime(2025, 3, 10, tzinfo=UTC),    # Mon
+            _dt.datetime(2025, 3, 11, tzinfo=UTC),    # Tue
+            _dt.datetime(2025, 3, 12, tzinfo=UTC)]    # Wed
+    bars = [Bar(t=d, o=100, h=101, l=99, c=100 + i, v=1e6)
+            for i, d in enumerate(days)]
+    d2 = ti.aggregate(bars, "2d")
+    assert len(d2) == 2
+    # newest bucket = Tue+Wed; oldest = Fri+Mon — the weekend never
+    # splits a bucket because buckets count sessions, not days
+    assert d2[0].o == pytest.approx(100) and d2[0].c == pytest.approx(101)
+    assert d2[1].o == pytest.approx(100) and d2[1].c == pytest.approx(103)
+    assert d2[1].t.date() == _dt.date(2025, 3, 12)
 
 
 # ── signal engine (pure, no db) ──

@@ -45,6 +45,22 @@ services:
 # Each cronjob POSTs the job key to the API's secret-gated internal
 # endpoint — the job itself is the same code the UI's "run now" calls.
   - type: cronjob
+    name: vaiip-ingest-daily
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    # 22:00 UTC Mon–Fri — bars land after both DST-season closes and
+    # BEFORE pyramid:maintain at 22:30 (fresh data → then maintain)
+    schedule: "0 22 * * 1-5"
+    startCommand: python -m app.cron_trigger ingest:daily
+    envVars:
+      - key: API_URL
+        value: https://vianomics.onrender.com
+      - key: CRON_SECRET
+        sync: false
+
+  - type: cronjob
     name: vaiip-pyramid-maintain
     runtime: docker
     dockerfilePath: ./Dockerfile

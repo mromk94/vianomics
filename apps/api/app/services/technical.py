@@ -248,9 +248,32 @@ def breakout(bars: list[Bar], lookback: int = 20) -> dict | None:
 
 def aggregate(bars: list[Bar], timeframe: str) -> list[Bar]:
     """Daily → 2d/3d/weekly/monthly. Last bucket flagged provisional
-    unless its period has ended."""
+    unless its period has ended.
+
+    2d/3d bucket TRADING SESSIONS, not calendar days — weekends and
+    holidays hold no bars, so a 2d bar is "the last two sessions"
+    (Fri+Mon), never a Friday+Sunday pair. Buckets are anchored to the
+    newest bar: every returned row is exactly n consecutive sessions
+    except possibly the oldest, which is a history remainder."""
     if timeframe == "1d":
         return bars
+    if timeframe in ("2d", "3d"):
+        n = int(timeframe[0])
+        out = []
+        i = len(bars)
+        while i > 0:
+            chunk = bars[max(0, i - n):i]
+            i -= n
+            out.append(Bar(chunk[-1].t, chunk[0].o,
+                           max(x.h for x in chunk),
+                           min(x.l for x in chunk), chunk[-1].c,
+                           sum(x.v for x in chunk)))
+        out.reverse()
+        # newest bucket is complete by construction; only fewer than n
+        # total bars makes it partial
+        if out and len(bars) < n:
+            out[-1].provisional = True
+        return out
     out: list[Bar] = []
     cur: Bar | None = None
     cur_key = None
@@ -263,9 +286,6 @@ def aggregate(bars: list[Bar], timeframe: str) -> list[Bar]:
             return (d.year, d.month)
         if timeframe == "1y":
             return d.year
-        if timeframe in ("2d", "3d"):
-            n = int(timeframe[0])
-            return d.toordinal() // n
         raise ValueError(f"unknown timeframe {timeframe}")
 
     for b in bars:
@@ -294,6 +314,4 @@ def aggregate(bars: list[Bar], timeframe: str) -> list[Bar]:
         else:
             nxt = (last.t.date().replace(day=28) + timedelta(days=7))
             last.provisional = today < nxt.replace(day=1)
-    elif out and timeframe in ("2d", "3d"):
-        out[-1].provisional = True  # n-day buckets: last always partial
     return out

@@ -309,6 +309,21 @@ async def run_job_now(job_key: str,
             from app.providers.market import TiingoAdapter
             run = await ing.ingest_tiingo_bars(
                 db, TiingoAdapter(api_key=key), parts[-1])
+        elif job_key == "ingest:daily":
+            # lean daily refresh — bars + market context/quotes only
+            # (the scheduled post-close pull; /backfill is the full
+            # pipeline incl. EDGAR/FRED/scans)
+            from app.ingestion.upsert import get_or_create
+            from app.models.ops import Job, JobRun
+            from app.db.base import utcnow
+            res = await refresh_daily_bars(db)
+            job, _ = await get_or_create(
+                db, Job, {"key": job_key}, {"kind": "ingestion"})
+            run = JobRun(job_id=job.id, status="success",
+                         finished_at=utcnow(),
+                         records_ok=res["instruments"])
+            db.add(run)
+            await db.commit()
         elif job_key.startswith("ingest:yahoo:") or \
                 job_key.startswith("ingest:stooq:"):
             run = await ing.ingest_stooq_bars(db, adapters["yahoo"](), parts[-1])
@@ -328,6 +343,37 @@ async def _instr(db: AsyncSession, symbol: str):
     return (await db.execute(
         select(Instrument).where(Instrument.symbol == symbol.upper()))
     ).scalar_one_or_none()
+
+
+async def refresh_daily_bars(db: AsyncSession) -> dict:
+    """Post-close daily refresh: latest yahoo bars for every
+    instrument + market context (indices/sector ETFs) + derived
+    ADV + live quotes. Scheduled by the vaiip-ingest-daily cronjob so
+    the symbol page and the maintenance loop never run on yesterday's
+    book."""
+    from app.ingestion import jobs as ing
+    from app.models.instruments import Instrument
+    from app.providers.yahoo import YahooAdapter
+    from app.services import market_context as mc
+
+    await mc.ensure_market_context(db)
+    await db.commit()
+    ya = YahooAdapter()
+    ok = 0
+    for inst in (await db.execute(select(Instrument))).scalars().all():
+        try:
+            await ing.ingest_stooq_bars(db, ya, inst.symbol)
+            await db.commit()
+            ok += 1
+        except Exception:
+            await db.rollback()
+    try:
+        await mc.update_adv(db)
+        await mc.refresh_quotes(db)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+    return {"instruments": ok}
 
 
 @router.post("/backfill", status_code=202)
