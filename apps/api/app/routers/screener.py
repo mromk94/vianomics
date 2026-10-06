@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.models.fundamentals import FundamentalObservation
-from app.models.instruments import Instrument
+from app.models.instruments import Instrument, Sector
 from app.models.ops import Job, JobRun
 from app.models.screening import (
     ScreeningPolicy,
@@ -38,6 +38,10 @@ async def _active_policy(db: AsyncSession) -> ScreeningPolicy:
 
 
 def _result_row(res: ScreeningResult, inst: Instrument) -> dict:
+    crits = res.criteria or []
+    counts: dict[str, int] = {}
+    for c in crits:
+        counts[c.get("status", "?")] = counts.get(c.get("status", "?"), 0) + 1
     return {
         "symbol": inst.symbol,
         "name": inst.name,
@@ -48,6 +52,15 @@ def _result_row(res: ScreeningResult, inst: Instrument) -> dict:
         "verdict": res.verdict,
         "qualified": res.qualified,
         "blocked_reasons": res.blocked_reasons,
+        # per-status criterion tally + names — the row explains itself
+        # without opening the drilldown
+        "counts": counts,
+        "failed": [c["name"] for c in crits
+                   if c.get("status") == "fail"],
+        "review_items": [c["name"] for c in crits
+                         if c.get("status") == "review"],
+        "missing": [c["name"] for c in crits
+                    if c.get("status") == "insufficient_data"],
         "as_of": res.as_of.isoformat(),
     }
 
@@ -153,10 +166,14 @@ async def drilldown(symbol: str, db: AsyncSession = Depends(get_db)) -> dict:
             )
         )
     ).scalar()
+    sector = None
+    if inst.sector_id:
+        sec = await db.get(Sector, inst.sector_id)
+        sector = sec.name if sec else None
     return {
         "symbol": inst.symbol,
         "name": inst.name,
-        "sector": None,
+        "sector": sector,
         "score": res.score,
         "applicable": res.applicable,
         "verdict": res.verdict,

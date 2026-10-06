@@ -7,11 +7,15 @@ export function Drawer({
   open,
   onClose,
   title,
+  wide = false,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
+  /** wide renders a workstation-depth panel for evidence-heavy
+      detail (screener review, dossiers) instead of the compact rail */
+  wide?: boolean;
   children: React.ReactNode;
 }) {
   useEffect(() => {
@@ -31,7 +35,7 @@ export function Drawer({
         onClick={onClose}
         aria-hidden
       />
-      <aside className="absolute top-0 right-0 h-full w-full max-w-md border-l border-border bg-surface shadow-xl">
+      <aside className={`absolute top-0 right-0 h-full w-full border-l border-border bg-surface shadow-xl ${wide ? "sm:max-w-3xl xl:max-w-4xl" : "max-w-md"}`}>
         <header className="flex items-center justify-between border-b border-border px-4 py-3">
           <h2 className="text-sm font-semibold">{title}</h2>
           <button
