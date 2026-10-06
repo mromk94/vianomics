@@ -14,4 +14,7 @@ COPY apps/api/alembic.ini ./alembic.ini
 COPY apps/api/migrations ./migrations
 
 EXPOSE 8000
-CMD ["sh", "-c", "alembic upgrade head && python -m app.seeds.seed && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# One image, two roles: cron jobs (Render's Docker runtime offers no
+# command override — it runs CMD) set CRON_JOB=<job_key> in env and the
+# image runs the trigger and exits; unset → normal API server boot.
+CMD ["sh", "-c", "if [ -n \"$CRON_JOB\" ]; then exec python -m app.cron_trigger \"$CRON_JOB\"; else exec sh -c 'alembic upgrade head && python -m app.seeds.seed && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}'; fi"]

@@ -63,8 +63,10 @@ services:
     envVars:
       - key: API_URL
         value: https://vianomics.onrender.com
-      - key: CRON_SECRET
-        sync: false
+      - key: CRON_JOB
+        value: ingest:daily      # manual dashboard creation has no
+      - key: CRON_SECRET         # command field — the image's env-
+        sync: false              # driven CMD reads this instead
 
   - type: cronjob
     name: vaiip-pyramid-maintain
@@ -78,6 +80,8 @@ services:
     envVars:
       - key: API_URL
         value: https://vianomics.onrender.com
+      - key: CRON_JOB
+        value: pyramid:maintain
       - key: CRON_SECRET
         sync: false
 
@@ -92,6 +96,8 @@ services:
     envVars:
       - key: API_URL
         value: https://vianomics.onrender.com
+      - key: CRON_JOB
+        value: review:weekly
       - key: CRON_SECRET
         sync: false
 
@@ -106,6 +112,8 @@ services:
     envVars:
       - key: API_URL
         value: https://vianomics.onrender.com
+      - key: CRON_JOB
+        value: review:monthly
       - key: CRON_SECRET
         sync: false
 
@@ -120,6 +128,8 @@ services:
     envVars:
       - key: API_URL
         value: https://vianomics.onrender.com
+      - key: CRON_JOB
+        value: review:quarterly
       - key: CRON_SECRET
         sync: false
 
