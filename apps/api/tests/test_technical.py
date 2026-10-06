@@ -155,7 +155,9 @@ def test_2d_3d_buckets_span_weekends_as_sessions():
     # splits a bucket because buckets count sessions, not days
     assert d2[0].o == pytest.approx(100) and d2[0].c == pytest.approx(101)
     assert d2[1].o == pytest.approx(100) and d2[1].c == pytest.approx(103)
-    assert d2[1].t.date() == _dt.date(2025, 3, 12)
+    # label = period start (first session) — investing.com convention
+    assert d2[0].t.date() == _dt.date(2025, 3, 7)   # Fri+Mon → Fri
+    assert d2[1].t.date() == _dt.date(2025, 3, 11)  # Tue+Wed → Tue
 
 
 # ── signal engine (pure, no db) ──

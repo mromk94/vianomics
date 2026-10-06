@@ -303,9 +303,10 @@ def aggregate(bars: list[Bar], timeframe: str) -> list[Bar]:
         while i > 0:
             chunk = bars[max(0, i - n):i]
             i -= n
-            out.append(Bar(chunk[-1].t, chunk[0].o,
-                           max(x.h for x in chunk),
-                           min(x.l for x in chunk), chunk[-1].c,
+            out.append(Bar(chunk[0].t, chunk[0].o,   # label = period
+                           max(x.h for x in chunk),  # START — matches
+                           min(x.l for x in chunk),  # investing.com /
+                           chunk[-1].c,             # TradingView
                            sum(x.v for x in chunk)))
         out.reverse()
         # newest bucket is complete by construction; only fewer than n
@@ -338,8 +339,7 @@ def aggregate(bars: list[Bar], timeframe: str) -> list[Bar]:
             cur.h = max(cur.h, b.h)
             cur.l = min(cur.l, b.l)
             cur.c = b.c
-            cur.v += b.v
-            cur.t = b.t
+            cur.v += b.v      # cur.t stays = first session of period
     if cur:
         out.append(cur)
 

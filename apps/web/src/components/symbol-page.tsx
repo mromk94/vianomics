@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { apiGet } from "@/lib/api";
+import { apiGet, apiPost } from "@/lib/api";
 import { fmtNum, fmtTime } from "@/lib/format";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
@@ -44,6 +44,26 @@ function SigCell({ l, v }: { l: string; v: React.ReactNode }) {
   );
 }
 
+/* doc Step-8 surface grouped by lens: trend / momentum / volatility /
+   structure / volume — each group = one tile of label:value rows */
+function MiGroup({ title, rows }:
+  { title: string; rows: [string, React.ReactNode][] }) {
+  return (
+    <div className="glass-tile px-3 py-2">
+      <div className="text-[9px] uppercase tracking-wide text-faint">{title}</div>
+      <div className="mt-1 space-y-0.5">
+        {rows.map(([l, v]) => (
+          <div key={l}
+            className="flex items-baseline justify-between gap-2">
+            <span className="text-[10px] text-dim">{l}</span>
+            <span className="num text-[11px] font-medium">{v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function SymbolPage({ symbol }: { symbol: string }) {
   const sym = symbol.toUpperCase();
   const [d, setD] = useState<any | null>(null);
@@ -56,6 +76,8 @@ export function SymbolPage({ symbol }: { symbol: string }) {
   const [pyrOpen, setPyrOpen] = useState(false);
   const [finTab, setFinTab] = useState<"income" | "balance" | "cashflow" | "other">("income");
   const [finFreq, setFinFreq] = useState<"FY" | "Q">("FY");
+  const [riskPrev, setRiskPrev] = useState<any | null>(null);
+  const [riskCalc, setRiskCalc] = useState(false);
 
   useEffect(() => {
     setD(null); setErr(null);
@@ -74,6 +96,17 @@ export function SymbolPage({ symbol }: { symbol: string }) {
       .catch((e) => { setBars([]); setBarsMeta(null);
                       setBarsErr(e.message); });
   }, [sym, tf]);
+
+  // doc Steps 9–12 — eligibility + daily Trade Risk Sheet come from
+  // the same preview the calculator runs (default entry = last close)
+  useEffect(() => {
+    setRiskPrev(null); setRiskCalc(true);
+    apiPost<any>("/api/v1/risk/pyramid/preview",
+                 { symbol: sym, risk_pct: 0.005 })
+      .then(setRiskPrev)
+      .catch(() => setRiskPrev(null))
+      .finally(() => setRiskCalc(false));
+  }, [sym]);
 
   const downloadCsv = () => {
     const rows = [["date", "open", "high", "low", "close", "volume"],
@@ -215,15 +248,41 @@ export function SymbolPage({ symbol }: { symbol: string }) {
         <SectionCard title="Market intelligence" className="xl:col-span-1"
           action={s ? `as of ${s.as_of}` : undefined}>
           {s ? (
-            <div className="grid grid-cols-2 gap-2">
-              <SigCell l="Trend" v={s.above_sma200 ? "above SMA200" : "below SMA200"} />
-              <SigCell l="SMA50" v={s.sma50 ? `$${fmtNum(s.sma50, 2)}` : "—"} />
-              <SigCell l="RSI-14" v={s.rsi14 ? fmtNum(s.rsi14, 1) : "—"} />
-              <SigCell l="ADX-14" v={s.adx14 ? fmtNum(s.adx14, 1) : "—"} />
-              <SigCell l="MACD" v={s.macd != null ? fmtNum(s.macd, 3) : "—"} />
-              <SigCell l="52w high" v={<Pct v={s.from_52w_high} />} />
-              <SigCell l="52w low" v={<Pct v={s.from_52w_low} />} />
-              <SigCell l="Vol ratio" v={s.vol_ratio ? `${fmtNum(s.vol_ratio, 2)}×` : "—"} />
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              <MiGroup title="Trend" rows={[
+                ["SMA50", s.above_sma50 == null ? "—"
+                  : s.above_sma50 ? "above" : "below"],
+                ["SMA200", s.above_sma200 == null ? "—"
+                  : s.above_sma200 ? "above" : "below"],
+                ["Regime", s.regime ?? "—"],
+              ]} />
+              <MiGroup title="Momentum" rows={[
+                ["RSI-14", s.rsi14 != null ? fmtNum(s.rsi14, 1) : "—"],
+                ["Will %R", s.williams_r != null ? fmtNum(s.williams_r, 1) : "—"],
+                ["MACD", s.macd
+                  ? `${fmtNum(s.macd.macd, 2)}/${fmtNum(s.macd.signal, 2)}`
+                  : "—"],
+                ["1W ret", <Pct key="r" v={s.ret_1w} />],
+              ]} />
+              <MiGroup title="Volatility" rows={[
+                ["ATR", s.atr_abs != null ? `$${fmtNum(s.atr_abs, 2)}` : "—"],
+                ["ATR %", s.atr_pct != null
+                  ? `${(s.atr_pct * 100).toFixed(2)}%` : "—"],
+                ["ADX-14", s.adx14 != null ? fmtNum(s.adx14, 1) : "—"],
+                ["CMI-21", s.cmi != null ? fmtNum(s.cmi, 1) : "—"],
+              ]} />
+              <MiGroup title="Structure" rows={[
+                ["52w high", <Pct key="h" v={s.from_52w_high} />],
+                ["52w low", <Pct key="l" v={s.from_52w_low} />],
+                ["20d hi", s.hi_20 != null ? `$${fmtNum(s.hi_20, 2)}` : "—"],
+                ["20d lo", s.lo_20 != null ? `$${fmtNum(s.lo_20, 2)}` : "—"],
+              ]} />
+              <MiGroup title="Volume / returns" rows={[
+                ["Vol ratio", s.vol_ratio != null
+                  ? `${fmtNum(s.vol_ratio, 2)}×` : "—"],
+                ["1D", <Pct key="d" v={s.ret_1d} />],
+                ["1M", <Pct key="m" v={s.ret_1m} />],
+              ]} />
             </div>
           ) : <EmptyState title="No signal data" hint="needs ≥30 daily bars" />}
         </SectionCard>
@@ -237,11 +296,56 @@ export function SymbolPage({ symbol }: { symbol: string }) {
             </button>}>
           {s?.atr_pct ? (
             <div className="space-y-1.5 text-[12px]">
-              <div className="num grid grid-cols-3 gap-2">
-                <SigCell l="ATR14" v={`${(s.atr_pct * 100).toFixed(2)}%`} />
-                <SigCell l="Stop −1.5×" v={s.close ? `$${fmtNum(s.close * (1 - 1.5 * s.atr_pct), 2)}` : "—"} />
-                <SigCell l="Tgt +3×" v={s.close ? `$${fmtNum(s.close * (1 + 3 * s.atr_pct), 2)}` : "—"} />
+              {/* Step 9 — trade-eligibility verdict + Step-11 margin */}
+              <div className="flex flex-wrap items-center gap-2">
+                {riskCalc && !riskPrev ? (
+                  <span className="flex items-center gap-1.5 text-[10px] text-faint">
+                    <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-border border-t-accent" />
+                    calculating…
+                  </span>
+                ) : riskPrev?.eligibility ? (
+                  <StatusBadge tone={
+                    riskPrev.eligibility.verdict === "TRADE_ELIGIBLE"
+                      ? "pos" : "neg"}>
+                    {riskPrev.eligibility.verdict?.replaceAll("_", " ")}
+                  </StatusBadge>
+                ) : null}
+                {riskPrev?.sleeve?.state?.margin_call_distance != null && (
+                  <span className="num text-[10px] text-faint">
+                    margin-call distance $
+                    {fmtNum(riskPrev.sleeve.state.margin_call_distance, 0)}
+                  </span>
+                )}
               </div>
+              {/* Step 10–12 — daily Trade Risk Sheet numbers */}
+              {(() => {
+                const sheet = riskPrev?.sheets?.["1d"];
+                return sheet?.shares != null ? (
+                  <div className="num grid grid-cols-3 gap-2">
+                    <SigCell l="Stop −1.5×ATR"
+                      v={`$${fmtNum(sheet.stop, 2)}`} />
+                    <SigCell l="Tgt +3×ATR"
+                      v={`$${fmtNum(sheet.target, 2)}`} />
+                    <SigCell l="R:R"
+                      v={sheet.rr != null ? `${fmtNum(sheet.rr, 1)}:1` : "—"} />
+                    <SigCell l={`Shares${sheet.binding
+                      ? ` · ${sheet.binding}` : ""}`}
+                      v={fmtNum(sheet.shares, 0)} />
+                    <SigCell l="$ Risk"
+                      v={sheet.dollar_risk != null
+                        ? `$${fmtNum(sheet.dollar_risk, 0)}` : "—"} />
+                    <SigCell l="Margin"
+                      v={sheet.margin_required != null
+                        ? `$${fmtNum(sheet.margin_required, 0)}` : "—"} />
+                  </div>
+                ) : (
+                  <div className="num grid grid-cols-3 gap-2">
+                    <SigCell l="ATR14" v={`${(s.atr_pct * 100).toFixed(2)}%`} />
+                    <SigCell l="Stop −1.5×" v={s.close ? `$${fmtNum(s.close * (1 - 1.5 * s.atr_pct), 2)}` : "—"} />
+                    <SigCell l="Tgt +3×" v={s.close ? `$${fmtNum(s.close * (1 + 3 * s.atr_pct), 2)}` : "—"} />
+                  </div>
+                );
+              })()}
               {d?.pyramids?.length ? (
                 <div className="space-y-1 pt-1">
                   {d.pyramids.map((p: any) => (
@@ -265,7 +369,9 @@ export function SymbolPage({ symbol }: { symbol: string }) {
 
       </div>
 
-      {/* price history — investing.com-style OHLCV table */}
+      {/* history + financials side-by-side on xl — the statement
+          tables scroll internally instead of stacking the page tall */}
+      <div className="grid gap-4 xl:grid-cols-2">
       <SectionCard title="Stock Price History"
         action={
           <div className="flex items-center gap-2">
@@ -363,7 +469,7 @@ export function SymbolPage({ symbol }: { symbol: string }) {
           return (
             <div className="space-y-3">
               {/* key ratios */}
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {[
                   ["P/E", r.pe ? fmtNum(r.pe, 1) : "—"],
                   ["P/B", r.pb ? fmtNum(r.pb, 2) : "—"],
@@ -445,6 +551,7 @@ export function SymbolPage({ symbol }: { symbol: string }) {
           );
         })()}
       </SectionCard>
+      </div>
 
       {/* news */}
       <SectionCard title="News"
