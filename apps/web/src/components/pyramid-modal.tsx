@@ -23,33 +23,20 @@ function pct(v: number | null | undefined, d = 2) {
   return v == null ? "—" : `${(v * 100).toFixed(d)}%`;
 }
 
-/** One timeframe table from the Excel "ATR Output" sheet — editable
- * SMA period (3d, 8d, 2w, 5m…) applied via the ⟳ button or Enter. */
-function AtrTable({ title, unit, data, labels, period, onPeriod, onApply }:
+/** One timeframe table from the Excel "ATR Output" sheet — the
+ * workbook windows are fixed (6d / 12w / 6m = first horizon column);
+ * the period renders as a label, not an input. */
+function AtrTable({ title, unit, data, labels }:
   { title: string; unit: string; data: any;
-    labels: Record<string, string>;
-    period: number; onPeriod: (v: number) => void;
-    onApply: () => void }) {
+    labels: Record<string, string> }) {
   const wins = Object.entries(data?.windows ?? {});
-  const pending = data?.period != null && period !== data.period;
   return (
     <div className="glass-tile p-3">
       <div className="flex items-center justify-between">
         <div className="text-[10px] uppercase tracking-wide text-dim">{title}</div>
-        <label className="flex items-center gap-1 text-[9px] text-faint">
-          SMA
-          <input type="number" min={1} max={200} value={period}
-            onChange={(e) => onPeriod(parseInt(e.target.value) || 1)}
-            onKeyDown={(e) => e.key === "Enter" && onApply()}
-            className="num w-11 rounded border border-border bg-surface-2 px-1 py-0.5 text-[10px] focus:border-accent focus:outline-none" />
-          {unit}
-          <button type="button" onClick={onApply} title="Recalculate with this period"
-            className={`rounded px-1.5 py-0.5 text-[10px] transition ${
-              pending ? "bg-accent font-semibold text-[#0b0f1a]"
-                      : "border border-border text-faint hover:text-text"}`}>
-            ⟳
-          </button>
-        </label>
+        <span className="text-[9px] text-faint">
+          SMA{data?.period ?? "–"}{unit}
+        </span>
       </div>
       <div className="num mt-1 text-lg font-semibold">
         {pct(data?.atr_pct)}
@@ -68,7 +55,7 @@ function AtrTable({ title, unit, data, labels, period, onPeriod, onApply }:
           ))}
         </div>
       )}
-      <div className="mt-1 text-[9px] text-faint">{data?.bars ?? 0} bars · SMA{data?.period ?? period}(TR)</div>
+      <div className="mt-1 text-[9px] text-faint">{data?.bars ?? 0} bars · SMA{data?.period ?? "?"}(TR)</div>
     </div>
   );
 }
@@ -95,14 +82,10 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
   const [riskPct, setRiskPct] = useState("0.5");
   const [entry, setEntry] = useState("");
   const [equity, setEquity] = useState("");
-  // workbook-canonical windows — 'current ATR' = first horizon
-  // column (6 sessions / 12 weeks / 6 months), not SMA14
-  const [dP, setDP] = useState(6);
-  const [wP, setWP] = useState(12);
-  const [mP, setMP] = useState(6);
   const [tvOpen, setTvOpen] = useState(false);
   const [force, setForce] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [calc, setCalc] = useState(false);   // a calculation is in flight
   const [err, setErr] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const debRef = useRef<ReturnType<typeof setTimeout>>(null);
@@ -125,18 +108,6 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
     return () => { if (debRef.current) clearTimeout(debRef.current); };
   }, [q]);
 
-  // SMA period edits are explicit — the ⟳ button (or Enter in the
-  // input) refetches the sheet; no silent recompute mid-typing
-  async function applyPeriods() {
-    if (!sym) return;
-    try {
-      const a = await apiGet<any>(
-        `/api/v1/risk/atr/${sym}?d=${dP}&w=${wP}&m=${mP}`);
-      setAtrRep(a);
-      if (a?.daily?.atr_abs) await recalc(a.daily.atr_abs);
-    } catch { /* keep last good sheet */ }
-  }
-
   // sheet inputs changed → the whole sheet (sleeve, eligibility,
   // risk sheet) refreshes itself — no manual trigger needed
   useEffect(() => {
@@ -147,8 +118,7 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
         && parseFloat(equity || "0") === Math.round(prev.inputs.equity)
         && (parseFloat(riskPct) / 100) === prev.inputs.risk_pct) return;
     if (atrRef.current) clearTimeout(atrRef.current);
-    atrRef.current = setTimeout(
-      () => recalc(atrRep?.daily?.atr_abs), 450);
+    atrRef.current = setTimeout(() => recalc(), 450);
     return () => { if (atrRef.current) clearTimeout(atrRef.current); };
   }, [entry, equity, riskPct]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -160,23 +130,25 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
     setEntry("");        // ← stale entry poisoned the next symbol's
                          //    sheet (AMD's price sized NVDA's trade)
     setLoaded(true);
+    setCalc(true);
     try {
-      const a = await apiGet<any>(
-        `/api/v1/risk/atr/${up}?d=${dP}&w=${wP}&m=${mP}`);
+      // workbook windows are the server defaults — 6d / 12w / 6m
+      const a = await apiGet<any>(`/api/v1/risk/atr/${up}`);
       setAtrRep(a);
       if (a?.name) setName(a.name);
       if (a?.insufficient) {
         setErr(a.note ?? "insufficient bars");
         return;
       }
-      await recalc(a?.daily?.atr_abs);
+      await recalc();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "no ATR data for symbol");
-    }
+    } finally { setCalc(false); }
   }
 
-  async function recalc(atrAbs?: number) {
+  async function recalc() {
     if (!sym) return;
+    setCalc(true);
     try {
       const body: any = {
         symbol: sym,
@@ -184,7 +156,6 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
       };
       if (entry) body.entry = parseFloat(entry);
       if (equity) body.equity = parseFloat(equity);
-      if (atrAbs) body.atr_override = atrAbs;
       const p = await apiPost<any>("/api/v1/risk/pyramid/preview", body);
       setPrev(p);
       if (!entry) setEntry(String(p.inputs.entry));
@@ -192,7 +163,7 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
     } catch (e) {
       setPrev(null);
       setErr(e instanceof Error ? e.message : "preview failed");
-    }
+    } finally { setCalc(false); }
   }
 
   async function create() {
@@ -247,6 +218,11 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
             <StatusBadge tone={prev.vol_regime === "expanding" ? "warn" : "info"}>
               {prev.vol_regime}
             </StatusBadge>}
+          {calc && (
+            <span className="flex items-center gap-1.5 text-[11px] text-dim">
+              <span className="size-2.5 animate-spin rounded-full border border-faint/40 border-t-accent" />
+              calculating…
+            </span>)}
           <button onClick={() => setTvOpen((v) => !v)}
             className={`ml-auto rounded-full px-3 py-1 text-[11px] font-medium transition ${
               tvOpen ? "bg-accent text-[#0b0f1a]" : "border border-border text-dim hover:text-text"}`}>
@@ -282,17 +258,14 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
 
       {sym && atrRep && !atrRep.insufficient && (
         <div className="mt-3 space-y-3">
-          {/* ATR Output sheet — editable periods */}
+          {/* ATR Output sheet — fixed workbook windows (6d/12w/6m) */}
           <div className="grid gap-2 sm:grid-cols-3">
             <AtrTable title="Daily ATR" unit="d" data={atrRep.daily}
-              labels={DAY_LABELS} period={dP} onPeriod={setDP}
-              onApply={applyPeriods} />
+              labels={DAY_LABELS} />
             <AtrTable title="Weekly ATR" unit="w" data={atrRep.weekly}
-              labels={WK_LABELS} period={wP} onPeriod={setWP}
-              onApply={applyPeriods} />
+              labels={WK_LABELS} />
             <AtrTable title="Monthly ATR" unit="m" data={atrRep.monthly}
-              labels={MO_LABELS} period={mP} onPeriod={setMP}
-              onApply={applyPeriods} />
+              labels={MO_LABELS} />
           </div>
 
           {/* inputs — Trade Risk Sheet parameters */}
@@ -312,9 +285,9 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
               </label>
             ))}
             <div className="flex items-end">
-              <button onClick={() => recalc(atrRep?.daily?.atr_abs)}
-                className="w-full rounded bg-accent px-2 py-1.5 text-[12px] font-semibold text-[#0b0f1a] hover:brightness-110">
-                Recalculate
+              <button onClick={() => recalc()} disabled={calc}
+                className="w-full rounded bg-accent px-2 py-1.5 text-[12px] font-semibold text-[#0b0f1a] hover:brightness-110 disabled:opacity-60">
+                {calc ? "Calculating…" : "Recalculate"}
               </button>
             </div>
           </div>
@@ -402,33 +375,71 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
             </div>
           )}
 
-          {/* Trade Risk Sheet output */}
+          {/* Trade Risk Sheets — one per frame (Daily/Weekly/Monthly):
+              same workbook, different ATR → different stop/target/size */}
           {prev ? (
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div className="glass-tile p-3">
-                <div className="mb-1 text-[10px] uppercase text-dim">Trade Risk Sheet</div>
-                <SheetRow label="Stop (−1.5×ATR)" value={`$${fmtNum(prev.sheet.stop, 2)}`} tone="text-neg" />
-                <SheetRow label="Target (+3×ATR)" value={`$${fmtNum(prev.sheet.target, 2)}`} tone="text-pos" />
-                <SheetRow label="Risk / share" value={`$${fmtNum(prev.sheet.risk_per_share, 2)}`} />
-                <SheetRow label="$ Risk budget" value={`$${fmtNum(prev.sheet.dollar_risk, 0)}`} />
-                <SheetRow label="R : R" value={`${fmtNum(prev.sheet.rr, 1)} : 1`} />
-                <SheetRow label="Open risk" value={pct(prev.sheet.open_risk_pct)} />
-              </div>
-              <div className="glass-tile p-3">
-                <div className="mb-1 text-[10px] uppercase text-dim">Position size</div>
-                <SheetRow label="Shares"
-                  value={`${prev.sheet.shares}  (${prev.sheet.binding})`} />
-                <SheetRow label="Raw shares" value={String(prev.sheet.shares_raw)} />
-                <SheetRow label="Notional" value={`$${fmtNum(prev.sheet.notional, 0)}`} />
-                {prev.sheet.margin_required > 0 &&
-                  <SheetRow label="Margin req." value={`$${fmtNum(prev.sheet.margin_required, 0)}`} />}
-                <div className="mt-2 border-t border-border/50 pt-1 text-[10px] text-faint">
-                  legs: {prev.legs.map((l: any) =>
-                    `T${l.leg} $${fmtNum(l.fill, 0)}`).join(" · ")}
-                </div>
-              </div>
+            <div className="grid gap-2 lg:grid-cols-3">
+              {([["1d", "Daily"], ["1w", "Weekly"], ["1mo", "Monthly"]] as const)
+                .map(([tf, label]) => {
+                  const sh = prev.sheets?.[tf]
+                    ?? (tf === "1d" ? prev.sheet : null);
+                  if (!sh || sh.status === "insufficient_data") {
+                    return (
+                      <div key={tf} className="glass-tile p-3">
+                        <div className="mb-1 text-[10px] uppercase text-dim">
+                          Trade Risk Sheet — {label}
+                        </div>
+                        <div className="py-3 text-[11px] text-faint">
+                          insufficient {label.toLowerCase()} history
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={tf} className="glass-tile p-3">
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="text-[10px] uppercase text-dim">
+                          Risk Sheet — {label}
+                        </span>
+                        <span className="num text-[9px] text-faint">
+                          ATR {pct(sh.atr_pct)}
+                        </span>
+                      </div>
+                      <SheetRow label="Stop (−1.5×ATR)"
+                        value={`$${fmtNum(sh.stop, 2)}`} tone="text-neg" />
+                      <SheetRow label="Target (+3×ATR)"
+                        value={`$${fmtNum(sh.target, 2)}`} tone="text-pos" />
+                      <SheetRow label="Risk / share"
+                        value={`$${fmtNum(sh.risk_per_share, 2)}`} />
+                      <SheetRow label="Shares"
+                        value={`${sh.shares}  (${sh.binding})`} />
+                      <SheetRow label="$ Risk budget"
+                        value={`$${fmtNum(sh.dollar_risk, 0)}`} />
+                      <SheetRow label="Notional"
+                        value={`$${fmtNum(sh.notional, 0)}`} />
+                      {sh.margin_required > 0 &&
+                        <SheetRow label="Margin req."
+                          value={`$${fmtNum(sh.margin_required, 0)}`} />}
+                      <SheetRow label="R : R"
+                        value={`${fmtNum(sh.rr, 1)} : 1`} />
+                      <SheetRow label="Open risk"
+                        value={pct(sh.open_risk_pct)} />
+                      {(sh.legs ?? []).length > 0 && (
+                        <div className="mt-1 border-t border-border/50 pt-1 text-[10px] text-faint">
+                          {sh.legs.map((l: any) =>
+                            `T${l.leg} $${fmtNum(l.fill, 0)}`).join(" · ")}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
             </div>
-          ) : !err && <div className="py-4 text-center text-[12px] text-faint">calculating…</div>}
+          ) : !err && (
+            <div className="flex items-center justify-center gap-2 py-4 text-[12px] text-faint">
+              <span className="size-3 animate-spin rounded-full border border-faint/40 border-t-accent" />
+              calculating…
+            </div>
+          )}
 
           {/* footer actions */}
           <div className="flex flex-col gap-2 border-t border-border pt-3 sm:flex-row sm:items-center sm:justify-between">

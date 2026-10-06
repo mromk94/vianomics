@@ -1072,6 +1072,7 @@ class PyramidPreviewIn(BaseModel):
     cash: float | None = None                   # default: live cash
     atr_override: float | None = Field(None, gt=0)  # edited-period ATR
     direction: Literal["long", "short"] = "long"
+    timeframe: Literal["1d", "1w", "1mo"] = "1d"  # primary sheet frame
 
 
 @router.post("/pyramid/preview")
@@ -1112,6 +1113,9 @@ async def pyramid_preview(
     # sleeve — min(risk-budget, starter, gross/margin/liquidity caps)
     # instead of the flat risk_pct-of-equity sizing.
     sleeve = ctx["sleeve"]
+    asset_gross = 0.0
+    sector_gross = 0.0
+    st = None
     if sleeve["enabled"]:
         st = sleeve["state"]
         asset_gross = sum(
@@ -1121,31 +1125,66 @@ async def pyramid_preview(
         if inst.sector_id:
             s = await db.get(Sector, inst.sector_id)
             sec_name = s.name if s else None
-        sz = re_.sleeve_sizing(
-            entry, atr_abs, st, sleeve["config"],
-            asset_gross=asset_gross, adv_shares=adv_shares,
-            direction=body.direction,
-            sector_gross=sum(
-                p["market_value"] for p in sleeve["positions"]
-                if p.get("sector") == sec_name) if sec_name else 0.0)
-    else:
-        sz = re_.initial_sizing(
-            equity, body.risk_pct, entry, atr_abs, cash,
-            adv_shares=adv_shares, direction=body.direction)
+        sector_gross = (sum(
+            p["market_value"] for p in sleeve["positions"]
+            if p.get("sector") == sec_name) if sec_name else 0.0)
 
-    # leg ladder — each target hit adds a standard leg at 3×ATR steps
-    # in the trade's direction (below entry for shorts)
     sign = -1 if body.direction == "short" else 1
-    legs = [{"leg": 1, "fill": entry, "shares": sz["shares"],
-             "cumulative": sz["shares"]}]
-    px = entry
-    for n in range(2, 5):
-        px = px + sign * 3 * atr_abs
-        legs.append({"leg": n, "fill": px, "shares": sz["shares"],
-                     "cumulative": sz["shares"] * n})
-
     cs = float(inst.contract_size or 1)
     margin_rate = float(inst.margin_rate or 0)
+
+    # per-timeframe sheets — the doc runs the same ATR playbook on
+    # daily/weekly/monthly frames; each frame gets its own sizing,
+    # stop/target ladder and open-risk read
+    def _sheet(atr_f: float) -> dict:
+        if sleeve["enabled"]:
+            z = re_.sleeve_sizing(
+                entry, atr_f, st, sleeve["config"],
+                asset_gross=asset_gross, adv_shares=adv_shares,
+                direction=body.direction, sector_gross=sector_gross)
+        else:
+            z = re_.initial_sizing(
+                equity, body.risk_pct, entry, atr_f, cash,
+                adv_shares=adv_shares, direction=body.direction)
+        legs_f = [{"leg": 1, "fill": entry, "shares": z["shares"],
+                   "cumulative": z["shares"]}]
+        pxf = entry
+        for n in range(2, 5):
+            pxf = pxf + sign * 3 * atr_f
+            legs_f.append({"leg": n, "fill": pxf,
+                           "shares": z["shares"],
+                           "cumulative": z["shares"] * n})
+        return {
+            "stop": z["stop_price"], "stop_distance": z["stop_distance"],
+            "target": entry + sign * 3 * atr_f,
+            "risk_per_share": abs(entry - z["stop_price"]),
+            "dollar_risk": z["dollar_risk"], "shares": z["shares"],
+            "shares_raw": z["shares_raw"], "binding": z["binding"],
+            "notional": z["notional"] * cs,
+            "margin_required": (z.get("margin_required")
+                                or z["notional"] * cs * margin_rate),
+            "legs": legs_f, "rr": 3.0 / 1.5,
+            "open_risk_pct": (z["dollar_risk"] / equity
+                              if equity else None),
+            "atr_abs": atr_f,
+            "atr_pct": atr_f / entry if entry else None,
+        }
+
+    frames = {"1d": "daily", "1w": "weekly", "1mo": "monthly"}
+    sheets = {}
+    for tf_k, rep_k in frames.items():
+        atr_f = (rep.get(rep_k) or {}).get("atr_abs")
+        if tf_k == body.timeframe and body.atr_override:
+            atr_f = body.atr_override
+        sheets[tf_k] = (_sheet(atr_f) if atr_f
+                        else {"status": "insufficient_data"})
+    primary = (body.timeframe
+               if sheets.get(body.timeframe, {}).get("shares")
+               is not None else "1d")
+    sheet = sheets[primary]
+    atr_abs = sheet["atr_abs"]
+    legs = sheet["legs"]
+
     eligibility = None
     if sleeve["enabled"]:
         try:
@@ -1159,27 +1198,13 @@ async def pyramid_preview(
         "direction": body.direction,
         "as_of": rep["as_of"],
         "atr": {"abs": atr_abs,
-                "pct": (atr_abs / entry if entry else None)
-                if body.atr_override else rep["daily"]["atr_pct"],
+                "pct": sheet["atr_pct"],
                 "weekly_pct": rep["weekly"]["atr_pct"]},
         "inputs": {"entry": entry, "equity": equity, "cash": cash,
                    "risk_pct": body.risk_pct},
-        "sheet": {
-            "stop": sz["stop_price"],
-            "stop_distance": sz["stop_distance"],
-            "target": entry + sign * 3 * atr_abs,
-            "risk_per_share": abs(entry - sz["stop_price"]),
-            "dollar_risk": sz["dollar_risk"],
-            "shares": sz["shares"],
-            "shares_raw": sz["shares_raw"],
-            "binding": sz["binding"],
-            "notional": sz["notional"] * cs,
-            "margin_required": (sz.get("margin_required")
-                                or sz["notional"] * cs * margin_rate),
-            "rr": 3.0 / 1.5,
-            "open_risk_pct": (sz["dollar_risk"] / equity
-                              if equity else None),
-        },
+        "sheet": sheet,
+        "sheets": sheets,
+        "primary_timeframe": primary,
         "sleeve": sleeve,
         "eligibility": eligibility,
         "legs": legs,

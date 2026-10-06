@@ -449,6 +449,7 @@ async def ingest_stooq_bars(
                 OhlcvBar.adjusted.is_(False)))).all()
     }
     ok = 0
+    today = utcnow().date()
     for r in raw:
         t = r["observed_at"]
         if t not in existing_times:
@@ -459,6 +460,20 @@ async def ingest_stooq_bars(
                 adjusted=False, source="yahoo",
             ))
             existing_times.add(t)
+        elif t.date() >= today:
+            # today's bar is still forming — an earlier ingest stored
+            # a partial bar; refresh it in place so the "close" isn't
+            # frozen at mid-session values
+            row = (await session.execute(
+                select(OhlcvBar).where(
+                    OhlcvBar.instrument_id == inst.id,
+                    OhlcvBar.timeframe == "1d",
+                    OhlcvBar.time == t,
+                    OhlcvBar.source == "yahoo",
+                    OhlcvBar.adjusted.is_(False)))).scalar_one_or_none()
+            if row:
+                row.open, row.high, row.low = r["open"], r["high"], r["low"]
+                row.close, row.volume = r["close"], r["volume"]
         ok += 1
     await session.flush()
 
