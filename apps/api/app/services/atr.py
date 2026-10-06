@@ -162,13 +162,30 @@ async def atr_report(db: AsyncSession, symbol: str,
             "bars": monthly["bars"],
         },
         "periods": {"daily": d, "weekly": w, "monthly": m},
-        # engine contract — the pyramid state machine consumes these
+        # engine contract — the pyramid state machine consumes these.
+        # Levels are emitted PER TIMEFRAME so the sheet matches the
+        # configured sleeve_atr_timeframe (1d|1w|1mo), not always 1d.
         "pyramid": {
             "stop_mult": 1.5, "target_mult": 3.0,
+            # daily levels kept for backward compatibility
             "stop": (daily["last_close"] - 1.5 * daily["atr_abs"]
                      if daily["atr_abs"] else None),
             "target": (daily["last_close"] + 3.0 * daily["atr_abs"]
                        if daily["atr_abs"] else None),
+            "levels": {
+                tf: {
+                    "stop": (fr["last_close"] - 1.5 * fr["atr_abs"]
+                             if fr["atr_abs"] and fr["last_close"]
+                             else None),
+                    "target": (fr["last_close"] + 3.0 * fr["atr_abs"]
+                               if fr["atr_abs"] and fr["last_close"]
+                               else None),
+                    "atr_abs": fr["atr_abs"],
+                    "atr_pct": fr["atr_pct"],
+                }
+                for tf, fr in (("1d", daily), ("1w", weekly),
+                               ("1mo", monthly))
+            },
             "vol_regime": (
                 "expanding" if daily["atr_abs"] and
                 daily["tr_pcts"] and len(daily["tr_pcts"]) >= 24 and

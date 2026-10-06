@@ -192,6 +192,19 @@ def atr(bars: list[Bar], period: int = 14) -> float | None:
     return a
 
 
+def atr_sma(bars: list[Bar], period: int = 14) -> float | None:
+    """Canonical VAIIP ATR — SMA_n(TR), the ATR Output sheet's
+    formula ('ATR Calculator.xls' spec). The pyramid state machine
+    consumes THIS number so stops always match the published sheet;
+    `atr()` (Wilder) remains for indicator displays only."""
+    if len(bars) < period + 1:
+        return None
+    trs = [max(b.h - b.l, abs(b.h - bars[i - 1].c),
+               abs(b.l - bars[i - 1].c))
+           for i, b in enumerate(bars) if i > 0]
+    return sum(trs[-period:]) / period
+
+
 # ── levels & patterns ──
 
 def support_resistance(bars: list[Bar], lookback: int = 60) -> dict | None:

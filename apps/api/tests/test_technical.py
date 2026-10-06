@@ -210,4 +210,21 @@ def test_band_boundaries_documented():
     assert te.PARAMS["aroon_trigger"] == 99
     # v1.1 — freshness gate tightened to 4 calendar days (doc: data
     # must be "current at every close")
-    assert te.PARAMS_VERSION == "technical/v1.1"
+    assert te.PARAMS_VERSION == "technical/v1.2"
+
+
+def test_atr_sma_is_the_sheet_canonical():
+    """The pyramid state machine consumes the SAME ATR the ATR
+    Output sheet publishes — SMA14(TR), not Wilder. This test pins
+    atr_sma() to the sheet's _frame_report on identical bars."""
+    from app.services.atr import _frame_report
+    closes = [100, 101.2, 99.8, 102.5, 100.4, 98.9, 103.1, 104.0,
+              101.7, 105.2, 103.8, 106.1, 104.5, 107.0, 105.9,
+              108.3, 106.7, 109.2, 107.8, 110.5]
+    t_bars = _bars(closes)
+    dicts = [{"time": b.t, "open": b.o, "high": b.h,
+              "low": b.l, "close": b.c} for b in t_bars]
+    rep = _frame_report(dicts, 14)
+    assert ti.atr_sma(t_bars, 14) == pytest.approx(rep["atr_abs"])
+    # sanity — SMA and Wilder are genuinely different formulas
+    assert ti.atr_sma(t_bars, 14) != pytest.approx(ti.atr(t_bars, 14))

@@ -164,7 +164,7 @@ def run_backtest(
             if i is None:
                 continue
             hist = bars[: i + 1]
-            atr = ti.atr(hist)
+            atr = ti.atr_sma(hist)
             if atr is None or not _signal(hist, p):
                 continue
             close = hist[-1].c
