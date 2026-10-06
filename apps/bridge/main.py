@@ -23,11 +23,18 @@ Env (.env / systemd EnvironmentFile):
 
 import asyncio
 import os
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from ib_insync import IB, LimitOrder, MarketOrder, Stock
 from pydantic import BaseModel
+
+# ib_insync drives asyncio.run_until_complete internally; inside
+# uvicorn's already-running loop that fails without nesting. Must
+# apply before any IB usage — the sync IB calls below are then fine.
+import nest_asyncio
+nest_asyncio.apply()
 
 IBKR_HOST = os.environ.get("IBKR_HOST", "127.0.0.1")
 IBKR_PORT = int(os.environ.get("IBKR_PORT", "4002"))
@@ -36,7 +43,44 @@ IBKR_ACCOUNT = os.environ.get("IBKR_ACCOUNT", "")
 IBKR_READONLY = os.environ.get("IBKR_READONLY", "true").lower() != "false"
 SECRET = os.environ.get("IBKR_BRIDGE_SECRET", "")
 
-ib = IB()
+# ib_insync cannot run on uvicorn's loop — connectAsync creates
+# futures bound to whatever loop constructed them, and ASGI request
+# tasks live on a different one ("attached to a different loop").
+# The supported server pattern: IB gets its own event loop in a
+# daemon thread; every call is marshalled via run_coroutine_threadsafe.
+ib: IB | None = None
+_ib_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _run_ib_loop() -> None:
+    # ib_insync.util.getLoop() consults the thread-local loop via the
+    # event-loop POLICY — run_forever alone never registers it, so
+    # every getLoop() in this thread would raise/attach elsewhere.
+    asyncio.set_event_loop(_ib_loop)
+    _ib_loop.run_forever()
+
+
+def _ensure_ib_loop() -> None:
+    global _ib_loop
+    if _ib_loop is None:
+        _ib_loop = asyncio.new_event_loop()
+        threading.Thread(target=_run_ib_loop,
+                         daemon=True, name="ib-loop").start()
+
+
+def _wait(coro):
+    """Await an ib_insync coroutine ON ib's own loop."""
+    return asyncio.wrap_future(
+        asyncio.run_coroutine_threadsafe(coro, _ib_loop))
+
+
+async def _ib_sync(fn, *args, **kw):
+    """Run a synchronous ib_insync call on IB's loop — placeOrder/
+    cancelOrder write to the transport, which no other thread may touch."""
+    async def c():
+        return fn(*args, **kw)
+    return await _wait(c())
+
 
 # IB reports unset numerics as ~1.79e308 — treat as missing, never leak
 _UNSET = 1e15
@@ -51,12 +95,18 @@ def _f(v) -> float | None:
 
 
 async def ensure_ib() -> None:
+    global ib
+    _ensure_ib_loop()
+    if ib is None:
+        async def _mk() -> IB:
+            return IB()           # binds to _ib_loop — its running loop
+        ib = await _wait(_mk())
     if ib.isConnected():
         return
     try:
-        await ib.connectAsync(
+        await _wait(ib.connectAsync(
             IBKR_HOST, IBKR_PORT, clientId=IBKR_CLIENT_ID,
-            account=IBKR_ACCOUNT, timeout=15, readonly=IBKR_READONLY)
+            account=IBKR_ACCOUNT, timeout=15, readonly=IBKR_READONLY))
     except Exception as e:
         raise HTTPException(503, f"gateway unreachable: {e}")
 
@@ -75,8 +125,8 @@ async def lifespan(_):
     except HTTPException:
         pass        # gateway may not be up yet — endpoints retry per request
     yield
-    if ib.isConnected():
-        ib.disconnect()
+    if ib is not None and ib.isConnected() and _ib_loop is not None:
+        _ib_loop.call_soon_threadsafe(ib.disconnect)
 
 
 app = FastAPI(title="VAIIP IBKR bridge", lifespan=lifespan)
@@ -133,15 +183,19 @@ async def health(_: None = Depends(auth)):
 @app.get("/account")
 async def account(_: None = Depends(auth)):
     await ensure_ib()
-    tags: dict[str, str] = {}
-    for v in ib.accountValues():
-        if IBKR_ACCOUNT and v.account != IBKR_ACCOUNT:
-            continue
-        if v.currency in ("", "USD", "BASE"):
-            tags[v.tag] = v.value
+    acct = IBKR_ACCOUNT or (ib.managedAccounts() or [""])[0]
+    vals = await _wait(ib.accountSummaryAsync(acct))
 
     def num(tag: str):
-        return _f(tags.get(tag))
+        rows = [v for v in vals
+                if v.tag == tag and (not acct or v.account == acct)]
+        # BASE rows are in account base currency — prefer them over
+        # per-currency rows (accounts may be GBP/EUR/USD denominated)
+        for pref in ("BASE", "USD", ""):
+            for v in rows:
+                if v.currency == pref:
+                    return _f(v.value)
+        return _f(rows[0].value if rows else None)
 
     return {"equity": num("NetLiquidation"), "cash": num("TotalCashValue"),
             "buying_power": num("BuyingPower"),
@@ -162,7 +216,7 @@ async def positions(_: None = Depends(auth)):
         "currency": p.contract.currency,
         # market_value intentionally absent — pricing belongs to the
         # data layer (Flex sync / market quotes), not the broker socket
-    } for p in ib.positions(account=IBKR_ACCOUNT)]
+    } for p in (await _ib_sync(ib.positions, account=IBKR_ACCOUNT))]
 
 
 class OrderIn(BaseModel):
@@ -185,7 +239,7 @@ async def submit(body: OrderIn, _: None = Depends(auth)):
     _readonly()
     await ensure_ib()
     contract = Stock(body.symbol.upper(), "SMART", "USD")
-    await ib.qualifyContractsAsync(contract)
+    await _wait(ib.qualifyContractsAsync(contract))
     if not contract.conId:
         raise HTTPException(400, f"cannot qualify '{body.symbol}'")
     if body.order_type == "limit":
@@ -195,7 +249,7 @@ async def submit(body: OrderIn, _: None = Depends(auth)):
     else:
         order = MarketOrder(body.side.upper(), body.qty)
     order.tif = body.tif
-    trade = ib.placeOrder(contract, order)
+    trade = await _ib_sync(ib.placeOrder, contract, order)
     await asyncio.sleep(1.5)            # let TWS acknowledge
     return _map_trade(trade)
 
@@ -207,7 +261,7 @@ async def cancel(oid: str, _: None = Depends(auth)):
     t = _find_trade(oid)
     if t is None:
         raise HTTPException(404, "unknown order")
-    ib.cancelOrder(t.order)
+    await _ib_sync(ib.cancelOrder, t.order)
     await asyncio.sleep(1.0)
     return _map_trade(t)
 
@@ -219,7 +273,8 @@ async def order_status(oid: str, _: None = Depends(auth)):
     if t is None:
         # completed orders drop out of trades() — query TWS directly
         try:
-            completed = await ib.reqCompletedOrdersAsync(apiOnly=True)
+            completed = await _wait(
+                ib.reqCompletedOrdersAsync(apiOnly=True))
         except Exception:
             completed = []
         for ct in completed:
@@ -256,9 +311,10 @@ async def margin(symbol: str, qty: float = 100, _: None = Depends(auth)):
     """What-if margin check — a hypothetical BUY, never placed."""
     await ensure_ib()
     contract = Stock(symbol.upper(), "SMART", "USD")
-    await ib.qualifyContractsAsync(contract)
+    await _wait(ib.qualifyContractsAsync(contract))
     try:
-        st = await ib.whatIfOrderAsync(contract, MarketOrder("BUY", qty))
+        st = await _wait(
+            ib.whatIfOrderAsync(contract, MarketOrder("BUY", qty)))
     except Exception as e:
         raise HTTPException(502, f"whatif failed: {e}")
     return {

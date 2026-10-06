@@ -1,5 +1,7 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
 ib-insync>=0.9.86
+# ib_insync nests event loops — required inside uvicorn's running loop
+nest-asyncio>=1.6
 # numpy 2.3+ wheels assume x86-64-v2 — Namecheap KVM CPUs are v1-baseline
 numpy>=1.26,<2.3
