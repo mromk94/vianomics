@@ -395,10 +395,12 @@ async def ingest_stooq_bars(
     session: AsyncSession,
     adapter,
     symbol: str,
+    start: str = "2000-01-01",
 ) -> JobRun:
     """Delayed-EOD daily bars (Yahoo chart API) → ohlcv_bars
     (source='yahoo', adjusted=False). Idempotent on
-    (instrument, timeframe, time, source, adjusted)."""
+    (instrument, timeframe, time, source, adjusted). `start` bounds
+    the fetch window — the staleness self-heal passes a tail date."""
     from app.models.market import OhlcvBar
 
     job, _ = await get_or_create(
@@ -423,7 +425,7 @@ async def ingest_stooq_bars(
 
     raw, status = await run_job(
         session, job_run=run, provider_key="yahoo",
-        work=lambda: adapter.fetch_daily(symbol, start="2000-01-01"),
+        work=lambda: adapter.fetch_daily(symbol, start=start),
     )
     if raw is None:
         run.finished_at = utcnow()

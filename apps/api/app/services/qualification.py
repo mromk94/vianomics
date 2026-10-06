@@ -107,18 +107,9 @@ def _split_distorted(shares: dict) -> bool:
 
 
 def _status_from_discount(discount: float | None) -> str:
-    """discount = (IV − price) / IV — the doc's status ladder."""
-    if discount is None:
-        return "INSUFFICIENT_DATA"
-    if discount >= 0.50:
-        return "DEEP_VALUE"
-    if discount >= 0.15:
-        return "UNDERVALUED"
-    if discount >= -0.15:
-        return "FAIR_VALUE"
-    if discount >= -0.50:
-        return "OVERVALUED"
-    return "EXTREME_OVERVALUATION"
+    """discount = (IV − price) / IV — delegates to the canonical ladder
+    in finmetrics so the gate and the valuation lab agree."""
+    return fm.valuation_status(discount)
 
 
 async def qualification_gate(

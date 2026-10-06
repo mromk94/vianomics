@@ -21,6 +21,8 @@ interface Anchors {
   fcf: number | null;
   shares: number | null;
   net_debt: number;
+  last_close: number | null;
+  price_as_of: string | null;
   growth: Record<string, number | null>;
   roic: number | null;
   history: Record<string, Record<string, number>>;
@@ -35,6 +37,13 @@ interface Run {
     five_numbers?: Record<string, { value: number | null; pass: boolean }>;
     rule1?: { sticker_price?: number; buy_price?: number; future_eps?: number; error?: string; assumptions?: Record<string, number> };
     dcf?: { per_share?: number; enterprise_value?: number; pv_terminal_value?: number; error?: string };
+    dcf_multistage?: { per_share?: number; error?: string };
+    dni?: { per_share?: number; error?: string };
+    pb_intrinsic?: { per_share?: number; error?: string };
+    valuation_status?: { status: string; method_used: string | null;
+      intrinsic: number | null; discount_to_iv: number | null;
+      rule1_zone: string | null;
+      consensus?: { methods_compared: string[]; note: string } };
     reverse_dcf?: { implied_growth?: number; solved?: boolean; note?: string; error?: string };
     mos?: { discount: number; underpriced: boolean };
     sensitivity?: { growths: number[]; discount_rates: number[]; grid: (number | null)[][] };
@@ -77,6 +86,9 @@ export function ValuationPage() {
       const a = await apiGet<Anchors>(`/api/v1/valuation-engine/inputs/${sym}`);
       setAnchors(a);
       if (a.growth.revenue) setForm((f) => ({ ...f, growth: a.growth.revenue!.toFixed(3) }));
+      // price defaults to the last stored close — never the leftover
+      // '180' placeholder; the stale mark is flagged via price_as_of
+      if (a.last_close) setForm((f) => ({ ...f, price: a.last_close!.toFixed(2) }));
       apiGet<Run>(`/api/v1/valuation-engine/${sym}`).then(setRun).catch(() => setRun(null));
       apiGet<typeof versions>(`/api/v1/valuation-engine/${sym}/versions`).then(setVersions).catch(() => {});
     } catch (e) { setNotice((e as Error).message); }
@@ -137,6 +149,9 @@ export function ValuationPage() {
               action={`${anchors.archetype} · ${anchors.sector ?? "unclassified"}`}>
               <div className="grid grid-cols-2 gap-2 text-[13px] sm:grid-cols-3">
                 {[
+                  ["Last close", anchors.last_close
+                    ? `${MONEY(anchors.last_close)} · ${anchors.price_as_of?.slice(0, 10) ?? ""}`
+                    : "—"],
                   ["EPS (latest)", MONEY(anchors.eps)],
                   ["FCF (latest)", anchors.fcf ? `$${fmtNum(anchors.fcf / 1e9, 1)}B` : "—"],
                   ["Shares", anchors.shares ? `${fmtNum(anchors.shares / 1e9, 2)}B` : "—"],
@@ -192,22 +207,68 @@ export function ValuationPage() {
 
           {run && o && (
             <>
-              {/* outputs strip */}
-              <div className="rise rise-2 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-6">
+              {/* outputs strip — status + every method side-by-side,
+                  never averaged (doc §9) */}
+              <div className="rise rise-2 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
                 {[
-                  ["Sticker Price", MONEY(o.rule1?.sticker_price)],
-                  ["Buy Price", MONEY(o.rule1?.buy_price)],
+                  ["Status", o.valuation_status?.status
+                    ? o.valuation_status.status.replace(/_/g, " ")
+                    : "—"],
+                  ["Rule-1 Sticker", MONEY(o.rule1?.sticker_price)],
+                  ["Rule-1 MOS Buy", MONEY(o.rule1?.buy_price)],
                   ["DCF / share", MONEY(o.dcf?.per_share)],
+                  ["Multi-stage DCF", MONEY(o.dcf_multistage?.per_share)],
                   ["MOS", o.mos ? PCT(o.mos.discount) : "—"],
-                  ["Implied growth", o.reverse_dcf?.implied_growth != null ? PCT(o.reverse_dcf.implied_growth) : "—"],
                   ["Price", MONEY(run.inputs.price)],
                 ].map(([l, v]) => (
                   <div key={l as string} className="glass p-4">
                     <div className="text-[10px] tracking-wider text-dim uppercase">{l}</div>
-                    <div className="num mt-1 text-xl font-semibold">{v}</div>
+                    <div className={`num mt-1 text-xl font-semibold ${
+                      l === "Status"
+                        ? o.valuation_status?.status === "DEEP_VALUE" ||
+                          o.valuation_status?.status === "UNDERVALUED"
+                          ? "text-pos"
+                          : o.valuation_status?.status === "OVERVALUED" ||
+                            o.valuation_status?.status === "EXTREME_OVERVALUATION"
+                            ? "text-neg" : "text-warn" : ""}`}>{v}</div>
                   </div>
                 ))}
               </div>
+
+              {/* secondary methods — financial archetype (DNI/P-B) and
+                  consensus detail; shown, never merged */}
+              {(o.dni?.per_share || o.pb_intrinsic?.per_share ||
+                o.valuation_status) && (
+                <div className="rise rise-2 glass p-3 text-[12px]">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                    {o.dni?.per_share && (
+                      <span>DNI <b className="num">{MONEY(o.dni.per_share)}</b></span>)}
+                    {o.pb_intrinsic?.per_share && (
+                      <span>P/B <b className="num">{MONEY(o.pb_intrinsic.per_share)}</b></span>)}
+                    {o.valuation_status?.method_used && (
+                      <span className="text-faint">
+                        status set by <b className="text-dim">{o.valuation_status.method_used}</b>
+                        {o.valuation_status.discount_to_iv != null &&
+                          ` (${PCT(o.valuation_status.discount_to_iv)} to IV)`}
+                        {o.valuation_status.rule1_zone &&
+                          ` · rule-1 zone ${o.valuation_status.rule1_zone.replace(/_/g, " ").toLowerCase()}`}
+                      </span>)}
+                    {(o.valuation_status?.consensus?.methods_compared?.length ?? 0) > 1 && (
+                      <span className="text-faint">
+                        compared: {o.valuation_status!.consensus!.methods_compared.join(", ")}
+                      </span>)}
+                    {o.reverse_dcf?.implied_growth != null && (
+                      <span className="text-faint">
+                        market implies {PCT(o.reverse_dcf.implied_growth)} growth
+                      </span>)}
+                  </div>
+                  {o.valuation_status?.consensus?.note && (
+                    <div className="mt-1 text-[10px] text-faint">
+                      {o.valuation_status.consensus.note}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {(o.rule1?.error || o.dcf?.error || (o.missing?.length ?? 0) > 0) && (
                 <div className="glass border-warn/40 p-3 text-[12px] text-warn">

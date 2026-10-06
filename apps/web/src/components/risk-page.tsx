@@ -56,6 +56,21 @@ interface Center {
   margin?: { used: number; utilisation: number;
     call_buffer_check: { margin_call_before_stop: boolean;
       warning: string | null } | null };
+  sleeve?: { enabled: boolean; cooldown?: boolean;
+    lifecycle?: { state: string; cooldown_at: string | null;
+      reason: string | null };
+    config: Record<string, number>;
+    distance_to_portfolio_stop_usd?: number;
+    state?: { sleeve_equity: number; gross: number;
+      gross_cap: number; effective_gross_cap: number;
+      buffer_capped: boolean; maint_margin_used: number;
+      used_margin: number; free_margin: number;
+      margin_utilisation: number | null;
+      effective_leverage: number | null;
+      open_positions: number; margin_call_at_gross: number | null;
+      margin_call_distance: number | null;
+      per_trade_risk_budget: number;
+      portfolio_stop_usd: number } };
   drawdown?: { max_dd: number | null;
     escalation: { drawdown: number; level: string;
       action: string } };
@@ -228,6 +243,68 @@ export function RiskPage() {
                 {c.drawdown?.escalation && c.drawdown.escalation.level !== "NORMAL" && (
                   <span className="text-warn">→ {c.drawdown.escalation.action}</span>
                 )}
+              </div>
+            </SectionCard>
+          )}
+
+          {/* doc Step-11/§21 — trading-sleeve margin ledger:
+              free margin, utilisation, margin-call distance and the
+              cooldown latch that only a human release clears */}
+          {c.sleeve?.enabled && c.sleeve.state && (
+            <SectionCard title="Trading sleeve — margin ledger" className="rise"
+              action={
+                <div className="flex items-center gap-2">
+                  {c.sleeve.cooldown ? (
+                    <StatusBadge tone="neg">COOLDOWN</StatusBadge>
+                  ) : c.sleeve.state.buffer_capped ? (
+                    <StatusBadge tone="warn">buffer-capped</StatusBadge>
+                  ) : (
+                    <StatusBadge tone="pos">margin buffer ok</StatusBadge>
+                  )}
+                  <span className="num text-[10px] text-faint">
+                    {(c.sleeve.config.sleeve_pct * 100).toFixed(0)}% of equity ·
+                    max {c.sleeve.config.max_positions} positions
+                  </span>
+                </div>}>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-8">
+                {([
+                  ["Sleeve equity", `$${fmtNum(c.sleeve.state.sleeve_equity, 0)}`, ""],
+                  ["Gross", `$${fmtNum(c.sleeve.state.gross, 0)} of $${fmtNum(c.sleeve.state.effective_gross_cap, 0)}`, ""],
+                  ["Leverage", c.sleeve.state.effective_leverage != null
+                    ? `${c.sleeve.state.effective_leverage.toFixed(2)}×` : "—",
+                    (c.sleeve.state.effective_leverage ?? 0) > 4 ? "text-warn" : ""],
+                  ["Margin util.", c.sleeve.state.margin_utilisation != null
+                    ? `${(c.sleeve.state.margin_utilisation * 100).toFixed(1)}%` : "—",
+                    (c.sleeve.state.margin_utilisation ?? 0) > 0.8 ? "text-neg"
+                    : (c.sleeve.state.margin_utilisation ?? 0) > 0.5 ? "text-warn" : ""],
+                  ["Free margin", `$${fmtNum(c.sleeve.state.free_margin, 0)}`, ""],
+                  ["Call distance", c.sleeve.state.margin_call_distance != null
+                    ? `$${fmtNum(c.sleeve.state.margin_call_distance, 0)}` : "—",
+                    (c.sleeve.state.margin_call_distance ?? 1) < 0 ? "text-neg" : "text-pos"],
+                  ["Per-trade risk", `$${fmtNum(c.sleeve.state.per_trade_risk_budget, 0)}`, ""],
+                  ["To port. stop", c.sleeve.distance_to_portfolio_stop_usd != null
+                    ? `$${fmtNum(c.sleeve.distance_to_portfolio_stop_usd, 0)}` : "—",
+                    (c.sleeve.distance_to_portfolio_stop_usd ?? 1) < 0 ? "text-neg" : ""],
+                ] as [string, string, string][]).map(([label, val, tone]) => (
+                  <div key={label} className="glass-tile px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wider text-faint">{label}</div>
+                    <div className={`num mt-0.5 text-[13px] font-semibold ${tone}`}>{val}</div>
+                  </div>
+                ))}
+              </div>
+              {c.sleeve.cooldown && c.sleeve.lifecycle && (
+                <div className="mt-2 rounded-lg border border-neg/30 bg-neg/5 px-3 py-1.5 text-[11px] text-neg">
+                  Cooldown since {fmtTime(c.sleeve.lifecycle.cooldown_at)}
+                  {c.sleeve.lifecycle.reason
+                    ? ` — ${c.sleeve.lifecycle.reason}` : ""}
+                  {" "}· release requires human reassessment
+                  (POST /risk/sleeve/release)
+                </div>
+              )}
+              <div className="mt-1.5 text-[10px] text-faint">
+                maint margin used {((c.sleeve.state.maint_margin_used ?? 0) * 100).toFixed(1)}%
+                {c.sleeve.state.margin_call_at_gross != null &&
+                  ` · margin call at gross $${fmtNum(c.sleeve.state.margin_call_at_gross, 0)}`}
               </div>
             </SectionCard>
           )}

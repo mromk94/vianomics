@@ -114,11 +114,22 @@ async def gather_inputs(
             await db.execute(select(Sector).where(Sector.id == inst.sector_id))
         ).scalar_one_or_none()
 
+    # market anchor — the assumption editor defaults `price` to the
+    # last stored close rather than a hand-typed number; `price_as_of`
+    # carries its provenance so a stale mark is visible, not hidden
+    last_bar = (await db.execute(
+        select(OhlcvBar.time, OhlcvBar.close)
+        .where(OhlcvBar.instrument_id == inst.id,
+               OhlcvBar.timeframe == "1d")
+        .order_by(OhlcvBar.time.desc()).limit(1))).one_or_none()
+
     return {
         "symbol": inst.symbol,
         "sector": sector.name if sector else None,
         "archetype": sector_val.archetype_for(
             sector.name if sector else None),
+        "last_close": float(last_bar[1]) if last_bar else None,
+        "price_as_of": (last_bar[0].isoformat() if last_bar else None),
         "eps": float(eps) if eps is not None else None,
         "fcf": fcf,
         "shares": sh,
@@ -303,6 +314,44 @@ async def run_valuation(
                 if anchors["fcf"] and anchors["shares"] else None),
     )
     outputs["missing"] = missing
+
+    # doc §10 — valuation status on the PRIMARY method for this
+    # archetype (financials → DNI/P-B; operating cos → Rule-1/DCF),
+    # with every method shown side-by-side — never averaged
+    sticker = (outputs.get("rule1") or {}).get("sticker_price")
+    mos_px = (outputs.get("rule1") or {}).get("buy_price")
+    iv_map = {
+        "rule1": sticker,
+        "dcf": (outputs.get("dcf") or {}).get("per_share"),
+        "dcf_multistage": (outputs.get("dcf_multistage") or {})
+                          .get("per_share"),
+        "dni": (outputs.get("dni") or {}).get("per_share"),
+        "pb": (outputs.get("pb_intrinsic") or {}).get("per_share"),
+    }
+    order = (["dni", "pb", "dcf", "rule1"]
+             if anchors["archetype"] == "financial"
+             else ["rule1", "dcf", "dni", "pb"])
+    primary = next((m for m in order if iv_map.get(m)), None)
+    disc = (fm.intrinsic_discount(price, iv_map[primary])
+            if primary else None)
+    outputs["valuation_status"] = {
+        "status": fm.valuation_status(disc),
+        "method_used": primary,
+        "intrinsic": iv_map.get(primary),
+        "discount_to_iv": float(disc) if disc is not None else None,
+        "rule1_zone": (
+            "BUY_ZONE" if price and mos_px and price <= mos_px
+            else "WATCH" if price and sticker and price < sticker
+            else "VALUATION_EXIT" if price and sticker
+            else None),
+        "consensus": {
+            "methods_compared": [m for m, v in iv_map.items() if v],
+            "note": ("methods shown side-by-side, never averaged — "
+                     "differences trace to the required return "
+                     "(15% Rule-1 vs CAPM discount) and the 50% "
+                     "MOS floor"),
+        },
+    }
 
     prev = (
         await db.execute(

@@ -156,6 +156,25 @@ def intrinsic_discount(price, intrinsic_value) -> Decimal | None:
     return (iv - p) / iv
 
 
+def valuation_status(discount: float | Decimal | None) -> str:
+    """The doc's valuation-status ladder — ONE canonical copy, used by
+    both the qualification gate and the valuation run output:
+      ≥50% discount → DEEP_VALUE · ≥15% → UNDERVALUED · ±15% →
+      FAIR_VALUE · −50%…−15% → OVERVALUED · below → EXTREME."""
+    if discount is None:
+        return "INSUFFICIENT_DATA"
+    d = float(discount)
+    if d >= 0.50:
+        return "DEEP_VALUE"
+    if d >= 0.15:
+        return "UNDERVALUED"
+    if d >= -0.15:
+        return "FAIR_VALUE"
+    if d >= -0.50:
+        return "OVERVALUED"
+    return "EXTREME_OVERVALUATION"
+
+
 def shares_change(prev, curr) -> Decimal | None:
     """Signed share-count change; negative = buybacks (good)."""
     return growth(prev, curr)  # same math; callers read the sign

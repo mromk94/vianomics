@@ -1343,6 +1343,14 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
             "utilisation": ctx["margin_utilisation"],
             "call_buffer_check": margin_cfg,
         },
+        # doc Step-11/§21 — the trading sleeve's own margin ledger:
+        # free margin, utilisation, margin-call distance, cooldown.
+        # Positions already render via pyramid_trades; not duplicated.
+        "sleeve": ({k: ctx["sleeve"][k] for k in
+                    ("enabled", "config", "state", "cooldown",
+                     "lifecycle", "distance_to_portfolio_stop_usd")
+                    if k in ctx["sleeve"]}
+                   if ctx.get("sleeve") else None),
         "drawdown": {"max_dd": dd, "escalation": escalation},
         "named_stress": stress,
         "dimensions": dims,

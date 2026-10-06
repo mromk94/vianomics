@@ -14,6 +14,10 @@ import { PyramidModal } from "@/components/pyramid-modal";
 interface NewsItem { source: string; title: string; url: string | null;
   at: string | null; summary: string | null }
 
+interface BarsResp { bars: any[]; as_of?: string | null;
+  latest_stored?: string | null; stale?: boolean;
+  sessions_behind?: number | null; refreshed?: boolean }
+
 const TFS = [
   { v: "1d", label: "Daily" }, { v: "2d", label: "2-Day" },
   { v: "3d", label: "3-Day" }, { v: "1w", label: "Weekly" },
@@ -47,6 +51,8 @@ export function SymbolPage({ symbol }: { symbol: string }) {
   const [news, setNews] = useState<{ items: NewsItem[]; sources: string[] } | null>(null);
   const [tf, setTf] = useState("1d");
   const [bars, setBars] = useState<any[]>([]);
+  const [barsMeta, setBarsMeta] = useState<BarsResp | null>(null);
+  const [barsErr, setBarsErr] = useState<string | null>(null);
   const [pyrOpen, setPyrOpen] = useState(false);
   const [finTab, setFinTab] = useState<"income" | "balance" | "cashflow" | "other">("income");
   const [finFreq, setFinFreq] = useState<"FY" | "Q">("FY");
@@ -61,9 +67,12 @@ export function SymbolPage({ symbol }: { symbol: string }) {
   }, [sym]);
 
   useEffect(() => {
-    apiGet<{ bars: any[] }>(
+    setBarsErr(null);
+    apiGet<BarsResp>(
       `/api/v1/technical/bars/${sym}?timeframe=${tf}&limit=1500`)
-      .then((r) => setBars(r.bars)).catch(() => setBars([]));
+      .then((r) => { setBars(r.bars); setBarsMeta(r); })
+      .catch((e) => { setBars([]); setBarsMeta(null);
+                      setBarsErr(e.message); });
   }, [sym, tf]);
 
   const downloadCsv = () => {
@@ -260,6 +269,18 @@ export function SymbolPage({ symbol }: { symbol: string }) {
       <SectionCard title="Stock Price History"
         action={
           <div className="flex items-center gap-2">
+            {barsMeta?.stale && (
+              <StatusBadge tone="warn">
+                stale · {barsMeta.sessions_behind ?? "?"} session
+                {barsMeta.sessions_behind === 1 ? "" : "s"} behind
+              </StatusBadge>
+            )}
+            {barsMeta?.as_of && (
+              <span className="num text-[10px] text-faint">
+                as of {barsMeta.as_of}
+                {barsMeta.refreshed ? " · refreshed" : ""}
+              </span>
+            )}
             <select value={tf} onChange={(e) => setTf(e.target.value)}
               className="rounded border border-border bg-surface-2 px-2 py-0.5 text-[11px] text-dim focus:border-accent focus:outline-none">
               {TFS.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
@@ -269,6 +290,11 @@ export function SymbolPage({ symbol }: { symbol: string }) {
               Download CSV
             </button>
           </div>}>
+        {barsErr && (
+          <div className="mb-2 rounded-lg border border-neg/30 bg-neg/5 px-3 py-1.5 text-[11px] text-neg">
+            {barsErr}
+          </div>
+        )}
         {bars.length === 0 ? (
           <EmptyState title="No stored bars"
             hint="Daily bars ingest via the dataops backfill." />
@@ -300,7 +326,7 @@ export function SymbolPage({ symbol }: { symbol: string }) {
                       <td className="py-1.5 pr-2 text-right">{fmtNum(b.high, 2)}</td>
                       <td className="py-1.5 pr-2 text-right">{fmtNum(b.low, 2)}</td>
                       <td className="py-1.5 pr-2 text-right text-dim">
-                        {b.volume >= 1e6 ? `${fmtNum(b.volume / 1e6, 2)}M` : fmtNum(b.volume / 1e3, 0) + "K"}</td>
+                        {b.provisional ? "—" : b.volume >= 1e6 ? `${fmtNum(b.volume / 1e6, 2)}M` : fmtNum(b.volume / 1e3, 0) + "K"}</td>
                       <td className={`py-1.5 text-right ${chg == null ? "text-faint" : chg >= 0 ? "text-pos" : "text-neg"}`}>
                         {chg == null ? "—" : `${chg >= 0 ? "+" : ""}${(chg * 100).toFixed(2)}%`}</td>
                     </tr>
