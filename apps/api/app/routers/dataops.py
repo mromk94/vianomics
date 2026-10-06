@@ -237,7 +237,11 @@ async def run_job_now(job_key: str,
             return res
         elif job_key == "portfolio:ibkr:sync":
             from app.services import broker_sync
-            res = await broker_sync.sync_ibkr_flex(db)
+            # bridge first — live socket beats the 24h-batch Flex
+            # statement; Flex remains the no-daemon fallback
+            res = await broker_sync.sync_ibkr_bridge(db)
+            if res.get("status") == "skipped":
+                res = await broker_sync.sync_ibkr_flex(db)
             await db.commit()
             return res
         elif job_key.startswith("ingest:alpaca:"):

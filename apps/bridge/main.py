@@ -197,11 +197,15 @@ async def account(_: None = Depends(auth)):
                     return _f(v.value)
         return _f(rows[0].value if rows else None)
 
+    base_ccy = next(
+        (v.currency for v in vals
+         if v.tag == "NetLiquidation" and v.currency != "BASE"),
+        None)
     return {"equity": num("NetLiquidation"), "cash": num("TotalCashValue"),
             "buying_power": num("BuyingPower"),
             "gross_position_value": num("GrossPositionValue"),
             "unrealized_pl": num("UnrealizedPnL"),
-            "account": IBKR_ACCOUNT or (ib.managedAccounts() or [None])[0],
+            "account": acct or None, "currency": base_ccy or "USD",
             "readonly": IBKR_READONLY, "port": IBKR_PORT}
 
 

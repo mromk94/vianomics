@@ -237,3 +237,67 @@ async def sync_ibkr_flex(db: AsyncSession,
     acc.connected = True
     return {"status": "success", "positions": len(positions),
             "equity": acc.equity}
+
+
+# ── IBKR bridge — live read path via the VPS sidecar ──
+#
+# When IBKR_BRIDGE_URL + IBKR_BRIDGE_SECRET are set this is preferred
+# over Flex: real-time account values + open positions straight from
+# the running Gateway — no 24h-batch statement delay. Read-only and
+# bearer-gated, same external account row.
+
+
+async def sync_ibkr_bridge(db: AsyncSession) -> dict:
+    """Bridge /account + /positions → ExternalAccount(source='ibkr')."""
+    url = (await get_secret(db, "IBKR_BRIDGE_URL")
+           or os.environ.get("IBKR_BRIDGE_URL") or "").rstrip("/")
+    secret = (await get_secret(db, "IBKR_BRIDGE_SECRET")
+              or os.environ.get("IBKR_BRIDGE_SECRET"))
+    if not (url and secret):
+        return {"status": "skipped",
+                "error": "IBKR_BRIDGE_URL + IBKR_BRIDGE_SECRET not set"}
+    h = {"Authorization": f"Bearer {secret}"}
+    async with httpx.AsyncClient(timeout=30) as c:
+        ra = await c.get(f"{url}/account", headers=h)
+        if ra.status_code != 200:
+            acc = await _ext_account(db, "ibkr")
+            acc.connected = False
+            acc.synced_at = utcnow()
+            return {"status": "failed",
+                    "error": f"bridge /account {ra.status_code}"}
+        a = ra.json()
+        rp = await c.get(f"{url}/positions", headers=h)
+        raw_pos = rp.json() if rp.status_code == 200 else []
+
+    # mark held names to our own tape when a stored quote exists —
+    # the bridge deliberately doesn't price positions (data layer's job)
+    quote_map = dict((await db.execute(
+        select(MarketQuote.symbol, MarketQuote.mid))).all())
+    positions = []
+    for p in raw_pos:
+        if p.get("sec_type") not in (None, "STK"):
+            continue            # equities only — matches the UI shape
+        qty = float(p.get("qty") or 0)
+        cur = quote_map.get(p["symbol"])
+        positions.append({
+            "symbol": p["symbol"], "qty": qty,
+            "price": float(p.get("avg_cost") or 0),
+            "current_price": cur,
+            "market_value": cur * qty if cur and qty else None,
+            "side": "long" if qty >= 0 else "short",
+            "currency": p.get("currency"),
+        })
+
+    acc = await _ext_account(db, "ibkr")
+    acct = a.get("account") or ""
+    kind = "paper" if acct.upper().startswith("DU") else "live"
+    acc.label = f"IBKR {kind} {acct}" if acct else "IBKR bridge"
+    acc.balance = a.get("cash")
+    acc.equity = a.get("equity") or a.get("cash")
+    acc.currency = a.get("currency") or "USD"
+    acc.positions = positions
+    _roll_equity(acc, acc.equity)
+    acc.synced_at = utcnow()
+    acc.connected = True
+    return {"status": "success", "positions": len(positions),
+            "equity": acc.equity}
