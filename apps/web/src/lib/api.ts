@@ -64,29 +64,43 @@ function abortReason(e: unknown): string | null {
 
 export async function apiGet<T>(path: string, timeoutMs?: number): Promise<T> {
   const ms = timeoutMs ?? defaultTimeout(path);
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ms);
-  try {
-    const res = await fetch(`${API_URL}${path}`, {
-      signal: ctrl.signal,
-      headers: authHeaders(),
-    });
-    if (!res.ok) {
-      if (res.status === 401 && path !== "/api/v1/auth/login") {
-        // dead session — drop it and bounce to /login
-        window.localStorage.removeItem("vaiip-token");
-        window.dispatchEvent(new Event("vaiip:unauth"));
+  let lastErr: unknown;
+  // Render restarts (deploys, transient drops) surface as a one-shot
+  // network error — one quiet retry with backoff keeps the UI from
+  // flashing "Cannot reach the API" on a blip. GETs are idempotent.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    try {
+      const res = await fetch(`${API_URL}${path}`, {
+        signal: ctrl.signal,
+        headers: authHeaders(),
+      });
+      if (!res.ok) {
+        if (res.status === 401 && path !== "/api/v1/auth/login") {
+          // dead session — drop it and bounce to /login
+          window.localStorage.removeItem("vaiip-token");
+          window.dispatchEvent(new Event("vaiip:unauth"));
+        }
+        throw new ApiError(res.status, `API ${res.status} on ${path}`);
       }
-      throw new ApiError(res.status, `API ${res.status} on ${path}`);
+      return (await res.json()) as T;
+    } catch (e) {
+      lastErr = e;
+      const retriable = e instanceof ApiError
+        ? (e.status === 0 || e.status >= 500)
+        : !(e instanceof ApiError);   // network/abort errors
+      if (!retriable || attempt === 1) {
+        const reason = abortReason(e);
+        if (reason) throw new ApiError(0, `${reason} [${path}]`);
+        throw e;
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    } finally {
+      clearTimeout(timer);
     }
-    return (await res.json()) as T;
-  } catch (e) {
-    const reason = abortReason(e);
-    if (reason) throw new ApiError(0, `${reason} [${path}]`);
-    throw e;
-  } finally {
-    clearTimeout(timer);
   }
+  throw lastErr;
 }
 
 export async function apiPost<T>(

@@ -17,6 +17,7 @@ class AlpacaAdapter(HttpAdapter):
     key = "alpaca"
     kind = "market"
     base_url = "https://data.alpaca.markets"
+    trading_base = "https://api.alpaca.markets"   # assets live here
     rps = 3.0  # free tier ~200 req/min
 
     def __init__(self, api_key: str | None = None,
@@ -74,6 +75,18 @@ class AlpacaAdapter(HttpAdapter):
             page_token = d.get("next_page_token")
             if not page_token:
                 return out
+
+    async def assets(self, status: str = "active",
+                     asset_class: str = "us_equity") -> list[dict]:
+        """Full tradable-asset listing (trading API, not the data
+        host). One unpaginated call returns ~10k rows — the market
+        universe the screener's discovery pool should draw from."""
+        resp = await self._get(
+            f"{self.trading_base}/v2/assets",
+            params={"status": status, "asset_class": asset_class},
+            headers=self._headers())
+        resp.raise_for_status()
+        return resp.json()
 
     async def latest_quote(self, symbol: str) -> dict | None:
         """NBBO-ish quote {bp,bs,ap,as,t} — IEX tape on free tier."""

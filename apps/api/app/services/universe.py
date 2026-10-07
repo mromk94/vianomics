@@ -32,6 +32,78 @@ DEFAULT_RULES: dict[str, Any] = {
 # AUM, not market cap, which we don't track. Liquidity still applies.
 NO_MCAP_CLASSES = {"etf", "index"}
 
+# Alpaca exchanges we admit to the discovery pool — the main US
+# listing venues; OTC/CRYPTO/etc. stay out
+_MAJOR_EXCHANGES = {"NYSE", "NASDAQ", "ARCA", "AMEX", "NYSEAMERICAN",
+                    "BATS", "NYSEArca", "NYSEAmerican"}
+
+
+async def sync_alpaca_universe(
+    db: AsyncSession, tenant_id: str = "default",
+) -> dict[str, Any]:
+    """Alpaca /v2/assets → the 'global' discovery universe.
+
+    This is the *discovery pool*, not the book — everything lands in
+    'global'; 'eligible'/'approved' stay gated by mandate rules + the
+    Four-M's engine. Bars/quotes for global-only names hydrate on
+    view (the bars endpoint self-heals) instead of a 10k-symbol
+    nightly pull."""
+    from app.services.secrets import get_secret
+    from app.providers.alpaca import AlpacaAdapter
+
+    key = await get_secret(db, "ALPACA_API_KEY")      # adapter falls
+    secret = await get_secret(db, "ALPACA_SECRET_KEY")  # back to env
+    ad = AlpacaAdapter(api_key=key, secret_key=secret)
+    try:
+        assets = await ad.assets()
+    except Exception as e:
+        return {"status": "failed", "error": f"alpaca assets: {e}"}
+
+    uni = await universe_by_name(db, "global", tenant_id)
+    if uni is None:
+        uni = Universe(name="global", tier="global",
+                       description="Alpaca tradable-asset discovery pool",
+                       tenant_id=tenant_id)
+        db.add(uni)
+        await db.flush()
+
+    existing = {i.symbol: i for i in
+                (await db.execute(select(Instrument))).scalars().all()}
+    have_membership = {
+        m.instrument_id for m in (await db.execute(
+            select(UniverseMembership).where(
+                UniverseMembership.universe_id == uni.id))
+        ).scalars().all()}
+
+    created = added = 0
+    for a in assets:
+        if not a.get("tradable"):
+            continue
+        if a.get("exchange") not in _MAJOR_EXCHANGES:
+            continue
+        sym = (a.get("symbol") or "").strip().upper()
+        if not sym or len(sym) > 12 or not sym.replace(".", "").isalnum():
+            continue        # skip pairs/ODD lots/test tickers
+        inst = existing.get(sym)
+        if inst is None:
+            inst = Instrument(
+                symbol=sym, name=a.get("name") or sym,
+                asset_class="equity",
+                currency="USD", status="watchlist")
+            db.add(inst)
+            await db.flush()
+            existing[sym] = inst
+            created += 1
+        if inst.id not in have_membership:
+            db.add(UniverseMembership(
+                universe_id=uni.id, instrument_id=inst.id,
+                status="active", reason="alpaca universe sync"))
+            have_membership.add(inst.id)
+            added += 1
+    await db.flush()
+    return {"status": "success", "assets_seen": len(assets),
+            "instruments_created": created, "members_added": added}
+
 
 async def universe_by_name(db: AsyncSession, name: str, tenant_id: str = "default") -> Universe | None:
     return (

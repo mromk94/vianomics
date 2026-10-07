@@ -133,5 +133,37 @@ services:
       - key: CRON_SECRET
         sync: false
 
+  - type: cronjob
+    name: vaiip-universe-alpaca
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    schedule: "0 6 * * 0"            # Sunday — refresh discovery pool
+    startCommand: python -m app.cron_trigger universe:alpaca:sync
+    envVars:
+      - key: API_URL
+        value: https://vianomics.onrender.com
+      - key: CRON_JOB
+        value: universe:alpaca:sync
+      - key: CRON_SECRET
+        sync: false
+
+  - type: cronjob
+    name: vaiip-ibkr-sync
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    schedule: "*/30 13-21 * * 1-5"   # market hours — keep the IBKR
+    startCommand: python -m app.cron_trigger portfolio:ibkr:sync
+    envVars:                          # panel fresh via the bridge
+      - key: API_URL
+        value: https://vianomics.onrender.com
+      - key: CRON_JOB
+        value: portfolio:ibkr:sync
+      - key: CRON_SECRET
+        sync: false
+
 # Postgres lives on Supabase — set DATABASE_URL in the dashboard:
 # postgresql+asyncpg://postgres.<ref>:<pw>@aws-0-us-east-1.pooler.supabase.com:5432/postgres

@@ -235,6 +235,12 @@ async def run_job_now(job_key: str,
             res = await broker_sync.sync_alpaca_account(db)
             await db.commit()
             return res
+        elif job_key == "universe:alpaca:sync":
+            # full US-equity discovery pool → 'global' universe
+            from app.services import universe as usvc
+            res = await usvc.sync_alpaca_universe(db)
+            await db.commit()
+            return res
         elif job_key == "portfolio:ibkr:sync":
             from app.services import broker_sync
             # bridge first — live socket beats the 24h-batch Flex
@@ -357,14 +363,31 @@ async def refresh_daily_bars(db: AsyncSession) -> dict:
     book."""
     from app.ingestion import jobs as ing
     from app.models.instruments import Instrument
+    from app.models.market import OhlcvBar
+    from app.models.universe import Universe, UniverseMembership
     from app.providers.yahoo import YahooAdapter
     from app.services import market_context as mc
+    from sqlalchemy import or_
 
     await mc.ensure_market_context(db)
     await db.commit()
     ya = YahooAdapter()
     ok = 0
-    for inst in (await db.execute(select(Instrument))).scalars().all():
+    # don't pull daily bars for the 10k-name global discovery pool —
+    # only names the desk actually tracks (have bars already, or hold
+    # active membership in a tiered universe). Global-only symbols
+    # hydrate on view via the bars endpoint's self-heal.
+    covered = select(OhlcvBar.instrument_id).distinct()
+    tiered = (select(UniverseMembership.instrument_id)
+              .join(Universe,
+                    UniverseMembership.universe_id == Universe.id)
+              .where(Universe.name != "global",
+                     UniverseMembership.status == "active"))
+    tracked = (await db.execute(
+        select(Instrument).where(
+            or_(Instrument.id.in_(covered),
+                Instrument.id.in_(tiered))))).scalars().all()
+    for inst in tracked:
         try:
             await ing.ingest_stooq_bars(db, ya, inst.symbol)
             await db.commit()
