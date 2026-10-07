@@ -89,8 +89,11 @@ async def _system_health(db: AsyncSession | None) -> list[ProviderHealth]:
 
 @router.get("/command-center", response_model=CommandCenterResponse)
 async def command_center(
-    source: str = Query("internal",
-                        pattern="^(internal|mt4|bamboo|all)$"),
+    source: str = Query(
+        "internal",
+        # any ExternalAccount.source slug is valid — hardcoding
+        # 'mt4|bamboo' 422'd the moment ibkr/alpaca connected
+        pattern="^[a-z0-9_:-]{1,32}$"),
     db: AsyncSession = Depends(get_db),
 ) -> CommandCenterResponse:
     settings = get_settings()
