@@ -61,6 +61,8 @@ interface Center {
       reason: string | null };
     config: Record<string, number>;
     distance_to_portfolio_stop_usd?: number;
+    stop_floor_usd?: number;
+    stop_floor_binding?: string;
     state?: { sleeve_equity: number; gross: number;
       gross_cap: number; effective_gross_cap: number;
       buffer_capped: boolean; maint_margin_used: number;
@@ -299,8 +301,8 @@ export function RiskPage() {
                     ? `$${fmtNum(c.sleeve.state.margin_call_distance, 0)}` : "—",
                     (c.sleeve.state.margin_call_distance ?? 1) < 0 ? "text-neg" : "text-pos"],
                   ["Per-trade risk", `$${fmtNum(c.sleeve.state.per_trade_risk_budget, 0)}`, ""],
-                  ["To port. stop", c.sleeve.distance_to_portfolio_stop_usd != null
-                    ? `$${fmtNum(c.sleeve.distance_to_portfolio_stop_usd, 0)}` : "—",
+                  ["To stop floor", c.sleeve.distance_to_portfolio_stop_usd != null
+                    ? `$${fmtNum(c.sleeve.distance_to_portfolio_stop_usd, 0)}${c.sleeve.stop_floor_binding ? ` · ${c.sleeve.stop_floor_binding === "gross_stop" ? "gross" : "equity"} floor` : ""}` : "—",
                     (c.sleeve.distance_to_portfolio_stop_usd ?? 1) < 0 ? "text-neg" : ""],
                 ] as [string, string, string][]).map(([label, val, tone]) => (
                   <div key={label} className="glass-tile px-3 py-2">

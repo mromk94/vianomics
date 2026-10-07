@@ -15,6 +15,7 @@ Context set (all free via Yahoo; FRED series live separately):
 """
 
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +27,7 @@ from app.models.instruments import (
     Sector,
 )
 from app.models.market import MarketQuote, OhlcvBar
+from app.models.universe import UniverseMembership
 from app.providers.yahoo import YahooAdapter
 
 # symbol → (name, asset_class, context group)
@@ -131,33 +133,77 @@ _SHARES_CONCEPTS = [
 ]
 
 
+async def refresh_market_stats(db: AsyncSession,
+                               inst: Instrument) -> bool:
+    """ADV + market-cap for ONE instrument — the nightly sweep's math,
+    callable on-demand when a symbol is first tracked so the
+    eligibility gate has real inputs immediately."""
+    from app.services.fundamentals_query import latest_instant
+    bars = (await db.execute(
+        select(OhlcvBar.close, OhlcvBar.volume)
+        .where(OhlcvBar.instrument_id == inst.id,
+               OhlcvBar.timeframe == "1d")
+        .order_by(OhlcvBar.time.desc()).limit(30))).all()
+    if not bars:
+        return False
+    vals = [float(c) * float(v) for c, v in bars
+            if c is not None and v]
+    if vals:
+        inst.avg_dollar_volume_30d = sum(vals) / len(vals)
+    shares = await latest_instant(
+        db, inst.id, _SHARES_CONCEPTS, datetime.now(UTC))
+    close = float(bars[0][0])
+    if shares and close:
+        inst.market_cap = shares * close
+    return True
+
+
 async def update_adv(db: AsyncSession) -> int:
     """Refresh derived market stats per instrument:
       - avg_dollar_volume_30d = mean(close×volume) over the last 30
         daily bars — drives the liquidity dimension
       - market_cap = latest EDGAR share count × last close — feeds the
         universe eligibility gate (was never written → 'market_cap
-        unknown' blocked every eligible-tier promotion)"""
-    from app.services.fundamentals_query import latest_instant
+        unknown' blocked every eligible-tier promotion)
+    Then MAINTAIN the eligible tier per doc Step 2: names whose data
+    now passes the rules promote in; names that lose their listing
+    demote out (mcap/ADV dips don't demote — daily noise would flap
+    membership; delisting is objective)."""
+    from app.services.universe import (
+        eligibility_reasons, rules_for, set_membership,
+        universe_by_name)
+    rules = await rules_for(db)
+    eligible_u = await universe_by_name(db, "eligible")
+    eligible_members: dict[int, Any] = {}
+    if eligible_u is not None:
+        eligible_members = {
+            m.instrument_id: m for m in (await db.execute(
+                select(UniverseMembership).where(
+                    UniverseMembership.universe_id == eligible_u.id))
+            ).scalars().all()}
     insts = (await db.execute(select(Instrument))).scalars().all()
     updated = 0
     for inst in insts:
-        bars = (await db.execute(
-            select(OhlcvBar.close, OhlcvBar.volume)
-            .where(OhlcvBar.instrument_id == inst.id,
-                   OhlcvBar.timeframe == "1d")
-            .order_by(OhlcvBar.time.desc()).limit(30))).all()
-        vals = [float(c) * float(v) for c, v in bars
-                if c is not None and v]
-        if vals:
-            inst.avg_dollar_volume_30d = sum(vals) / len(vals)
+        if await refresh_market_stats(db, inst):
             updated += 1
-        if bars:
-            shares = await latest_instant(
-                db, inst.id, _SHARES_CONCEPTS, datetime.now(UTC))
-            close = float(bars[0][0])
-            if shares and close:
-                inst.market_cap = shares * close
+        # tier ladder is data-driven, not aspirational — promote what
+        # passes, demote only on a lost listing (delisted names must
+        # not keep screening as eligible)
+        if eligible_u is not None:
+            reasons = eligibility_reasons(inst, rules)
+            m = eligible_members.get(inst.id)
+            active = m is not None and m.status == "active"
+            if not reasons and not active:
+                await set_membership(
+                    db, universe_name="eligible", instrument=inst,
+                    status="active", reason="eligibility rules pass")
+            elif (reasons and active
+                  and inst.listing_status not in
+                  rules.get("listing_status", ["active"])):
+                await set_membership(
+                    db, universe_name="eligible", instrument=inst,
+                    status="inactive",
+                    reason=f"delisted: {reasons[0]}")
     return updated
 
 

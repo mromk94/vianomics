@@ -137,13 +137,15 @@ async def ensure_instrument(db: AsyncSession, symbol: str,
                       exchange_id=None)
     db.add(inst)
     await db.flush()
-    for u in ("global", "eligible"):
-        try:
-            await set_membership(
-                db, universe_name=u, instrument=inst,
-                status="active", reason="added on-demand")
-        except ValueError:
-            pass
+    # 'global' is unconditional — known to the security master.
+    # 'eligible' is EARNED (doc Step 2): it requires the rules to
+    # actually pass, which needs the hydrated market stats below.
+    try:
+        await set_membership(
+            db, universe_name="global", instrument=inst,
+            status="active", reason="added on-demand")
+    except ValueError:
+        pass
     await db.commit()
 
     if hydrate:
@@ -157,6 +159,22 @@ async def ensure_instrument(db: AsyncSession, symbol: str,
             from app.providers.edgar import EdgarAdapter  # without them
             await ing.ingest_edgar_facts(       # the screen is all
                 db, EdgarAdapter(), sym)        # insufficient_data
+            await db.commit()
+        except Exception:
+            await db.rollback()
+        # market stats first (ADV/mcap), then the rules decide the
+        # tier — a ticker with unproven liquidity stays global, it is
+        # NOT silently promoted into the screenable book
+        try:
+            from app.services.market_context import (
+                refresh_market_stats)
+            await refresh_market_stats(db, inst)
+            reasons = eligibility_reasons(inst, await rules_for(db))
+            if not reasons:
+                await set_membership(
+                    db, universe_name="eligible", instrument=inst,
+                    status="active",
+                    reason="eligibility rules pass")
             await db.commit()
         except Exception:
             await db.rollback()

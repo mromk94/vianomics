@@ -277,6 +277,33 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
                 if p.get("daily_pnl") is not None) \
         if any(p.get("daily_pnl") is not None for p in positions) \
         else None
+    # external equity-history stats live HERE (not just in the center
+    # view) so every ctx consumer — order gate, preview, eligibility,
+    # monitors — enforces the same observed max_drawdown the
+    # dashboard displays. A dashboard block the gate can't see is a
+    # claim, not a control.
+    external_stats = []
+    max_dd = None
+    for a in ext_accounts:
+        stats = re_.equity_stats(
+            a.equity_history or [],
+            float(a.equity) if a.equity else None)
+        external_stats.append({
+            "label": a.label, "source": a.source,
+            "equity": float(a.equity or 0),
+            "balance": float(a.balance or 0),
+            "unrealized": (float(a.equity or 0)
+                           - float(a.balance or 0)),
+            "positions": a.positions or [],
+            "mdd_pct": stats["mdd_pct"], "var_95": stats["var_95"],
+            "daily_pnl": stats["daily_pnl"],
+            "synced_at": (a.synced_at.isoformat()
+                          if a.synced_at else None),
+            "stale": bool(a.synced_at and (
+                utcnow() - a.synced_at).total_seconds() > 900)})
+        if stats["mdd_pct"] is not None:
+            max_dd = min(max_dd if max_dd is not None else 0,
+                         stats["mdd_pct"])
     # ── margin + open-stop-risk accounting (new-docs) ──
     margin_used = sum(
         p["market_value"] * (p.get("margin_rate") or 0)
@@ -307,7 +334,8 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
         "open_risk": open_stop,
         "price_vs_iv": price_vs_iv_pf,   # NAV-weighted, or None
         "avg_correlation": None,  # computed in center view
-        "max_dd": None,
+        "max_dd": max_dd,
+        "external": external_stats,
         "vix": regime.vix if regime else None,
         "fear_greed": regime.fear_greed if regime else None,
         "market_regime": (regime.market_regime if regime else None),
@@ -911,9 +939,13 @@ async def advance_pyramid(
 
 # ── Layer-IV trading sleeve ──
 
+# money-at-risk states only — watchlist/trade_eligible records are
+# CANDIDATES carrying a hypothetical starter size; they must not
+# count as positions, gross exposure or margin (doc: the 5-position
+# cap applies to real positions; seeds render under Opportunities)
 _OPEN_PYRAMID_STATES = (
-    "watchlist", "trade_eligible", "initial_position", "target_1",
-    "position_addition", "target_2", "trailing_exit", "partial_exit")
+    "initial_position", "target_1", "position_addition",
+    "target_2", "trailing_exit", "partial_exit")
 
 
 async def _sleeve_ctx(db: AsyncSession, ctx: dict,
@@ -950,14 +982,19 @@ async def _sleeve_ctx(db: AsyncSession, ctx: dict,
         if inst.maintenance_margin_rate is not None:
             maint_rates.append(float(inst.maintenance_margin_rate))
         direction = rec.direction or "long"
-        sign = -1.0 if direction == "short" else 1.0
+        # per-leg cost basis — legs 2+ fill at target prices, so
+        # (px − entry) × shares overstates P&L after additions.
+        # Same accounting pyramid_maintain uses.
+        from app.services.pyramid_maintain import _cost_basis
+        basis = _cost_basis(rec) * cs
         positions.append({
             "symbol": inst.symbol, "state": rec.state,
             "shares": rec.shares, "market_value": mv,
             "entry": rec.entry, "stop": rec.stop,
             "target": rec.target1, "current_price": px,
             "direction": direction,
-            "unrealized": sign * (px - rec.entry) * rec.shares * cs,
+            "unrealized": ((basis - mv) if direction == "short"
+                           else (mv - basis)),
             "open_risk": (abs(px - rec.stop) * rec.shares * cs
                           if rec.stop is not None else None),
             "sector": sec})
@@ -1025,17 +1062,34 @@ async def _sleeve_ctx(db: AsyncSession, ctx: dict,
             "reason": life.cooldown_reason,
             "liquidated_at": (life.liquidated_at.isoformat()
                               if life.liquidated_at else None)}
-    # doc Step-18 metric — how much sleeve drawdown headroom is left
-    # before the portfolio stop floor binds
-    stop_usd = cfg["portfolio_stop_pct"] * state["sleeve_equity"]
-    dd_usd = ((life.drawdown_pct or 0.0) * state["sleeve_equity"]
-              if life else 0.0)
-    out["distance_to_portfolio_stop_usd"] = stop_usd - dd_usd
-    state["drawdown_pct"] = (float(life.drawdown_pct)
-                             if life and life.drawdown_pct is not None
-                             else 0.0)
+    # doc Step-18 drawdown — mirror the maintenance engine's math
+    # exactly: equity = sleeve_equity + open P&L marked live, drawdown
+    # measured vs the persisted high-water mark, and the stop floor is
+    # the TIGHTER of the equity stop and the gross-exposure stop.
+    # Showing only the equity floor would claim headroom the engine
+    # doesn't grant (doc Step-11: the 4% gross stop binds first when
+    # the book is fully pyramided).
+    eq_mark = state["sleeve_equity"] + state["unrealized_pnl"]
+    hwm = max((float(life.equity_hwm) if life and
+               life.equity_hwm is not None else 0.0),
+              eq_mark, state["sleeve_equity"])
+    dd_usd = max(0.0, hwm - eq_mark)
+    eq_stop_usd = cfg["portfolio_stop_pct"] * state["sleeve_equity"]
+    gross_floor_usd = (cfg["gross_stop_pct"] * gross
+                       if gross > 0 else None)
+    binding = ("gross_stop" if gross_floor_usd is not None
+               and gross_floor_usd < eq_stop_usd
+               else "portfolio_stop")
+    floor_usd = (gross_floor_usd if binding == "gross_stop"
+                 else eq_stop_usd)
+    out["stop_floor_usd"] = floor_usd
+    out["stop_floor_binding"] = binding
+    out["distance_to_portfolio_stop_usd"] = floor_usd - dd_usd
+    state["drawdown_pct"] = (dd_usd / state["sleeve_equity"]
+                             if state["sleeve_equity"] else 0.0)
     state["drawdown_usd"] = dd_usd
     state["portfolio_stop_pct"] = cfg["portfolio_stop_pct"]
+    state["gross_stop_pct"] = cfg["gross_stop_pct"]
     return out
 
 
@@ -1299,36 +1353,12 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
     ctx = await _portfolio_ctx(db)
     limits = await _active_limits(db)
 
-    # external accounts — equity-history risk stats (VaR95, MDD, daily).
-    # Computed FIRST so observed drawdown feeds the dimensions below —
-    # the volatility tile should show the book's real MDD, not sit
-    # 'degraded' while the data exists
-    from app.models.portfolio import ExternalAccount
-    ext_rows = (await db.execute(
-        select(ExternalAccount).where(ExternalAccount.connected))
-    ).scalars().all()
-    external = []
-    dd = None
-    for a in ext_rows:
-        stats = re_.equity_stats(a.equity_history or [],
-                                 float(a.equity) if a.equity else None)
-        mdd, var95, daily = (stats["mdd_pct"], stats["var_95"],
-                             stats["daily_pnl"])
-        external.append({
-            "label": a.label, "source": a.source,
-            "equity": float(a.equity or 0),
-            "balance": float(a.balance or 0),
-            "unrealized": (float(a.equity or 0)
-                           - float(a.balance or 0)),
-            "positions": a.positions or [],
-            "mdd_pct": mdd, "var_95": var95, "daily_pnl": daily,
-            "synced_at": a.synced_at.isoformat() if a.synced_at
-                         else None,
-            "stale": bool(a.synced_at and (
-                utcnow() - a.synced_at).total_seconds() > 900)})
-        if mdd is not None:
-            dd = min(dd if dd is not None else 0, mdd)
-    ctx["max_dd"] = dd
+    # external equity-history stats (VaR95, MDD, daily) are computed
+    # inside _portfolio_ctx so the dashboard and the order gate see
+    # the SAME observed drawdown — the number displayed is the number
+    # enforced
+    external = ctx["external"]
+    dd = ctx["max_dd"]
 
     dims = re_.risk_dimensions(ctx, limits=limits)
 
@@ -1476,7 +1506,8 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
         "sleeve": ({k: ctx["sleeve"][k] for k in
                     ("enabled", "config", "state", "positions",
                      "cooldown", "lifecycle",
-                     "distance_to_portfolio_stop_usd")
+                     "distance_to_portfolio_stop_usd",
+                     "stop_floor_usd", "stop_floor_binding")
                     if k in ctx["sleeve"]}
                    if ctx.get("sleeve") else None),
         "drawdown": {"max_dd": dd, "escalation": escalation},
