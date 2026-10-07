@@ -73,12 +73,25 @@ def _result_row(res: ScreeningResult, inst: Instrument) -> dict:
     }
 
 
+class RunIn(BaseModel):
+    """Screen scope — the doc's universe is a ladder, not a wall:
+    the same 20 criteria can run on any tier or an explicit list."""
+    universe: str = "approved"          # approved|eligible|global
+    symbols: list[str] | None = None    # ad-hoc tickers beat universe
+    auto_track: bool = True             # unknown tickers → validate +
+                                        # hydrate, then screen
+
+
 @router.post("/run", status_code=201)
 async def run(
+    body: RunIn | None = None,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require("research:run")),
 ) -> dict:
-    """Batch screen the approved universe — recorded as a JobRun."""
+    """Batch screen — recorded as a JobRun. Scope: a universe tier or
+    `symbols` (unknown tickers are validated + hydrated first — a
+    screen should never silently skip what the user asked for)."""
+    body = body or RunIn()
     job, _created = None, None
     from app.ingestion.upsert import get_or_create
     job, _created = await get_or_create(
@@ -89,9 +102,31 @@ async def run(
     db.add(jrun)
     await db.flush()
 
+    untrackable: list[str] = []
+    symbols = None
+    if body.symbols:
+        from app.services import universe as uni_svc
+        wanted = [s.upper().strip() for s in body.symbols if s.strip()]
+        symbols = []
+        for s in wanted[:50]:               # bound the ad-hoc run
+            inst = (await db.execute(
+                select(Instrument).where(Instrument.symbol == s))
+            ).scalar_one_or_none()
+            if inst is None and body.auto_track:
+                res = await uni_svc.ensure_instrument(db, s)
+                inst = res.get("instrument")
+                if res.get("error"):
+                    untrackable.append(s)
+            if inst is not None:
+                symbols.append(s)
+            else:
+                untrackable.append(s)
+
     policy = await _active_policy(db)
     mandate = await mandate_svc.get_active(db)
-    run_obj = await gz.run_screen(db, policy, mandate)
+    run_obj = await gz.run_screen(db, policy, mandate,
+                                  universe_name=body.universe,
+                                  symbols=symbols)
     jrun.status = "success" if run_obj.status == "complete" else "failed"
     jrun.error = run_obj.error
     jrun.records_in = jrun.records_ok = run_obj.instruments
@@ -100,14 +135,18 @@ async def run(
     await audit(db, action="screening.run", actor=user,
                 entity_type="screening_run", entity_id=run_obj.id,
                 detail={"universe": run_obj.universe,
+                        "symbols": symbols,
                         "policy_version": policy.version})
     await db.commit()
     return {
         "run_id": run_obj.id,
         "status": run_obj.status,
+        "universe": run_obj.universe,
         "instruments": run_obj.instruments,
         "policy_version": policy.version,
         "mandate_version": mandate.version if mandate else None,
+        "note": run_obj.error,               # truncation / unknowns
+        "untrackable": untrackable,
     }
 
 

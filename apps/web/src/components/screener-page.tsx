@@ -266,6 +266,10 @@ export function ScreenerPage() {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
+  /* scope — the doc's universe is a ladder, not a wall: any tier or
+     an explicit ticker list can run through the same 20 criteria */
+  const [scope, setScope] = useState("approved");
+  const [customSyms, setCustomSyms] = useState("");
 
   const openDetail = (sym: string) =>
     apiGet<Detail>(`/api/v1/screener/results/${sym}`).then(setDetail);
@@ -298,8 +302,21 @@ export function ScreenerPage() {
   const runScreen = async () => {
     setRunning(true);
     try {
-      await apiPost("/api/v1/screener/run", {});
-      setNotice(null);
+      const body = scope === "custom"
+        ? { symbols: customSyms.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean) }
+        : { universe: scope };
+      if (scope === "custom" && !body.symbols?.length) {
+        setNotice("Enter at least one ticker for a custom screen.");
+        setRunning(false);
+        return;
+      }
+      const res = await apiPost<{ note?: string | null; untrackable?: string[]; instruments?: number }>(
+        "/api/v1/screener/run", body);
+      setNotice([
+        res.note,
+        res.untrackable?.length ? `untrackable: ${res.untrackable.join(", ")}` : null,
+        res.instruments != null ? `${res.instruments} screened` : null,
+      ].filter(Boolean).join(" · ") || null);
       load();
     } catch (e) {
       setNotice(
@@ -321,18 +338,24 @@ export function ScreenerPage() {
     {
       key: "symbol", header: "Ticker",
       render: (r) => (
-        <button onClick={() => openDetail(r.symbol)}
-          className="font-semibold text-accent hover:underline">
-          {r.symbol}
-        </button>
+        <span className="font-semibold text-accent">{r.symbol}</span>
       ),
     },
     { key: "name", header: "Name", render: (r) => <span className="text-dim">{r.name}</span> },
     {
       key: "score", header: "Score", align: "right",
-      render: (r) => (
-        <span className="num font-semibold">{r.score}/{r.applicable}</span>
-      ),
+      render: (r) => {
+        const pc = r.applicable ? Math.round(r.score / r.applicable * 100) : 0;
+        return (
+          <span className="num font-semibold">
+            {r.score}/{r.applicable}
+            <span className={`ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] ${
+              pc >= 75 ? "bg-pos-bg text-pos" : pc >= 50 ? "bg-warn-bg text-warn" : "bg-neg-bg text-neg"}`}>
+              {pc}%
+            </span>
+          </span>
+        );
+      },
     },
     {
       key: "verdict", header: "Status",
@@ -402,13 +425,33 @@ export function ScreenerPage() {
         title="Green Zone Screener"
         subtitle="20-criteria fundamental screen — deterministic, evidence-backed"
         actions={
-          <button
-            onClick={runScreen}
-            disabled={running}
-            className="flex items-center gap-1.5 rounded-full bg-accent px-4 py-1.5 text-[13px] font-semibold text-[#0b0f1a] transition enabled:hover:brightness-110 disabled:opacity-50"
-          >
-            <Play className="size-3.5" /> {running ? "Running…" : "Run screen"}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <FilterSelect
+              value={scope}
+              onChange={setScope}
+              options={[
+                { value: "approved", label: "Approved universe" },
+                { value: "eligible", label: "Eligible universe" },
+                { value: "global", label: "Global (all tracked)" },
+                { value: "custom", label: "Custom tickers" },
+              ]}
+            />
+            {scope === "custom" && (
+              <input
+                value={customSyms}
+                onChange={(e) => setCustomSyms(e.target.value.toUpperCase())}
+                onKeyDown={(e) => e.key === "Enter" && runScreen()}
+                placeholder="AAPL, MSFT, LULU…"
+                className="w-52 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-[12px] font-semibold uppercase text-text placeholder:normal-case placeholder:text-faint" />
+            )}
+            <button
+              onClick={runScreen}
+              disabled={running}
+              className="flex items-center gap-1.5 rounded-full bg-accent px-4 py-1.5 text-[13px] font-semibold text-[#0b0f1a] transition enabled:hover:brightness-110 disabled:opacity-50"
+            >
+              <Play className="size-3.5" /> {running ? "Running…" : "Run screen"}
+            </button>
+          </div>
         }
         meta={
           data?.run
@@ -439,6 +482,7 @@ export function ScreenerPage() {
           rows={rows}
           loading={loading}
           rowKey={(r) => r.symbol}
+          onRowClick={(r) => openDetail(r.symbol)}
           empty="No screening run yet — click Run screen"
         />
       </SectionCard>
@@ -455,6 +499,11 @@ export function ScreenerPage() {
                 </StatusBadge>
                 <span className="num text-lg font-bold">
                   {detail.score}<span className="text-faint">/{detail.applicable}</span>
+                  <span className="ml-1.5 text-sm text-dim">
+                    ({detail.applicable
+                      ? Math.round(detail.score / detail.applicable * 100)
+                      : 0}%)
+                  </span>
                 </span>
                 <span className="text-[12px] text-faint">
                   score of applicable criteria{detail.sector ? ` · ${detail.sector}` : ""}

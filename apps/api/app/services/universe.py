@@ -105,6 +105,64 @@ async def sync_alpaca_universe(
             "instruments_created": created, "members_added": added}
 
 
+async def ensure_instrument(db: AsyncSession, symbol: str,
+                            hydrate: bool = True) -> dict[str, Any]:
+    """On-demand security-master add — validate the ticker against a
+    real quote source, create the instrument, join global+eligible,
+    then pull bars + EDGAR facts so screens/technical work on first
+    sight. Returns {"instrument", "created"} or {"error"}."""
+    import httpx
+    sym = symbol.upper().strip()
+    inst = (await db.execute(
+        select(Instrument).where(Instrument.symbol == sym))
+    ).scalar_one_or_none()
+    if inst is not None:
+        return {"instrument": inst, "created": False}
+
+    from app.providers.yahoo import YahooAdapter
+    try:
+        async with httpx.AsyncClient(
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0"}) as c:
+            r = await c.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}",
+                params={"range": "5d", "interval": "1d"})
+        meta = r.json()["chart"]["result"][0]["meta"]
+        name = meta.get("shortName") or meta.get("longName") or sym
+    except Exception:
+        return {"error": f"{sym}: not a real ticker per yahoo"}
+
+    inst = Instrument(symbol=sym, name=name, asset_class="equity",
+                      currency=meta.get("currency", "USD"),
+                      exchange_id=None)
+    db.add(inst)
+    await db.flush()
+    for u in ("global", "eligible"):
+        try:
+            await set_membership(
+                db, universe_name=u, instrument=inst,
+                status="active", reason="added on-demand")
+        except ValueError:
+            pass
+    await db.commit()
+
+    if hydrate:
+        from app.ingestion import jobs as ing
+        try:                                    # price history first
+            await ing.ingest_stooq_bars(db, YahooAdapter(), sym)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+        try:                                    # XBRL fundamentals —
+            from app.providers.edgar import EdgarAdapter  # without them
+            await ing.ingest_edgar_facts(       # the screen is all
+                db, EdgarAdapter(), sym)        # insufficient_data
+            await db.commit()
+        except Exception:
+            await db.rollback()
+    return {"instrument": inst, "created": True, "name": name}
+
+
 async def universe_by_name(db: AsyncSession, name: str, tenant_id: str = "default") -> Universe | None:
     return (
         await db.execute(

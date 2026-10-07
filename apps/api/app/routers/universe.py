@@ -1,4 +1,3 @@
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -142,51 +141,11 @@ async def add_watchlist_item(
 @router.post("/instruments/{symbol}/add", status_code=201)
 async def add_instrument(symbol: str,
                          db: AsyncSession = Depends(get_db)):
-    """On-demand add — fetch a Yahoo quote to validate the ticker is
-    real, then create it + pull 2y of bars immediately."""
-    sym = symbol.upper().strip()
-    exists = (await db.execute(
-        select(Instrument).where(Instrument.symbol == sym))
-    ).scalar_one_or_none()
-    if exists:
-        return {"symbol": sym, "created": False, "already": True}
-
-    # validate via yahoo quote lookup
-    from app.providers.yahoo import YahooAdapter
-    ya = YahooAdapter()
-    try:
-        async with httpx.AsyncClient(
-                timeout=15,
-                headers={"User-Agent": "Mozilla/5.0"}) as c:
-            r = await c.get(
-                f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}",
-                params={"range": "5d", "interval": "1d"})
-        meta = r.json()["chart"]["result"][0]["meta"]
-        name = meta.get("shortName") or meta.get("longName") or sym
-    except Exception:
-        raise HTTPException(404,
-            f"{sym}: not a real ticker per yahoo — check the symbol")
-
-    inst = Instrument(symbol=sym, name=name, asset_class="equity",
-                      currency=meta.get("currency", "USD"),
-                      exchange_id=None)
-    db.add(inst)
-    await db.flush()
-    # universe membership: global+eligible by default
-    for u in ("global", "eligible"):
-        try:
-            await svc.set_membership(
-                db, universe_name=u, instrument=inst,
-                status="active", reason="added on-demand")
-        except ValueError:
-            pass
-    await db.commit()
-
-    # pull bars so the desk isn't empty
-    from app.ingestion import jobs as ing
-    try:
-        await ing.ingest_stooq_bars(db, ya, sym)
-        await db.commit()
-    except Exception:
-        pass
-    return {"symbol": sym, "name": name, "created": True}
+    """On-demand add — validate the ticker against Yahoo, create it,
+    pull bars + EDGAR facts so every surface works on first sight."""
+    res = await svc.ensure_instrument(db, symbol)
+    if res.get("error"):
+        raise HTTPException(404, f"{res['error']} — check the symbol")
+    return {"symbol": symbol.upper().strip(), "name": res.get("name"),
+            "created": res["created"],
+            "already": not res["created"]}

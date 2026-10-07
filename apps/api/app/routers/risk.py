@@ -18,6 +18,7 @@ from app.models.macro import RegimeRun
 from app.models.market import OhlcvBar
 from app.models.portfolio import Position, Portfolio
 from app.models.risk import PyramidTradeRec, RiskCheck, TradeIdea
+from app.models.screening import ScreeningResult
 from app.security import audit, require
 from app.services import quant as q
 from app.services import risk_engine as re_
@@ -258,6 +259,14 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
                     p["intrinsic_value"] = iv
     except Exception:
         pass
+    # portfolio-level valuation read — NAV-weighted mean of the
+    # per-position price-vs-IV so the Fundamental & Valuation
+    # dimension tile shows the aggregate, not a bare 'ok'
+    iv_pos = [(p["price_vs_iv"], p["market_value"])
+              for p in positions if p.get("price_vs_iv") is not None]
+    iv_mv = sum(mv for _iv, mv in iv_pos)
+    price_vs_iv_pf = (sum(iv * mv for iv, mv in iv_pos) / iv_mv
+                      if iv_mv else None)
 
     regime = (
         await db.execute(select(RegimeRun).order_by(RegimeRun.as_of.desc()))
@@ -296,6 +305,7 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
         "open_stop_risk": open_stop,
         "unstopped_notional": unstopped,
         "open_risk": open_stop,
+        "price_vs_iv": price_vs_iv_pf,   # NAV-weighted, or None
         "avg_correlation": None,  # computed in center view
         "max_dd": None,
         "vix": regime.vix if regime else None,
@@ -1288,6 +1298,38 @@ async def pyramid_preview(
 async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
     ctx = await _portfolio_ctx(db)
     limits = await _active_limits(db)
+
+    # external accounts — equity-history risk stats (VaR95, MDD, daily).
+    # Computed FIRST so observed drawdown feeds the dimensions below —
+    # the volatility tile should show the book's real MDD, not sit
+    # 'degraded' while the data exists
+    from app.models.portfolio import ExternalAccount
+    ext_rows = (await db.execute(
+        select(ExternalAccount).where(ExternalAccount.connected))
+    ).scalars().all()
+    external = []
+    dd = None
+    for a in ext_rows:
+        stats = re_.equity_stats(a.equity_history or [],
+                                 float(a.equity) if a.equity else None)
+        mdd, var95, daily = (stats["mdd_pct"], stats["var_95"],
+                             stats["daily_pnl"])
+        external.append({
+            "label": a.label, "source": a.source,
+            "equity": float(a.equity or 0),
+            "balance": float(a.balance or 0),
+            "unrealized": (float(a.equity or 0)
+                           - float(a.balance or 0)),
+            "positions": a.positions or [],
+            "mdd_pct": mdd, "var_95": var95, "daily_pnl": daily,
+            "synced_at": a.synced_at.isoformat() if a.synced_at
+                         else None,
+            "stale": bool(a.synced_at and (
+                utcnow() - a.synced_at).total_seconds() > 900)})
+        if mdd is not None:
+            dd = min(dd if dd is not None else 0, mdd)
+    ctx["max_dd"] = dd
+
     dims = re_.risk_dimensions(ctx, limits=limits)
 
     # avg pairwise correlation across positions
@@ -1323,15 +1365,36 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
     ).all()
     open_trades = len(open_recs)
 
-    # Part 13 — per-position holding monitor (investment book)
+    # Part 13 — per-position holding monitor (investment book).
+    # thesis_invalidation + fundamental_deterioration take REAL
+    # signals, not hardcoded False: lifecycle status (rejected/
+    # exited) and the latest Green Zone verdict respectively.
     nav_for_w = ctx["nav"] or 1
+    held_syms = [p["symbol"] for p in ctx["positions"]]
+    inst_status: dict[str, str] = {}
+    scr_verdict: dict[str, str] = {}
+    if held_syms:
+        insts = (await db.execute(
+            select(Instrument).where(Instrument.symbol.in_(held_syms)))
+        ).scalars().all()
+        inst_status = {i.symbol: (i.status or "") for i in insts}
+        for i in insts:
+            v = (await db.execute(
+                select(ScreeningResult.verdict)
+                .where(ScreeningResult.instrument_id == i.id)
+                .order_by(ScreeningResult.created_at.desc()).limit(1))
+            ).scalar_one_or_none()
+            if v:
+                scr_verdict[i.symbol] = v
     monitors = []
     for p in ctx["positions"]:
         t = re_.holding_tests({
             "weight": p["market_value"] / nav_for_w,
             "price_vs_iv": p.get("price_vs_iv", -1),
-            "thesis_broken": False,
-            "fundamentals_deteriorated": False,
+            "thesis_broken": inst_status.get(p["symbol"])
+                             in ("rejected", "exited"),
+            "fundamentals_deteriorated":
+                scr_verdict.get(p["symbol"]) == "fail",
             "max_weight": 0.10})
         # only surface actionable tests
         actionable = {k: v for k, v in t.items()
@@ -1341,30 +1404,6 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
                          "weight": p["market_value"] / nav_for_w,
                          "price_vs_iv": p.get("price_vs_iv"),
                          "tests": t, "actionable": actionable})
-
-    # external accounts — equity-history risk stats (VaR95, MDD, daily)
-    from app.models.portfolio import ExternalAccount
-    ext_rows = (await db.execute(
-        select(ExternalAccount).where(ExternalAccount.connected))
-    ).scalars().all()
-    external = []
-    for a in ext_rows:
-        stats = re_.equity_stats(a.equity_history or [],
-                                 float(a.equity) if a.equity else None)
-        mdd, var95, daily = (stats["mdd_pct"], stats["var_95"],
-                             stats["daily_pnl"])
-        external.append({
-            "label": a.label, "source": a.source,
-            "equity": float(a.equity or 0),
-            "balance": float(a.balance or 0),
-            "unrealized": (float(a.equity or 0)
-                           - float(a.balance or 0)),
-            "positions": a.positions or [],
-            "mdd_pct": mdd, "var_95": var95, "daily_pnl": daily,
-            "synced_at": a.synced_at.isoformat() if a.synced_at
-                         else None,
-            "stale": bool(a.synced_at and (
-                utcnow() - a.synced_at).total_seconds() > 900)})
 
     # ── new-docs portfolio dashboard block ──
     dash_positions = [{
@@ -1387,10 +1426,6 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
     } for p in ctx["positions"]]
     dashboard = re_.portfolio_dashboard(
         dash_positions, ctx["nav"], ctx["cash"], limits=limits)
-    dd = None
-    for a in external:
-        if a.get("mdd_pct") is not None:
-            dd = min(dd if dd is not None else 0, a["mdd_pct"])
     escalation = re_.drawdown_escalation(dd or 0, limits=limits)
     stress = re_.named_stress(ctx["positions"], ctx["nav"],
                               limits=limits)
@@ -1439,8 +1474,9 @@ async def risk_center(db: AsyncSession = Depends(get_db)) -> dict:
         # free margin, utilisation, margin-call distance, cooldown.
         # Positions already render via pyramid_trades; not duplicated.
         "sleeve": ({k: ctx["sleeve"][k] for k in
-                    ("enabled", "config", "state", "cooldown",
-                     "lifecycle", "distance_to_portfolio_stop_usd")
+                    ("enabled", "config", "state", "positions",
+                     "cooldown", "lifecycle",
+                     "distance_to_portfolio_stop_usd")
                     if k in ctx["sleeve"]}
                    if ctx.get("sleeve") else None),
         "drawdown": {"max_dd": dd, "escalation": escalation},

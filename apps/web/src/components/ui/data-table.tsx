@@ -14,12 +14,14 @@ export function DataTable<T>({
   loading = false,
   empty = "No rows",
   rowKey,
+  onRowClick,
 }: {
   columns: Column<T>[];
   rows: T[];
   loading?: boolean;
   empty?: string;
   rowKey: (row: T) => string;
+  onRowClick?: (row: T) => void;
 }) {
   if (loading) return <SkeletonRows />;
   if (rows.length === 0) return <EmptyState title={empty} />;
@@ -44,7 +46,8 @@ export function DataTable<T>({
           {rows.map((row) => (
             <tr
               key={rowKey(row)}
-              className="border-b border-border/50 last:border-0 hover:bg-surface-2"
+              onClick={onRowClick ? () => onRowClick(row) : undefined}
+              className={`border-b border-border/50 last:border-0 hover:bg-surface-2${onRowClick ? " cursor-pointer" : ""}`}
             >
               {columns.map((c) => (
                 <td

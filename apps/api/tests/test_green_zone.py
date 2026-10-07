@@ -405,3 +405,59 @@ async def test_confirm_clears_review_and_recomputes(db):
         await confirm("conf", ConfirmIn(criterion="moat"), db,
                       User(id="u-t2", email="b@x", is_active=True))
     assert ei.value.status_code == 409
+
+
+async def test_run_screen_adhoc_symbols(db):
+    """symbols=[...] screens the named instruments regardless of
+    universe membership — the screen is a lens, not a gated list.
+    Unknown symbols are recorded, not silently skipped."""
+    from app.models.screening import ScreeningResult
+    from app.services.green_zone import run_screen
+
+    inst = Instrument(symbol="ADHOC", name="AdhocCo")
+    db.add(inst)
+    policy = ScreeningPolicy(version=1, is_active=True,
+                             params=POLICY_DEFAULTS)
+    db.add(policy)
+    await db.flush()
+
+    run = await run_screen(db, policy, None, as_of=ASOF,
+                           symbols=["adhoc", "NOPE"])
+    assert run.universe.startswith("custom:")
+    res = (await db.execute(
+        select(ScreeningResult)
+        .where(ScreeningResult.run_id == run.id))).scalars().all()
+    assert len(res) == 1                     # ADHOC screened, NOPE
+    assert "NOPE" in (run.error or "")       #   named in the error
+    assert res[0].instrument_id == inst.id
+
+
+async def test_run_screen_caps_broad_universe(db):
+    """A universe larger than max_symbols truncates honestly — the
+    run records the cap instead of pretending full coverage."""
+    from app.models.screening import ScreeningResult
+    from app.models.universe import Universe, UniverseMembership
+    from app.services.green_zone import run_screen
+
+    u = Universe(name="eligible", tier="eligible")
+    db.add(u)
+    insts = [Instrument(symbol=f"T{i}", name=f"T{i}Co",
+                        market_cap=float(1000 - i))
+             for i in range(4)]
+    db.add_all(insts)
+    await db.flush()
+    for i in insts:
+        db.add(UniverseMembership(universe_id=u.id, instrument_id=i.id))
+    policy = ScreeningPolicy(version=1, is_active=True,
+                             params=POLICY_DEFAULTS)
+    db.add(policy)
+    await db.flush()
+
+    run = await run_screen(db, policy, None, as_of=ASOF,
+                           universe_name="eligible", max_symbols=2)
+    res = (await db.execute(
+        select(ScreeningResult)
+        .where(ScreeningResult.run_id == run.id))).scalars().all()
+    assert len(res) == 2
+    assert "truncated" in (run.error or "")
+    assert run.status == "complete"

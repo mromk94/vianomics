@@ -779,36 +779,62 @@ async def run_screen(
     mandate,
     as_of: datetime | None = None,
     universe_name: str = "approved",
+    symbols: list[str] | None = None,
+    max_symbols: int = 500,
 ) -> ScreeningRun:
-    """Screen every active member of the universe — one ScreeningRun +
-    ScreeningResult rows (idempotent per run)."""
+    """Screen a universe — or an explicit symbol list — into one
+    ScreeningRun + ScreeningResult rows (idempotent per run).
+
+    `symbols` screens ad-hoc tickers (must already be in the security
+    master — the router auto-tracks unknowns first). `max_symbols`
+    bounds a synchronous run; a truncated run records `truncated` in
+    `error` so the UI can say so honestly."""
     from app.models.universe import UniverseMembership
 
     as_of = as_of or utcnow()
     run = ScreeningRun(
-        universe=universe_name,
+        universe=(f"custom:{len(symbols)}" if symbols
+                  else universe_name),
         policy_version=policy.version,
         mandate_version=mandate.version if mandate else None,
     )
     db.add(run)
     await db.flush()
 
-    universe = await universe_by_name(db, universe_name)
-    if universe is None:
-        run.status, run.error = "failed", f"universe '{universe_name}' missing"
-        return run
-
-    members = (
-        await db.execute(
-            select(Instrument, UniverseMembership)
-            .join(UniverseMembership,
-                  UniverseMembership.instrument_id == Instrument.id)
-            .where(
-                UniverseMembership.universe_id == universe.id,
-                UniverseMembership.status == "active",
+    truncated = False
+    if symbols:
+        wanted = [s.upper().strip() for s in symbols if s.strip()]
+        rows = (await db.execute(
+            select(Instrument).where(Instrument.symbol.in_(wanted)))
+        ).scalars().all()
+        found = {i.symbol for i in rows}
+        members = [(i, None) for i in rows]
+        missing = sorted(set(wanted) - found)
+        if missing:
+            run.error = "unknown: " + ", ".join(missing[:10])
+    else:
+        universe = await universe_by_name(db, universe_name)
+        if universe is None:
+            run.status, run.error = ("failed",
+                                     f"universe '{universe_name}' missing")
+            return run
+        members = (
+            await db.execute(
+                select(Instrument, UniverseMembership)
+                .join(UniverseMembership,
+                      UniverseMembership.instrument_id == Instrument.id)
+                .where(
+                    UniverseMembership.universe_id == universe.id,
+                    UniverseMembership.status == "active",
+                )
+                # biggest names first — a capped broad-universe run
+                # still surfaces the most relevant results
+                .order_by(Instrument.market_cap.desc().nulls_last())
             )
-        )
-    ).all()
+        ).all()
+        if len(members) > max_symbols:
+            members = members[:max_symbols]
+            truncated = True
 
     sector_names = dict(
         (await db.execute(select(Sector.id, Sector.name))).all()
@@ -838,5 +864,8 @@ async def run_screen(
         run.instruments += 1
 
     run.status = "complete"
+    if truncated:
+        run.error = (f"truncated at {max_symbols} instruments — "
+                     "narrow the universe or pass explicit symbols")
     run.finished_at = utcnow()
     return run
