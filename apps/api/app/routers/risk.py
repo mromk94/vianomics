@@ -227,10 +227,14 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
     # External accounts contribute their own broker-reported equity
     # (balance + unrealised is already inside it — no double count).
     ext_balance = sum(float(a.balance or 0) for a in ext_accounts)
+    # honest zero — an empty book is $0 NAV, never a synthetic $1.
+    # Callers that need a denominator guard with `nav or 1` locally;
+    # the stored value itself must stay real (doc Step-1 data
+    # integrity — no unverified numbers into risk decisions)
     nav = (cash
            + sum(p["market_value"] for p in positions
                  if not p.get("external"))
-           + sum(float(a.equity or 0) for a in ext_accounts)) or 1
+           + sum(float(a.equity or 0) for a in ext_accounts))
     display_cash = cash + ext_balance
 
     # latest valuation per held instrument → price vs intrinsic
@@ -286,7 +290,7 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
         "nav": nav, "cash": display_cash, "positions": positions,
         "unrealized_pnl": unrealized, "daily_pnl": daily,
         "gross": (sum(p["market_value"] for p in positions) / nav
-                  if nav else 1),
+                  if nav else 0.0),
         "margin_used": margin_used,
         "margin_utilisation": margin_used / nav if nav else 0,
         "open_stop_risk": open_stop,
@@ -415,7 +419,12 @@ async def pretrade(
     limits = await _active_limits(db)
     cs = float(inst.contract_size or 1)
     mrate = float(inst.margin_rate or 0)
-    equity = ctx["nav"] or 1
+    equity = ctx["nav"]
+    if equity <= 0:
+        raise HTTPException(
+            422, "no portfolio equity — fund the internal ledger or "
+                 "connect an external account before running risk "
+                 "checks")
 
     # auto-size: equity × max_trade_risk% ÷ risk-per-unit
     if body.qty is None:
