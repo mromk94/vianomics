@@ -70,7 +70,24 @@ interface Center {
       open_positions: number; margin_call_at_gross: number | null;
       margin_call_distance: number | null;
       per_trade_risk_budget: number;
-      portfolio_stop_usd: number } };
+      portfolio_stop_usd: number;
+      net?: number;
+      unrealized_pnl?: number;
+      realized_pnl?: number;
+      drawdown_pct?: number; drawdown_usd?: number;
+      portfolio_stop_pct?: number;
+      positions_used?: number; max_positions?: number;
+      largest_position?: { symbol: string; gross: number;
+        pct_of_cap: number | null } | null;
+      sector_exposure?: { sector: string; gross: number;
+        pct_of_cap: number | null; cap_pct?: number }[];
+      strategy_exposure?: { strategy: string; gross: number;
+        pct_of_cap: number | null }[] };
+    positions?: { symbol: string; state: string; shares: number;
+      market_value: number; entry: number; current_price: number;
+      stop: number | null; target: number | null;
+      direction: string; unrealized: number;
+      open_risk: number | null; sector: string | null }[] };
   drawdown?: { max_dd: number | null;
     escalation: { drawdown: number; level: string;
       action: string } };
@@ -306,6 +323,106 @@ export function RiskPage() {
                 {c.sleeve.state.margin_call_at_gross != null &&
                   ` · margin call at gross $${fmtNum(c.sleeve.state.margin_call_at_gross, 0)}`}
               </div>
+              {/* doc Step-18 second ledger — exposure composition,
+                  P&L and drawdown, same card as the margin ledger */}
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+                {([
+                  ["Net exposure",
+                    c.sleeve.state.net != null
+                      ? `$${fmtNum(c.sleeve.state.net, 0)}` : "—", ""],
+                  ["Unrealized P&L",
+                    c.sleeve.state.unrealized_pnl != null
+                      ? `${c.sleeve.state.unrealized_pnl >= 0 ? "+" : ""}$${fmtNum(c.sleeve.state.unrealized_pnl, 0)}` : "—",
+                    (c.sleeve.state.unrealized_pnl ?? 0) >= 0 ? "text-pos" : "text-neg"],
+                  ["Realized P&L",
+                    c.sleeve.state.realized_pnl != null
+                      ? `${c.sleeve.state.realized_pnl >= 0 ? "+" : ""}$${fmtNum(c.sleeve.state.realized_pnl, 0)}` : "—",
+                    (c.sleeve.state.realized_pnl ?? 0) >= 0 ? "text-pos" : "text-neg"],
+                  ["Drawdown",
+                    c.sleeve.state.drawdown_pct != null
+                      ? `${(c.sleeve.state.drawdown_pct * 100).toFixed(1)}% / ${((c.sleeve.state.portfolio_stop_pct ?? 0.2) * 100).toFixed(0)}%` : "—",
+                    (c.sleeve.state.drawdown_pct ?? 0) > (c.sleeve.state.portfolio_stop_pct ?? 0.2) * 0.5 ? "text-warn" : ""],
+                  ["Largest position",
+                    c.sleeve.state.largest_position
+                      ? `${c.sleeve.state.largest_position.symbol} ${(c.sleeve.state.largest_position.pct_of_cap! * 100).toFixed(0)}%` : "—", ""],
+                  ["Positions",
+                    c.sleeve.state.positions_used != null
+                      ? `${c.sleeve.state.positions_used}/${c.sleeve.state.max_positions}` : "—", ""],
+                ] as [string, string, string][]).map(([label, val, tone]) => (
+                  <div key={label} className="glass-tile px-3 py-2">
+                    <div className="text-[10px] uppercase tracking-wider text-faint">{label}</div>
+                    <div className={`num mt-0.5 text-[13px] font-semibold ${tone}`}>{val}</div>
+                  </div>
+                ))}
+              </div>
+              {/* sector concentration — live exposure vs the cap the
+                  sizing solver enforces */}
+              {(c.sleeve.state.sector_exposure?.length ?? 0) > 0 && (
+                <div className="mt-3">
+                  <div className="text-[10px] uppercase tracking-wider text-faint mb-1">
+                    Sector exposure — % of effective gross cap</div>
+                  <div className="space-y-1">
+                    {c.sleeve.state.sector_exposure!.map((s) => {
+                      const cap = s.cap_pct ?? 0.4;
+                      const pct = (s.pct_of_cap ?? 0) / cap;
+                      return (
+                        <div key={s.sector} className="flex items-center gap-2">
+                          <span className="w-24 truncate text-[11px] text-dim">{s.sector}</span>
+                          <div className="h-1.5 flex-1 rounded-full bg-surface-2 overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${pct > 0.9 ? "bg-neg" : pct > 0.7 ? "bg-warn" : "bg-accent"}`}
+                              style={{ width: `${Math.min(100, pct * 100)}%` }} />
+                          </div>
+                          <span className="num w-28 text-right text-[10px] text-faint">
+                            ${fmtNum(s.gross, 0)} · {((s.pct_of_cap ?? 0) * 100).toFixed(0)}%/{(cap * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {/* doc Step-27 'Existing Positions' — the sleeve book
+                  with per-name state, marks and open risk */}
+              {(c.sleeve.positions?.length ?? 0) > 0 && (
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full min-w-[640px] text-[11px]">
+                    <thead>
+                      <tr className="border-b border-border text-[9px] uppercase tracking-wide text-faint">
+                        {["Ticker", "State", "Entry", "Price", "ATR stop",
+                          "Target", "P&L", "Size", "Open risk", "Sector"]
+                          .map((h) => <th key={h} className="py-1 pr-2 text-right first:text-left">{h}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody className="num">
+                      {c.sleeve.positions!.map((p) => (
+                        <tr key={p.symbol}
+                          className="border-b border-border/40 last:border-0">
+                          <td className="py-1.5 pr-2 text-left font-semibold">{p.symbol}</td>
+                          <td className="py-1.5 pr-2 text-right">
+                            <StatusBadge tone={
+                              p.state === "trade_eligible" ? "warn" : "pos"}>
+                              {p.state.replaceAll("_", " ")}</StatusBadge></td>
+                          <td className="py-1.5 pr-2 text-right">${fmtNum(p.entry, 2)}</td>
+                          <td className="py-1.5 pr-2 text-right">${fmtNum(p.current_price, 2)}</td>
+                          <td className="py-1.5 pr-2 text-right text-neg">
+                            {p.stop != null ? `$${fmtNum(p.stop, 2)}` : "—"}</td>
+                          <td className="py-1.5 pr-2 text-right text-pos">
+                            {p.target != null ? `$${fmtNum(p.target, 2)}` : "—"}</td>
+                          <td className={`py-1.5 pr-2 text-right ${(p.unrealized ?? 0) >= 0 ? "text-pos" : "text-neg"}`}>
+                            {(p.unrealized ?? 0) >= 0 ? "+" : ""}${fmtNum(p.unrealized ?? 0, 0)}</td>
+                          <td className="py-1.5 pr-2 text-right">
+                            ${fmtNum(p.market_value, 0)}
+                            <span className="ml-1 text-[9px] text-faint">×{fmtNum(p.shares, 0)}</span></td>
+                          <td className="py-1.5 pr-2 text-right">
+                            {p.open_risk != null ? `$${fmtNum(p.open_risk, 0)}` : "—"}</td>
+                          <td className="py-1.5 pr-2 text-right text-faint">{p.sector ?? "?"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </SectionCard>
           )}
 

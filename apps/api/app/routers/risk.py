@@ -930,14 +930,67 @@ async def _sleeve_ctx(db: AsyncSession, ctx: dict,
             sec = s.name if s else None
         if inst.maintenance_margin_rate is not None:
             maint_rates.append(float(inst.maintenance_margin_rate))
-        positions.append({"symbol": inst.symbol, "state": rec.state,
-                          "shares": rec.shares, "market_value": mv,
-                          "entry": rec.entry, "stop": rec.stop,
-                          "direction": rec.direction or "long",
-                          "sector": sec})
+        direction = rec.direction or "long"
+        sign = -1.0 if direction == "short" else 1.0
+        positions.append({
+            "symbol": inst.symbol, "state": rec.state,
+            "shares": rec.shares, "market_value": mv,
+            "entry": rec.entry, "stop": rec.stop,
+            "target": rec.target1, "current_price": px,
+            "direction": direction,
+            "unrealized": sign * (px - rec.entry) * rec.shares * cs,
+            "open_risk": (abs(px - rec.stop) * rec.shares * cs
+                          if rec.stop is not None else None),
+            "sector": sec})
     state = re_.sleeve_state(
         ctx["nav"], gross, cfg, open_positions=len(rows),
         maint_margin=max(maint_rates) if maint_rates else None)
+
+    # ── doc Step-18 portfolio-risk metrics on the sleeve book ──
+    eff_cap = state["effective_gross_cap"] or 0
+    state["net"] = sum(
+        (p["market_value"] if p["direction"] == "long"
+         else -p["market_value"]) for p in positions)
+    state["unrealized_pnl"] = sum(p["unrealized"] or 0
+                                  for p in positions)
+    # realized P&L — per-leg fill accounting recorded on closes
+    closed = (await db.execute(
+        select(PyramidTradeRec).where(PyramidTradeRec.state.in_(
+            ["closed", "stopped_out"])))).scalars().all()
+    state["realized_pnl"] = sum(
+        float((r.params or {}).get("realized_pnl") or 0)
+        for r in closed)
+    # position concentration — largest single name vs the cap
+    if positions and eff_cap:
+        big = max(positions, key=lambda p: p["market_value"])
+        state["largest_position"] = {
+            "symbol": big["symbol"],
+            "gross": big["market_value"],
+            "pct_of_cap": big["market_value"] / eff_cap}
+    else:
+        state["largest_position"] = None
+    # sector + strategy concentration — the enforced caps rendered
+    # as live exposure so the dashboard sees what sizing checks
+    sec_g: dict[str, float] = {}
+    strat_g: dict[str, float] = {}
+    for p in positions:
+        sec_g[p["sector"] or "unclassified"] = (
+            sec_g.get(p["sector"] or "unclassified", 0)
+            + p["market_value"])
+        strat_g["pyramid_atr"] = (strat_g.get("pyramid_atr", 0)
+                                 + p["market_value"])
+    state["sector_exposure"] = sorted(
+        [{"sector": k, "gross": v,
+          "pct_of_cap": v / eff_cap if eff_cap else None,
+          "cap_pct": cfg.get("max_sector_pct")}
+         for k, v in sec_g.items()],
+        key=lambda x: -x["gross"])
+    state["strategy_exposure"] = [
+        {"strategy": k, "gross": v,
+         "pct_of_cap": v / eff_cap if eff_cap else None}
+        for k, v in strat_g.items()]
+    state["positions_used"] = len(rows)
+    state["max_positions"] = cfg["max_positions"]
     out["state"] = state
     out["positions"] = positions
     # lifecycle — cooldown is absolute until human release
@@ -959,6 +1012,11 @@ async def _sleeve_ctx(db: AsyncSession, ctx: dict,
     dd_usd = ((life.drawdown_pct or 0.0) * state["sleeve_equity"]
               if life else 0.0)
     out["distance_to_portfolio_stop_usd"] = stop_usd - dd_usd
+    state["drawdown_pct"] = (float(life.drawdown_pct)
+                             if life and life.drawdown_pct is not None
+                             else 0.0)
+    state["drawdown_usd"] = dd_usd
+    state["portfolio_stop_pct"] = cfg["portfolio_stop_pct"]
     return out
 
 
