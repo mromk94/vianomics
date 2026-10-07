@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { apiGet } from "@/lib/api";
+import { apiGet, apiPost } from "@/lib/api";
 import { ALL_MODULES } from "@/lib/modules";
 
 interface Hit { id: string; symbol: string; name: string;
@@ -14,6 +14,7 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const [tickers, setTickers] = useState<Hit[]>([]);
+  const [adding, setAdding] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const debRef = useRef<ReturnType<typeof setTimeout>>(null);
   const router = useRouter();
@@ -62,16 +63,33 @@ export function CommandPalette() {
     );
   }, [query]);
 
-  // flat list for keyboard nav — tickers first
+  // flat list for keyboard nav — tickers first; a ticker-shaped
+  // query with no exact match offers "Track X" (on-demand add —
+  // validates vs the tape, creates it, pulls bars, joins global)
+  const q = query.trim().toUpperCase();
+  const tickerish = /^[A-Z][A-Z.\-]{0,11}$/.test(q);
+  const exact = tickers.some((t) => t.symbol === q);
+  const offerAdd = tickerish && !exact;
   const flat = useMemo(
     () => [
       ...tickers.map((t) => ({ kind: "t" as const, t })),
+      ...(offerAdd ? [{ kind: "a" as const, sym: q }] : []),
       ...modules.map((m) => ({ kind: "m" as const, m })),
     ],
-    [tickers, modules],
+    [tickers, modules, offerAdd, q],
   );
 
   const go = (item: (typeof flat)[number]) => {
+    if (item.kind === "a") {
+      setAdding(item.sym);
+      apiPost(`/api/v1/universe/instruments/${item.sym}/add`, {}, 90000)
+        .then(() => {
+          setOpen(false);
+          router.push(`/symbol/${item.sym}`);
+        })
+        .catch(() => setAdding(null));
+      return;
+    }
     setOpen(false);
     router.push(item.kind === "t"
       ? `/symbol/${item.t.symbol}` : `/${item.m.slug}`);
@@ -118,7 +136,25 @@ export function CommandPalette() {
             <li className="px-4 py-3 text-sm text-faint">No matches</li>
           )}
           {flat.map((item, i) =>
-            item.kind === "t" ? (
+            item.kind === "a" ? (
+              <li key="add">
+                <button
+                  onClick={() => go(item)}
+                  onMouseEnter={() => setIndex(i)}
+                  disabled={adding != null}
+                  className={`flex w-full items-center gap-3 px-4 py-2 text-left text-sm ${
+                    i === index ? "bg-surface-2 text-text" : "text-dim"
+                  }`}
+                >
+                  <span className="num w-16 shrink-0 font-bold text-accent">{item.sym}</span>
+                  <span>
+                    {adding === item.sym
+                      ? "Adding — pulling history…"
+                      : `Track ${item.sym} — add to the universe`}
+                  </span>
+                </button>
+              </li>
+            ) : item.kind === "t" ? (
               <li key={`t-${item.t.id}`}>
                 <button
                   onClick={() => go(item)}
