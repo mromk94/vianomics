@@ -191,7 +191,9 @@ async def run_job_now(job_key: str,
                         await s.commit()
                     except Exception:
                         await s.rollback()
-            asyncio.create_task(_bg())
+            task = asyncio.create_task(_bg())
+            _BG_TASKS.add(task)
+            task.add_done_callback(_BG_TASKS.discard)
             return {"status": "started",
                     "note": "universe pipeline running in background"}
         elif job_key in ("market:context", "market:quotes"):
@@ -440,13 +442,18 @@ async def refresh_daily_bars(db: AsyncSession) -> dict:
             "bars_source": "alpaca" if alp is not None else "yahoo"}
 
 
+_BG_TASKS: set = set()
+
+
 @router.post("/backfill", status_code=202)
 async def backfill():
     """Fire-and-forget: pull yahoo bars + FRED macro + EDGAR
     fundamentals for the whole universe in a background task —
     Render kills HTTP requests >~100s, so this must not block."""
     import asyncio
-    asyncio.create_task(_backfill_all())
+    task = asyncio.create_task(_backfill_all())
+    _BG_TASKS.add(task)          # GC-safe: asyncio holds only weak refs
+    task.add_done_callback(_BG_TASKS.discard)
     return {"started": True,
             "note": "running in background — check "
                     "/api/v1/dataops/overview for job runs"}

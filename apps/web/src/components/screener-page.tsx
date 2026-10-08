@@ -310,14 +310,38 @@ export function ScreenerPage() {
         setRunning(false);
         return;
       }
-      const res = await apiPost<{ note?: string | null; untrackable?: string[]; instruments?: number }>(
+      // the screen runs server-side in the background — broad
+      // universes are hundreds of instruments × ~30 queries each,
+      // far beyond any request window. Poll the job until it lands.
+      const res = await apiPost<{ status: string; job_run_id: string }>(
         "/api/v1/screener/run", body);
-      setNotice([
-        res.note,
-        res.untrackable?.length ? `untrackable: ${res.untrackable.join(", ")}` : null,
-        res.instruments != null ? `${res.instruments} screened` : null,
-      ].filter(Boolean).join(" · ") || null);
-      load();
+      if (res.status !== "running" || !res.job_run_id) {
+        setNotice("Unexpected run response — check /monitoring.");
+        setRunning(false);
+        return;
+      }
+      setNotice("Screening in the background…");
+      const deadline = Date.now() + 5 * 60_000;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 2500));
+        const j = await apiGet<{ status: string; instruments?: number;
+          note?: string | null }>(`/api/v1/screener/jobs/${res.job_run_id}`);
+        if (j.status === "running") {
+          if (Date.now() > deadline) {
+            setNotice("Still running — it will land in /monitoring when done.");
+            break;
+          }
+          continue;
+        }
+        setNotice([
+          j.note,
+          j.instruments != null ? `${j.instruments} screened` : null,
+          j.status === "failed" ? "run failed" : null,
+        ].filter(Boolean).join(" · ") ||
+          (j.status === "success" ? "complete" : j.status));
+        if (j.status === "success") load();
+        break;
+      }
     } catch (e) {
       setNotice(
         e instanceof ApiError && e.status === 401

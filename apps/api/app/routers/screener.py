@@ -21,6 +21,10 @@ from app.services import mandate as mandate_svc
 
 router = APIRouter(prefix="/screener", tags=["screener"])
 
+# strong refs for background screens — asyncio only holds a weak
+# ref; without this the GC can silently kill a run mid-flight
+_BG_TASKS: set = set()
+
 
 async def _active_policy(db: AsyncSession) -> ScreeningPolicy:
     p = (
@@ -82,72 +86,108 @@ class RunIn(BaseModel):
                                         # hydrate, then screen
 
 
-@router.post("/run", status_code=201)
+@router.post("/run", status_code=202)
 async def run(
     body: RunIn | None = None,
     db: AsyncSession = Depends(get_db),
     user: User = Depends(require("research:run")),
 ) -> dict:
-    """Batch screen — recorded as a JobRun. Scope: a universe tier or
-    `symbols` (unknown tickers are validated + hydrated first — a
-    screen should never silently skip what the user asked for)."""
+    """Batch screen — runs in the BACKGROUND. A broad universe is
+    hundreds of instruments × ~30 queries each; that cannot live
+    inside a request window (Render kills ~100s, clients abort).
+    Returns a job_run_id — poll /screener/jobs/{id}."""
+    import asyncio
     body = body or RunIn()
-    job, _created = None, None
     from app.ingestion.upsert import get_or_create
     job, _created = await get_or_create(
         db, Job, {"key": "screen:green_zone"},
         {"kind": "screening"},
     )
-    jrun = JobRun(job_id=job.id)
+    jrun = JobRun(job_id=job.id, status="running")
     db.add(jrun)
-    await db.flush()
-
-    untrackable: list[str] = []
-    symbols = None
-    if body.symbols:
-        from app.services import universe as uni_svc
-        wanted = [s.upper().strip() for s in body.symbols if s.strip()]
-        symbols = []
-        for s in wanted[:50]:               # bound the ad-hoc run
-            inst = (await db.execute(
-                select(Instrument).where(Instrument.symbol == s))
-            ).scalar_one_or_none()
-            if inst is None and body.auto_track:
-                res = await uni_svc.ensure_instrument(db, s)
-                inst = res.get("instrument")
-                if res.get("error"):
-                    untrackable.append(s)
-            if inst is not None:
-                symbols.append(s)
-            else:
-                untrackable.append(s)
-
-    policy = await _active_policy(db)
-    mandate = await mandate_svc.get_active(db)
-    run_obj = await gz.run_screen(db, policy, mandate,
-                                  universe_name=body.universe,
-                                  symbols=symbols)
-    jrun.status = "success" if run_obj.status == "complete" else "failed"
-    jrun.error = run_obj.error
-    jrun.records_in = jrun.records_ok = run_obj.instruments
-    from app.db.base import utcnow
-    jrun.finished_at = utcnow()
-    await audit(db, action="screening.run", actor=user,
-                entity_type="screening_run", entity_id=run_obj.id,
-                detail={"universe": run_obj.universe,
-                        "symbols": symbols,
-                        "policy_version": policy.version})
     await db.commit()
-    return {
-        "run_id": run_obj.id,
-        "status": run_obj.status,
-        "universe": run_obj.universe,
-        "instruments": run_obj.instruments,
-        "policy_version": policy.version,
-        "mandate_version": mandate.version if mandate else None,
-        "note": run_obj.error,               # truncation / unknowns
-        "untrackable": untrackable,
-    }
+    task = asyncio.create_task(
+        _run_screen_bg(jrun.id, body.model_dump(), user.id))
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+    return {"status": "running", "job_run_id": jrun.id}
+
+
+async def _run_screen_bg(jrun_id: str, body: dict, user_id: str) -> None:
+    """Own session — the request session dies at return. auto-track +
+    screen + JobRun finalize + audit all live here."""
+    from app.db.session import SessionFactory
+    from app.services import universe as uni_svc
+    from app.services import cache
+    async with SessionFactory() as db:
+        jrun = await db.get(JobRun, jrun_id)
+        try:
+            untrackable: list[str] = []
+            symbols = None
+            if body.get("symbols"):
+                wanted = [str(s).upper().strip() for s in body["symbols"]
+                          if str(s).strip()]
+                symbols = []
+                for s in wanted[:50]:       # bound the ad-hoc run
+                    inst = (await db.execute(
+                        select(Instrument).where(Instrument.symbol == s))
+                    ).scalar_one_or_none()
+                    if inst is None and body.get("auto_track", True):
+                        res = await uni_svc.ensure_instrument(db, s)
+                        inst = res.get("instrument")
+                        if res.get("error"):
+                            untrackable.append(s)
+                    if inst is not None:
+                        symbols.append(s)
+                    else:
+                        untrackable.append(s)
+
+            policy = await _active_policy(db)
+            mandate = await mandate_svc.get_active(db)
+            run_obj = await gz.run_screen(
+                db, policy, mandate,
+                universe_name=body.get("universe") or "approved",
+                symbols=symbols)
+            jrun.status = ("success" if run_obj.status == "complete"
+                           else "failed")
+            note = run_obj.error or ""
+            if untrackable:
+                note = (note + " · " if note else "") + \
+                    "untrackable: " + ", ".join(untrackable[:10])
+            jrun.error = note or None
+            jrun.records_in = jrun.records_ok = run_obj.instruments
+            jrun.finished_at = utcnow()
+            actor = await db.get(User, user_id)
+            await audit(db, action="screening.run", actor=actor,
+                        entity_type="screening_run",
+                        entity_id=run_obj.id,
+                        detail={"universe": run_obj.universe,
+                                "symbols": symbols,
+                                "policy_version": policy.version})
+            await db.commit()
+            cache.invalidate()
+        except Exception as e:
+            await db.rollback()
+            jrun = await db.get(JobRun, jrun_id)
+            if jrun is not None:
+                jrun.status = "failed"
+                jrun.error = str(e)[:300]
+                jrun.finished_at = utcnow()
+                await db.commit()
+
+
+@router.get("/jobs/{jrun_id}")
+async def screen_job(jrun_id: str,
+                     db: AsyncSession = Depends(get_db)) -> dict:
+    """Poll endpoint for background screens — status, count, and the
+    note channel (truncation / untrackable symbols)."""
+    jrun = await db.get(JobRun, jrun_id)
+    if jrun is None:
+        raise HTTPException(404, "screen job not found")
+    return {"status": jrun.status, "instruments": jrun.records_ok,
+            "note": jrun.error,
+            "finished_at": (jrun.finished_at.isoformat()
+                            if jrun.finished_at else None)}
 
 
 @router.get("/latest")
