@@ -68,6 +68,7 @@ export function UniversePage() {
   const load = () => {
     setError(null);
     const qs = new URLSearchParams();
+    qs.set("limit", "2000");
     if (q) qs.set("q", q);
     if (cls) qs.set("asset_class", cls);
     if (eligOnly) qs.set("eligible_only", "true");
@@ -228,6 +229,12 @@ export function UniversePage() {
             <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} className="accent-[#f0b90b]" />
             Include delisted
           </label>
+          {rows.length > 0 && hier && (
+            <span className="num ml-auto text-[11px] text-faint">
+              {rows.length} listed · {hier.securities} in master
+              {rows.length >= 2000 && " — search to narrow"}
+            </span>
+          )}
         </div>
         <DataTable
           columns={columns}

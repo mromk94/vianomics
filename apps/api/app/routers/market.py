@@ -19,13 +19,19 @@ async def snapshot(db: AsyncSession = Depends(get_db)):
     if hit is not None:
         return hit
     insts = (await db.execute(select(Instrument))).scalars().all()
-    # one query — last 2 bars per instrument
-    all_bars = (
-        await db.execute(
-            select(OhlcvBar)
-            .where(OhlcvBar.timeframe == "1d")
-            .order_by(OhlcvBar.time.desc()))
-    ).scalars().all()
+    # last 2 bars per instrument via window function — at 600+
+    # instruments a full-table scan-and-group blows the request window
+    from sqlalchemy import func
+    rn = func.row_number().over(
+        partition_by=OhlcvBar.instrument_id,
+        order_by=OhlcvBar.time.desc()).label("rn")
+    sub = (select(OhlcvBar.id.label("oid"), rn)
+           .where(OhlcvBar.timeframe == "1d")).subquery()
+    bar_ids = [r[0] for r in (await db.execute(
+        select(sub.c.oid).where(sub.c.rn <= 2))).all()]
+    all_bars = (await db.execute(
+        select(OhlcvBar).where(OhlcvBar.id.in_(bar_ids))
+        .order_by(OhlcvBar.time.desc()))).scalars().all()
     by_inst: dict[str, list] = {}
     for b in all_bars:
         lst = by_inst.setdefault(b.instrument_id, [])
@@ -106,11 +112,7 @@ async def signals(db: AsyncSession = Depends(get_db)):
     insts = (await db.execute(
         select(Instrument).where(Instrument.is_active))
     ).scalars().all()
-    out = []
-    for inst in insts:
-        row = await ms.signal_row(db, inst)
-        if row is not None:
-            out.append(row)
+    out = await ms.signal_rows_batch(db, insts)
     out.sort(key=lambda x: x["symbol"])
     cache.put("market:signals", out)
     return out

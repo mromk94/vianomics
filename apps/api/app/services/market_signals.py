@@ -9,18 +9,12 @@ from app.models.market import OhlcvBar
 from app.services import technical as ti
 
 
-async def signal_row(db: AsyncSession, inst: Instrument) -> dict | None:
-    """Full technical surface for one instrument: trend (SMA50/200,
-    ADX), momentum (RSI-14, MACD), volatility (ATR%), 52-week position,
-    returns (1D/1W/1M), volume ratio. None under 30 bars."""
-    bars = (await db.execute(
-        select(OhlcvBar)
-        .where(OhlcvBar.instrument_id == inst.id,
-               OhlcvBar.timeframe == "1d")
-        .order_by(OhlcvBar.time.desc()).limit(320))).scalars().all()
+def signal_row_from_bars(inst: Instrument, bars) -> dict | None:
+    """Pure compute — `bars` oldest→newest daily bars. Split from the
+    query so /market/signals can batch-fetch the whole book once
+    instead of one round-trip per instrument."""
     if len(bars) < 30:
         return None
-    bars = list(reversed(bars))
     t_bars = [ti.Bar(t=b.time, o=float(b.open), h=float(b.high),
                      l=float(b.low), c=float(b.close),
                      v=float(b.volume or 0))
@@ -68,3 +62,42 @@ async def signal_row(db: AsyncSession, inst: Instrument) -> dict | None:
         "vol_ratio": (t_bars[-1].v / (sum(vols) / len(vols)))
         if vols and t_bars[-1].v else None,
     }
+
+
+async def signal_row(db: AsyncSession, inst: Instrument) -> dict | None:
+    """Full technical surface for one instrument: trend (SMA50/200,
+    ADX), momentum (RSI-14, MACD), volatility (ATR%), 52-week position,
+    returns (1D/1W/1M), volume ratio. None under 30 bars."""
+    bars = (await db.execute(
+        select(OhlcvBar)
+        .where(OhlcvBar.instrument_id == inst.id,
+               OhlcvBar.timeframe == "1d")
+        .order_by(OhlcvBar.time.desc()).limit(320))).scalars().all()
+    return signal_row_from_bars(inst, list(reversed(bars)))
+
+
+async def signal_rows_batch(db: AsyncSession,
+                            insts: list[Instrument]) -> list[dict]:
+    """Whole-book signal surface in TWO queries: windowed bars fetch
+    (≤320/instrument) then in-python compute. The per-instrument loop
+    was one round-trip each — fine at 50 names, a timeout at 600."""
+    from sqlalchemy import func
+    rn = func.row_number().over(
+        partition_by=OhlcvBar.instrument_id,
+        order_by=OhlcvBar.time.desc()).label("rn")
+    sub = (select(OhlcvBar.id.label("oid"), rn)
+           .where(OhlcvBar.timeframe == "1d")).subquery()
+    ids = [r[0] for r in (await db.execute(
+        select(sub.c.oid).where(sub.c.rn <= 320))).all()]
+    bars = (await db.execute(
+        select(OhlcvBar).where(OhlcvBar.id.in_(ids))
+        .order_by(OhlcvBar.time))).scalars().all()
+    by_inst: dict[str, list] = {}
+    for b in bars:
+        by_inst.setdefault(b.instrument_id, []).append(b)
+    out = []
+    for inst in insts:
+        row = signal_row_from_bars(inst, by_inst.get(inst.id) or [])
+        if row is not None:
+            out.append(row)
+    return out
