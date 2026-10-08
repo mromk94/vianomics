@@ -576,10 +576,22 @@ async def search_instruments(
     asset_class: str | None = None,
     include_inactive: bool = False,
     eligible_only: bool = False,
+    universe: str | None = None,
     tenant_id: str = "default",
     limit: int = 50,
 ) -> list[dict]:
     stmt = select(Instrument)
+    if universe:
+        stmt = (
+            stmt.join(
+                UniverseMembership,
+                UniverseMembership.instrument_id == Instrument.id)
+            .join(Universe,
+                  UniverseMembership.universe_id == Universe.id)
+            .where(Universe.name == universe,
+                   Universe.tenant_id == tenant_id,
+                   UniverseMembership.status == "active")
+        )
     if q:
         like = f"%{q.upper()}%"
         stmt = stmt.where(

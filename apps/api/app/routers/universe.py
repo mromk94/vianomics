@@ -25,13 +25,14 @@ async def search(
     asset_class: str | None = Query(None),
     include_inactive: bool = Query(False),
     eligible_only: bool = Query(False),
+    universe: str | None = Query(None),
     limit: int = Query(200, le=2000),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     return await svc.search_instruments(
         db, q=q, asset_class=asset_class,
         include_inactive=include_inactive, eligible_only=eligible_only,
-        limit=limit,
+        universe=universe, limit=limit,
     )
 
 

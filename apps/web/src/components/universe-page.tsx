@@ -59,6 +59,7 @@ export function UniversePage() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [q, setQ] = useState("");
   const [cls, setCls] = useState("");
+  const [tier, setTier] = useState("");
   const [eligOnly, setEligOnly] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +72,7 @@ export function UniversePage() {
     qs.set("limit", "2000");
     if (q) qs.set("q", q);
     if (cls) qs.set("asset_class", cls);
+    if (tier) qs.set("universe", tier);
     if (eligOnly) qs.set("eligible_only", "true");
     if (showInactive) qs.set("include_inactive", "true");
     Promise.all([
@@ -88,7 +90,7 @@ export function UniversePage() {
   };
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(load, [cls, eligOnly, showInactive]);
+  useEffect(load, [cls, tier, eligOnly, showInactive]);
   useEffect(() => {
     const t = setTimeout(load, 250);
     return () => clearTimeout(t);
@@ -220,6 +222,17 @@ export function UniversePage() {
             value={cls}
             onChange={setCls}
             options={[{ value: "", label: "All classes" }, ...ASSET_CLASSES.map((c) => ({ value: c, label: c }))]}
+          />
+          <FilterSelect
+            value={tier}
+            onChange={setTier}
+            options={[
+              { value: "", label: "All tiers" },
+              { value: "global", label: "Global" },
+              { value: "core", label: "Core market" },
+              { value: "eligible", label: "Eligible" },
+              { value: "approved", label: "Approved" },
+            ]}
           />
           <label className="flex items-center gap-2 text-[13px] text-dim">
             <input type="checkbox" checked={eligOnly} onChange={(e) => setEligOnly(e.target.checked)} className="accent-[#f0b90b]" />
