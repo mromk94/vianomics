@@ -135,3 +135,33 @@ async def test_disabled_source_excluded_from_book(db) -> None:
     ctx = await _portfolio_ctx(db)
     assert ctx["nav"] == 405_000          # back on: book reappears
     assert ctx["cash"] == 400_000
+
+
+async def test_external_nav_is_usd_normalized(db) -> None:
+    """A non-USD account must enter NAV/sleeve math converted — the
+    same 'CCYUSD=X' rule the Command Center applies. A £100k book at
+    GBPUSD 1.32 contributes $132k, not $100k."""
+    from app.models.market import MarketQuote
+    from app.models.portfolio import (
+        ExternalAccount, LedgerEntry, Portfolio)
+    from app.routers.risk import _portfolio_ctx
+
+    pf = Portfolio(name="paper", broker="paper")
+    db.add(pf)
+    await db.flush()
+    db.add(LedgerEntry(portfolio_id=pf.id, kind="deposit",
+                       amount=50_000))
+    db.add(ExternalAccount(
+        source="ibkr", label="IBKR #1", currency="GBP",
+        balance=90_000, equity=100_000, connected=True,
+        positions=[], equity_history=[]))
+    db.add(MarketQuote(source="yahoo", symbol="GBPUSD=X",
+                       mid=1.32, ts=datetime.now(UTC)))
+    await db.commit()
+
+    ctx = await _portfolio_ctx(db)
+    assert ctx["nav"] == 50_000 + 132_000       # 50k + £100k × 1.32
+    assert ctx["cash"] == 50_000 + 118_800      # 50k + £90k × 1.32
+    # internal figures stay untouched
+    assert ctx["nav_internal"] == 50_000
+    assert ctx["cash_internal"] == 50_000

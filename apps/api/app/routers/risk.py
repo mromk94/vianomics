@@ -228,7 +228,27 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
     #   equity = cash balance + position market values
     # External accounts contribute their own broker-reported equity
     # (balance + unrealised is already inside it — no double count).
-    ext_balance = sum(float(a.balance or 0) for a in ext_accounts)
+    # FX: account money is normalized to USD the same way the
+    # Command Center source view does ('{CCY}USD=X' yahoo quote,
+    # raw fallback) — without this a GBP book was being read as USD,
+    # undersizing the sleeve by ~25%.
+    from app.models.market import MarketQuote as _MQ
+    ext_fx = dict((await db.execute(
+        select(_MQ.symbol, _MQ.mid)
+        .where(_MQ.source == "yahoo"))).all()) \
+        if ext_accounts else {}
+
+    def _ext_usd(v, ccy):
+        if v is None:
+            return 0.0
+        v = float(v)
+        if (ccy or "USD") == "USD":
+            return v
+        r = ext_fx.get(f"{ccy}USD=X")
+        return v * float(r) if r else v
+
+    ext_balance = sum(_ext_usd(a.balance, a.currency)
+                      for a in ext_accounts)
     # honest zero — an empty book is $0 NAV, never a synthetic $1.
     # Callers that need a denominator guard with `nav or 1` locally;
     # the stored value itself must stay real (doc Step-1 data
@@ -236,7 +256,8 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
     nav = (cash
            + sum(p["market_value"] for p in positions
                  if not p.get("external"))
-           + sum(float(a.equity or 0) for a in ext_accounts))
+           + sum(_ext_usd(a.equity or a.balance, a.currency)
+                 for a in ext_accounts))
     display_cash = cash + ext_balance
 
     # latest valuation per held instrument → price vs intrinsic
