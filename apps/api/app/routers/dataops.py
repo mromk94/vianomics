@@ -11,9 +11,27 @@ from app.models.providers import DataProvider
 router = APIRouter(prefix="/dataops", tags=["dataops"])
 
 
+# operational jobs surfaced in DataOps even before their first run —
+# without a Job row they were invisible (unclickable) in the UI
+OPS_JOBS = [
+    ("universe:core:sync", "ingestion"),
+    ("universe:alpaca:sync", "ingestion"),
+    ("fundamentals:gapfill", "ingestion"),
+    ("market:quotes", "ingestion"),
+    ("ingest:daily", "ingestion"),
+    ("portfolio:alpaca:sync", "ingestion"),
+    ("portfolio:ibkr:sync", "ingestion"),
+    ("technical:scan", "analysis"),
+    ("monitor:scan", "analysis"),
+]
+
+
 @router.get("/overview")
 async def overview(db: AsyncSession = Depends(get_db)):
     """Jobs + last run + sync freshness + quarantine counts."""
+    from app.ingestion.upsert import get_or_create
+    for key, kind in OPS_JOBS:
+        await get_or_create(db, Job, {"key": key}, {"kind": kind})
     jobs = (await db.execute(select(Job))).scalars().all()
     last_runs = {
         jid: (ft, st)
@@ -229,11 +247,44 @@ async def run_job_now(job_key: str,
                 db, adapters["yahoo"](), sym)
         elif job_key == "fundamentals:gapfill":
             # coverage sweep — tracked instruments with missing/stale
-            # facts re-ingest (EDGAR → Yahoo fallback), bounded batch
-            from app.services import universe as usvc
-            res = await usvc.fundamentals_gapfill(db, limit=40)
+            # facts re-ingest (EDGAR → Yahoo fallback). ~8min at the
+            # 40-instrument bound — background task like core:sync;
+            # the JobRun records progress for DataOps.
+            import asyncio
+            from app.db.session import SessionFactory
+            from app.ingestion.upsert import get_or_create
+            from app.models.ops import Job, JobRun
+            from app.db.base import utcnow
+            job, _ = await get_or_create(
+                db, Job, {"key": job_key}, {"kind": "ingestion"})
+            run = JobRun(job_id=job.id, status="running")
+            db.add(run)
             await db.commit()
-            return res
+            rid = run.id
+
+            async def _bg():
+                from app.services import universe as usvc
+                async with SessionFactory() as s:
+                    r = await s.get(JobRun, rid)
+                    try:
+                        res = await usvc.fundamentals_gapfill(
+                            s, limit=40)
+                        r.status = "success"
+                        r.records_in = res.get("checked") or 0
+                        r.records_ok = res.get("hydrated") or 0
+                        r.error = (f"backlog={res.get('backlog')} "
+                                   f"failed={res.get('failed')}")
+                    except Exception as e:
+                        r.status = "failed"
+                        r.error = str(e)[:300]
+                    r.finished_at = utcnow()
+                    await s.commit()
+            task = asyncio.create_task(_bg())
+            _BG_TASKS.add(task)
+            task.add_done_callback(_BG_TASKS.discard)
+            return {"status": "started", "job_run_id": rid,
+                    "note": "gapfill in background — ~8min at "
+                            "limit=40; status on DataOps"}
         elif job_key.startswith("ingest:fred:"):
             from app.services.secrets import get_secret
             import os
@@ -293,28 +344,49 @@ async def run_job_now(job_key: str,
         elif job_key == "universe:core:sync":
             # S&P 500 ∪ most-actives-250 → 'core' working universe —
             # credential-free (Wikipedia constituents + Yahoo
-            # screener); hydrates a bounded batch per run, the
-            # nightly sweep converges the rest. Registered as a JobRun
-            # so DataOps shows status/history.
-            from app.services import universe as usvc
+            # screener). ~8min with hydration — far past any request
+            # window, so it runs as a background task with its own
+            # session and updates the JobRun as it goes (same pattern
+            # as pipeline:universe / backfill).
+            import asyncio
+            from app.db.session import SessionFactory
             from app.ingestion.upsert import get_or_create
             from app.models.ops import Job, JobRun
             from app.db.base import utcnow
             job, _ = await get_or_create(
                 db, Job, {"key": job_key}, {"kind": "ingestion"})
-            run = JobRun(job_id=job.id)
+            run = JobRun(job_id=job.id, status="running")
             db.add(run)
-            await db.flush()
-            res = await usvc.sync_core_universe(db, hydrate_batch=40)
-            run.status = ("success" if res.get("status") == "success"
-                          else "failed")
-            run.error = res.get("error") or (
-                "; ".join(res["errors"]) if res.get("errors") else None)
-            run.records_in = res.get("constituents") or 0
-            run.records_ok = res.get("core_members_added") or 0
-            run.finished_at = utcnow()
             await db.commit()
-            return res
+            rid = run.id
+
+            async def _bg():
+                from app.services import universe as usvc
+                async with SessionFactory() as s:
+                    r = await s.get(JobRun, rid)
+                    try:
+                        res = await usvc.sync_core_universe(
+                            s, hydrate_batch=40)
+                        r.status = ("success"
+                                    if res.get("status") == "success"
+                                    else "failed")
+                        r.error = res.get("error") or (
+                            "; ".join(res["errors"])
+                            if res.get("errors") else None)
+                        r.records_in = res.get("constituents") or 0
+                        r.records_ok = \
+                            res.get("core_members_added") or 0
+                    except Exception as e:
+                        r.status = "failed"
+                        r.error = str(e)[:300]
+                    r.finished_at = utcnow()
+                    await s.commit()
+            task = asyncio.create_task(_bg())
+            _BG_TASKS.add(task)
+            task.add_done_callback(_BG_TASKS.discard)
+            return {"status": "started", "job_run_id": rid,
+                    "note": "core sync in background — ~8min with "
+                            "hydration; status on DataOps"}
         elif job_key == "portfolio:ibkr:sync":
             from app.services import broker_sync
             # bridge first — live socket beats the 24h-batch Flex

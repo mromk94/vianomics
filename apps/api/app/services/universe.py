@@ -181,10 +181,14 @@ async def sync_core_universe(
         ).scalars().all()}
     sectors = {s.name: s for s in
                (await db.execute(select(Sector))).scalars().all()}
-    have_cik = {
-        r[0] for r in (await db.execute(
-            select(InstrumentIdentifier.instrument_id)
-            .where(InstrumentIdentifier.scheme == "cik"))).all()}
+    have_cik_iids: set[str] = set()
+    have_cik_vals: set[str] = set()
+    for r in (await db.execute(
+            select(InstrumentIdentifier.instrument_id,
+                   InstrumentIdentifier.value)
+            .where(InstrumentIdentifier.scheme == "cik"))).all():
+        have_cik_iids.add(r[0])
+        have_cik_vals.add(r[1])
 
     created = membered = 0
     new_ids: list[str] = []
@@ -216,12 +220,17 @@ async def sync_core_universe(
                 sectors[sec_name] = sec
             inst.sector_id = sec.id
         # CIK → InstrumentIdentifier: EDGAR ingest reads this first,
-        # skipping the ticker→CIK map roundtrip entirely
-        if c.get("cik") and inst.id not in have_cik:
+        # skipping the ticker→CIK map roundtrip. (scheme, value) is
+        # unique — share-class siblings (GOOG/GOOGL, BRK-A/BRK-B) file
+        # ONE CIK, so only the first claims it; the rest self-heal via
+        # EDGAR's ticker map at ingest time
+        if (c.get("cik") and inst.id not in have_cik_iids
+                and str(c["cik"]) not in have_cik_vals):
             db.add(InstrumentIdentifier(
                 instrument_id=inst.id, scheme="cik",
                 value=str(c["cik"])))
-            have_cik.add(inst.id)
+            have_cik_iids.add(inst.id)
+            have_cik_vals.add(str(c["cik"]))
         if inst.id not in have_global:
             db.add(UniverseMembership(
                 universe_id=global_u.id, instrument_id=inst.id,
