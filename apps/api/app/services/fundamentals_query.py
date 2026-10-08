@@ -93,6 +93,27 @@ async def latest_instant(
     return None
 
 
+async def reporting_currency(
+    db: AsyncSession,
+    instrument_id: str,
+    as_of: datetime,
+) -> str | None:
+    """Currency of the issuer's most recent fundamental observation —
+    the unit the financials are reported in. Compared to the
+    instrument's trading currency by callers: a TSM ADR prices in USD
+    while the 20-F reports TWD, so per-share fundamentals cannot be
+    compared to the USD price without FX/ADR-ratio normalization."""
+    return (await db.execute(
+        select(FundamentalObservation.currency)
+        .where(FundamentalObservation.instrument_id == instrument_id,
+               FundamentalObservation.currency.is_not(None),
+               FundamentalObservation.published_at.is_not(None),
+               FundamentalObservation.published_at <= as_of,
+               FundamentalObservation.quality != "quarantined")
+        .order_by(FundamentalObservation.period_end.desc())
+        .limit(1))).scalar_one_or_none()
+
+
 def last_two(series: dict[date, float]) -> tuple[float | None, float | None]:
     """(previous, latest) consecutive FY values, or Nones."""
     items = sorted(series.items())

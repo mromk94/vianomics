@@ -130,6 +130,10 @@ _SHARES_CONCEPTS = [
     "us-gaap:WeightedAverageNumberOfSharesOutstandingBasic",
     "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
     "us-gaap:CommonStockSharesOutstanding",
+    "dei:EntityCommonStockSharesOutstanding",
+    "ifrs-full:AdjustedWeightedAverageShares",
+    "ifrs-full:WeightedAverageNumberOfOrdinarySharesOutstanding",
+    "yahoo:BasicAverageShares", "yahoo:DilutedAverageShares",
 ]
 
 
@@ -155,6 +159,27 @@ async def refresh_market_stats(db: AsyncSession,
     close = float(bars[0][0])
     if shares and close:
         inst.market_cap = shares * close
+    # ADR correction — an ordinary-share count × an ADR price is wrong
+    # by the ADR ratio and FX (TSM: ~25.9B ordinaries vs ~$300 ADS).
+    # When the filing currency differs from the trading currency the
+    # listing's own market cap is the only correct source — Yahoo's
+    # trailingMarketCap is reported in the listing currency.
+    try:
+        from app.services.fundamentals_query import reporting_currency
+        fund_ccy = await reporting_currency(
+            db, inst.id, datetime.now(UTC))
+    except Exception:
+        fund_ccy = None
+    if fund_ccy is not None and fund_ccy != (inst.currency or "USD"):
+        try:
+            from app.providers.yahoo import YahooAdapter
+            ts = await YahooAdapter().fundamentals_timeseries(
+                inst.symbol, types=["trailingMarketCap"])
+            mcap = (ts.get("trailingMarketCap") or {}).get("value")
+            if mcap:
+                inst.market_cap = float(mcap)
+        except Exception:
+            pass  # keep the best-effort shares×close estimate
     return True
 
 

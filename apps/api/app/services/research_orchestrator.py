@@ -132,7 +132,10 @@ async def _collect(
     instants = {
         "equity_i": C_EQUITY, "debt": C_DEBT, "cash": C_CASH,
         "interest": C_INTEREST, "ca": C_CA, "cl": C_CL,
-        "debt_cur": ["us-gaap:LongTermDebtCurrent"],
+        "debt_cur": ["us-gaap:LongTermDebtCurrent",
+                     "ifrs-full:CurrentPortionOfLongtermBorrowings",
+                     "ifrs-full:CurrentBorrowings",
+                     "yahoo:CurrentDebt"],
     }
     point: dict[str, float | None] = {}
     for key, concepts in instants.items():

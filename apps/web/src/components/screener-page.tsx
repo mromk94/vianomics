@@ -31,6 +31,15 @@ interface Row {
   missing?: string[];
   /** "strong" (≥90% of applicable) | "conditional" (15–17 band) | "below" */
   band?: string;
+  /** real coverage of the screened record — which provider actually
+     holds this issuer's facts, and how fresh */
+  coverage?: {
+    facts: number;
+    fact_sources: string[];
+    latest_fact: string | null;
+    bars: number;
+    latest_bar: string | null;
+  } | null;
 }
 
 interface Criterion {
@@ -51,6 +60,18 @@ interface Detail extends Row {
   mandate_version: number | null;
   as_of: string;
   data_freshness: string | null;
+  data_coverage?: {
+    bars_1d: number;
+    latest_bar: string | null;
+    fundamental_obs: number;
+    avg_dollar_volume_30d: number | null;
+    market_cap: number | null;
+    fact_taxonomies?: string[];
+    fact_sources?: string[];
+    fundamental_currency?: string | null;
+    price_currency?: string | null;
+    currency_mismatch?: boolean;
+  };
 }
 
 const VERDICT_TONE: Record<Verdict, "pos" | "neg" | "warn" | "info"> = {
@@ -73,7 +94,7 @@ const VERDICT_MEANING: Record<Verdict, string> = {
   pass: "Cleared the bar — qualifies for deeper research. A pass is a research green light, not a buy order.",
   review: "Cleared the floor but not the full bar — either a 15–17 conditional band (doc: watchlist pending review) or a criterion awaiting human confirmation.",
   fail: "Did not clear the pass bar — see the failed criteria below for exactly why.",
-  insufficient_data: "Not enough reported data to judge half the criteria — ingest EDGAR facts before trusting any verdict.",
+  insufficient_data: "Not enough reported data to judge half the criteria — hydration runs automatically during the screen; the coverage panel shows which source holds this issuer (SEC XBRL incl. IFRS, or Yahoo) and whether any does.",
   blocked_by_risk: "Excluded by risk regardless of fundamentals — the listing itself is not tradable.",
 };
 
@@ -147,8 +168,15 @@ function explain(c: Criterion): string {
   const e = c.evidence || {};
   if (c.status === "insufficient_data") {
     const missing = Array.isArray(e.missing) ? e.missing.join(", ") : "required history";
+    if (e.currency_mismatch) {
+      const cm = e.currency_mismatch as { fundamentals?: string; price?: string };
+      return `Cannot judge — fundamentals are reported in ${cm.fundamentals ?? "?"} ` +
+        `but the listing prices in ${cm.price ?? "?"}. Per-share metrics aren't ` +
+        `price-comparable until FX/ADR-ratio normalization lands (missing ${missing}).`;
+    }
     return `Cannot judge — missing ${missing}. ` +
-      `Run ingest:edgar:facts (fundamentals) or the bars backfill before this counts.`;
+      (typeof e.note === "string" ? `${e.note}. ` : "") +
+      `Coverage is hydrated automatically on screen — re-run after the job lands, or check the coverage panel for the source.`;
   }
   if (c.status === "not_applicable") {
     return typeof e.note === "string" ? e.note
@@ -410,6 +438,15 @@ export function ScreenerPage() {
             {missing.length > 0 && failed.length === 0 && (
               <div className="text-dim">missing: {missing.slice(0, 3).join(", ")}{missing.length > 3 ? "…" : ""}</div>
             )}
+            {r.coverage && (
+              <div className="text-faint">
+                {r.coverage.facts > 0
+                  ? `${r.coverage.fact_sources.map((s) => s === "edgar" ? "SEC" : s.toUpperCase()).join("+")} · ${r.coverage.facts} facts · ${r.coverage.bars} bars`
+                  : r.coverage.bars > 0
+                    ? `${r.coverage.bars} bars · no fundamentals on file`
+                    : "no coverage yet — hydrates on next screen"}
+              </div>
+            )}
             {r.blocked_reasons.length > 0 && (
               <div className="text-neg">blocked: {r.blocked_reasons.join(", ")}</div>
             )}
@@ -565,6 +602,21 @@ export function ScreenerPage() {
                 <span>mandate v{detail.mandate_version ?? "—"}</span>
                 <span>screened {fmtTime(detail.as_of)}</span>
                 {detail.data_freshness && <span>fundamentals to {fmtDate(detail.data_freshness)}</span>}
+                {detail.data_coverage && (
+                  <span>
+                    {detail.data_coverage.fundamental_obs} facts
+                    {(detail.data_coverage.fact_taxonomies ?? []).length > 0 &&
+                      ` · ${detail.data_coverage.fact_taxonomies!.join(", ")}`}
+                    {(detail.data_coverage.fact_sources ?? []).length > 0 &&
+                      ` via ${detail.data_coverage.fact_sources!.map((s) => s === "edgar" ? "SEC" : s.toUpperCase()).join("+")}`}
+                    {` · ${detail.data_coverage.bars_1d} bars`}
+                  </span>
+                )}
+                {detail.data_coverage?.currency_mismatch && (
+                  <span className="text-warn">
+                    reports {detail.data_coverage.fundamental_currency} / trades {detail.data_coverage.price_currency} — price-linked criteria suppressed
+                  </span>
+                )}
                 {detail.blocked_reasons.length > 0 && (
                   <span className="text-neg">blocked: {detail.blocked_reasons.join(", ")}</span>
                 )}

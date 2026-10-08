@@ -44,7 +44,8 @@ async def _active_policy(db: AsyncSession) -> ScreeningPolicy:
     return p
 
 
-def _result_row(res: ScreeningResult, inst: Instrument) -> dict:
+def _result_row(res: ScreeningResult, inst: Instrument,
+                coverage: dict | None = None) -> dict:
     crits = res.criteria or []
     counts: dict[str, int] = {}
     for c in crits:
@@ -73,6 +74,9 @@ def _result_row(res: ScreeningResult, inst: Instrument) -> dict:
                          if c.get("status") == "review"],
         "missing": [c["name"] for c in crits
                     if c.get("status") == "insufficient_data"],
+        # real coverage of the record screened — bars/facts counts +
+        # sources so 'no data' is attributable, not a mystery
+        "coverage": coverage,
         "as_of": res.as_of.isoformat(),
     }
 
@@ -147,7 +151,11 @@ async def _run_screen_bg(jrun_id: str, body: dict, user_id: str) -> None:
             run_obj = await gz.run_screen(
                 db, policy, mandate,
                 universe_name=body.get("universe") or "approved",
-                symbols=symbols)
+                symbols=symbols,
+                # lazy hydration: universe members that were never
+                # pulled (Alpaca-pool names) get bars+facts on first
+                # screen instead of returning a wall of NO DATA
+                hydrate=True)
             jrun.status = ("success" if run_obj.status == "complete"
                            else "failed")
             note = run_obj.error or ""
@@ -206,6 +214,48 @@ async def latest(db: AsyncSession = Depends(get_db)) -> dict:
             .where(ScreeningResult.run_id == run_obj.id)
         )
     ).all()
+
+    # coverage per instrument — grouped queries (no N+1): fact counts
+    # + freshness + provider source, and daily-bar counts
+    inst_ids = [i.id for _r, i in rows]
+    obs_stats: dict[str, dict] = {}
+    bar_stats: dict[str, dict] = {}
+    if inst_ids:
+        for iid, n, mx in (await db.execute(
+            select(FundamentalObservation.instrument_id,
+                   func.count(FundamentalObservation.id),
+                   func.max(FundamentalObservation.published_at))
+            .where(FundamentalObservation.instrument_id.in_(inst_ids))
+            .group_by(FundamentalObservation.instrument_id))).all():
+            obs_stats[iid] = {"facts": n, "latest_fact": mx}
+        for iid, src in (await db.execute(
+            select(FundamentalObservation.instrument_id,
+                   FundamentalObservation.source).distinct()
+            .where(FundamentalObservation.instrument_id.in_(inst_ids))
+        )).all():
+            obs_stats.setdefault(iid, {"facts": 0, "latest_fact": None})
+            obs_stats[iid].setdefault("sources", []).append(src)
+        for iid, n, mx in (await db.execute(
+            select(OhlcvBar.instrument_id,
+                   func.count(OhlcvBar.id), func.max(OhlcvBar.time))
+            .where(OhlcvBar.instrument_id.in_(inst_ids),
+                   OhlcvBar.timeframe == "1d")
+            .group_by(OhlcvBar.instrument_id))).all():
+            bar_stats[iid] = {"bars": n, "latest_bar": mx}
+
+    def _cov(inst_id: str) -> dict:
+        o = obs_stats.get(inst_id) or {}
+        b = bar_stats.get(inst_id) or {}
+        return {
+            "facts": o.get("facts", 0),
+            "fact_sources": sorted(set(o.get("sources") or [])),
+            "latest_fact": (o["latest_fact"].isoformat()
+                            if o.get("latest_fact") else None),
+            "bars": b.get("bars", 0),
+            "latest_bar": (b["latest_bar"].isoformat()
+                           if b.get("latest_bar") else None),
+        }
+
     return {
         "run": {
             "id": run_obj.id,
@@ -216,7 +266,7 @@ async def latest(db: AsyncSession = Depends(get_db)) -> dict:
             "instruments": run_obj.instruments,
         },
         "results": sorted(
-            (_result_row(r, i) for r, i in rows),
+            (_result_row(r, i, _cov(i.id)) for r, i in rows),
             key=lambda x: x["score"], reverse=True,
         ),
     }
@@ -268,6 +318,22 @@ async def drilldown(symbol: str, db: AsyncSession = Depends(get_db)) -> dict:
                 FundamentalObservation.instrument_id == inst.id)
         )
     ).scalar() or 0
+    # which taxonomies/sources back the facts — the "why no data"
+    # answer for foreign issuers is "ifrs-full (SEC)" vs "yahoo" vs
+    # genuinely absent
+    concept_tax = sorted({
+        (c or "").split(":")[0]
+        for (c,) in (await db.execute(
+            select(FundamentalObservation.concept).distinct()
+            .where(FundamentalObservation.instrument_id == inst.id))
+        ).all() if c})
+    fund_sources = sorted({
+        s for (s,) in (await db.execute(
+            select(FundamentalObservation.source).distinct()
+            .where(FundamentalObservation.instrument_id == inst.id))
+        ).all() if s})
+    from app.services.fundamentals_query import reporting_currency
+    fund_ccy = await reporting_currency(db, inst.id, utcnow())
     sector = None
     if inst.sector_id:
         sec = await db.get(Sector, inst.sector_id)
@@ -296,6 +362,12 @@ async def drilldown(symbol: str, db: AsyncSession = Depends(get_db)) -> dict:
                                       else None),
             "market_cap": (float(inst.market_cap)
                            if inst.market_cap else None),
+            "fact_taxonomies": concept_tax,
+            "fact_sources": fund_sources,
+            "fundamental_currency": fund_ccy,
+            "price_currency": inst.currency,
+            "currency_mismatch": bool(
+                fund_ccy and inst.currency and fund_ccy != inst.currency),
         },
     }
 

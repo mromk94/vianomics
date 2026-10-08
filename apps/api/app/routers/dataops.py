@@ -220,6 +220,20 @@ async def run_job_now(job_key: str,
             if await _instr(db, sym) is None:
                 return {"status": "failed", "error": f"{sym} not in universe"}
             run = await ing.ingest_edgar_facts(db, adapters["edgar"](), sym)
+        elif job_key.startswith("ingest:yahoo:fundamentals:"):
+            sym = parts[-1]
+            if await _instr(db, sym) is None:
+                return {"status": "failed",
+                        "error": f"{sym} not in universe"}
+            run = await ing.ingest_yahoo_fundamentals(
+                db, adapters["yahoo"](), sym)
+        elif job_key == "fundamentals:gapfill":
+            # coverage sweep — tracked instruments with missing/stale
+            # facts re-ingest (EDGAR → Yahoo fallback), bounded batch
+            from app.services import universe as usvc
+            res = await usvc.fundamentals_gapfill(db, limit=40)
+            await db.commit()
+            return res
         elif job_key.startswith("ingest:fred:"):
             from app.services.secrets import get_secret
             import os
@@ -438,8 +452,19 @@ async def refresh_daily_bars(db: AsyncSession) -> dict:
         await db.commit()
     except Exception:
         await db.rollback()
+    # fundamentals coverage sweep — a small nightly batch re-ingests
+    # tracked names whose facts are missing or stale, so foreign
+    # issuers and newly-tracked symbols stop screening "no data"
+    gapfill = None
+    try:
+        from app.services import universe as usvc
+        gapfill = await usvc.fundamentals_gapfill(db, limit=15)
+        await db.commit()
+    except Exception:
+        await db.rollback()
     return {"instruments": ok,
-            "bars_source": "alpaca" if alp is not None else "yahoo"}
+            "bars_source": "alpaca" if alp is not None else "yahoo",
+            "gapfill": gapfill}
 
 
 _BG_TASKS: set = set()
@@ -484,6 +509,26 @@ async def _backfill_all():
                 await db.commit()
             except Exception:
                 await db.rollback()
+        # fundamentals only for names that are actually tracked —
+        # pulling SEC companyfacts for the 10k-name global discovery
+        # pool would take days; pool members hydrate lazily on screen
+        from app.models.market import OhlcvBar
+        from app.models.universe import Universe, UniverseMembership
+        covered_ids = select(OhlcvBar.instrument_id).distinct()
+        tiered_ids = (select(UniverseMembership.instrument_id)
+                      .join(Universe,
+                            UniverseMembership.universe_id == Universe.id)
+                      .where(Universe.name != "global",
+                             UniverseMembership.status == "active"))
+        fact_insts = [i for i in insts
+                      if i.asset_class == "equity"]
+        # cheap coverage check: tracked = has bars or tiered membership
+        bar_covered = {r for (r,) in (await db.execute(
+            covered_ids)).all()}
+        tier_covered = {r for (r,) in (await db.execute(
+            tiered_ids)).all()}
+        tracked = [i for i in fact_insts
+                   if i.id in bar_covered or i.id in tier_covered]
         # per-series isolation — one bad series never kills the rest
         # of the macro calendar (the 9/28 partial-ingest failure mode)
         try:
@@ -509,15 +554,25 @@ async def _backfill_all():
                 await db.rollback()
         except Exception:
             pass
-        # EDGAR is public — a polite UA is baked into HttpAdapter
+        # EDGAR is public — a polite UA is baked into HttpAdapter.
+        # Tracked names only (bars-covered or tiered); Yahoo fills the
+        # issuers SEC doesn't carry. Pool members hydrate lazily.
         from app.providers.edgar import EdgarAdapter
         ed = EdgarAdapter()
-        for inst in insts:
+        for inst in tracked:
             try:
-                await ing.ingest_edgar_facts(db, ed, inst.symbol)
+                frun = await ing.ingest_edgar_facts(db, ed, inst.symbol)
                 await db.commit()
+                if not (frun.status == "success" and frun.records_ok):
+                    raise RuntimeError("no edgar facts")
             except Exception:
                 await db.rollback()
+                try:
+                    await ing.ingest_yahoo_fundamentals(
+                        db, ya, inst.symbol)
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
         # derived state: ADV, live quotes for context, regime snapshot
         try:
             from app.services import market_context as mc

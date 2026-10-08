@@ -218,6 +218,122 @@ async def ingest_edgar_facts(
     return run
 
 
+async def ingest_yahoo_fundamentals(
+    session: AsyncSession,
+    adapter: ProviderAdapter,
+    symbol: str,
+) -> JobRun:
+    """Yahoo fundamentals-timeseries → FundamentalObservations under
+    `yahoo:` concepts — the coverage bridge for issuers SEC EDGAR
+    doesn't carry (non-filers, some ADRs) and the fill for concepts a
+    filer's taxonomy lacks. Same canonical metrics the screen reads;
+    source='yahoo' keeps provenance distinct from 'edgar' XBRL.
+
+    published_at is stamped with the reported asOfDate — deterministic
+    so the unique key dedupes re-runs; screening runs as-of-now so the
+    (mildly optimistic) vintage is acceptable, but backtests should not
+    treat these as filed-date-accurate."""
+    from datetime import timedelta
+    from app.providers.yahoo import FUNDAMENTAL_TYPES
+
+    job, _ = await get_or_create(
+        session,
+        Job,
+        {"key": f"ingest:yahoo:fundamentals:{symbol}"},
+        {"kind": "ingestion"},
+    )
+    run = JobRun(job_id=job.id)
+    session.add(run)
+    await session.flush()
+
+    provider = await _provider(session, "yahoo")
+    inst = await _instrument(session, symbol)
+    if inst is None:
+        run.status, run.error, run.finished_at = (
+            "failed", f"instrument {symbol} not found", utcnow())
+        return run
+
+    raw, _status = await run_job(
+        session, job_run=run, provider_key="yahoo",
+        work=lambda: adapter.fundamentals_timeseries(symbol),
+    )
+    if raw is None:
+        run.finished_at = utcnow()
+        await mark_sync(session, provider, f"fundamentals:{symbol}",
+                        False, run.error)
+        return run
+
+    # Yahoo outflow signs are negative; the engines use the us-gaap
+    # positive-outflow convention (fcf = ocf − capex)
+    _OUTFLOW = {"annualCapitalExpenditure", "annualCashDividendsPaid",
+                "annualDividendsPaid"}
+    _ABS = _OUTFLOW | {"annualInterestExpense",
+                       "annualInterestExpenseNonOperating"}
+
+    def _aware(dt):
+        return (dt.replace(tzinfo=UTC)
+                if dt is not None and dt.tzinfo is None else dt)
+
+    existing = {
+        (r[0], r[1].isoformat(),
+         r[2].date().isoformat() if r[2] else None)
+        for r in (await session.execute(
+            select(FundamentalObservation.concept,
+                   FundamentalObservation.period_end,
+                   FundamentalObservation.published_at)
+            .where(FundamentalObservation.instrument_id == inst.id))
+        ).all()
+    }
+
+    n_in = n_ok = 0
+    for ytype, concept in FUNDAMENTAL_TYPES.items():
+        series = raw.get(ytype + "__series") or []
+        for pt in series:
+            end_s = pt.get("asOfDate")
+            if not end_s:
+                continue
+            end = _parse_date(end_s)
+            val = float(pt["value"])
+            if ytype in _ABS:
+                val = abs(val)
+            is_flow = pt.get("periodType") == "12M"
+            pstart = (end - timedelta(days=364)) if is_flow else None
+            n_in += 1
+            key = (concept, end.isoformat(), end.isoformat())
+            if key in existing:
+                continue
+            existing.add(key)
+            ccy = pt.get("currencyCode")
+            session.add(FundamentalObservation(
+                instrument_id=inst.id,
+                concept=concept,
+                period_start=pstart,
+                period_end=end,
+                fiscal_period="FY",
+                source="yahoo",
+                value=Decimal(str(val)),
+                unit=("shares" if "Shares" in concept else
+                      (ccy or "USD") + ("/share" if "EPS" in concept
+                                        else "")),
+                currency=ccy if "Shares" not in concept else None,
+                observed_at=_aware(datetime.combine(
+                    end, datetime.min.time())),
+                published_at=_aware(datetime.combine(
+                    end, datetime.min.time())),
+                source_ref="yahoo:fundamentals-timeseries",
+            ))
+            n_ok += 1
+    await session.flush()
+
+    run.records_in = n_in
+    run.records_ok = n_ok
+    run.records_quarantined = 0
+    run.status = "success"
+    run.finished_at = utcnow()
+    await mark_sync(session, provider, f"fundamentals:{symbol}", True)
+    return run
+
+
 async def ingest_fred_series(
     session: AsyncSession,
     adapter: ProviderAdapter,

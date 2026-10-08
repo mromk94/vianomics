@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import utcnow
+from app.models.fundamentals import FundamentalObservation
 from app.models.instruments import Instrument, Sector
 from app.models.market import OhlcvBar
 from app.models.screening import (
@@ -36,25 +37,86 @@ from app.services.universe import universe_by_name
 
 FINANCIAL_SECTORS = {"Financials", "Real Estate"}  # ratio-variant sectors
 
-# EDGAR concept aliases per metric
-C_REV = ["us-gaap:Revenues", "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax", "us-gaap:SalesRevenueNet"]
-C_NI = ["us-gaap:NetIncomeLoss", "us-gaap:ProfitLoss"]
-C_OCF = ["us-gaap:NetCashProvidedByUsedInOperatingActivities"]
-C_EBIT = ["us-gaap:OperatingIncomeLoss"]
-C_EQUITY = ["us-gaap:StockholdersEquity", "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]
-C_DEBT = ["us-gaap:LongTermDebt", "us-gaap:LongTermDebtNoncurrent"]
-C_DEBT_CURRENT = ["us-gaap:LongTermDebtCurrent", "us-gaap:DebtCurrent"]
-C_CASH = ["us-gaap:CashAndCashEquivalentsAtCarryingValue", "us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"]
-C_INTEREST = ["us-gaap:InterestExpense", "us-gaap:InterestExpenseNonoperating", "us-gaap:InterestIncomeExpenseNet"]
-C_SHARES = ["us-gaap:WeightedAverageNumberOfSharesOutstandingBasic", "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding"]
-C_CAPEXC = ["us-gaap:PaymentsToAcquirePropertyPlantAndEquipment", "us-gaap:PaymentsToAcquireProductiveAssets"]
-C_DPS = ["us-gaap:CommonStockDividendsPerShareDeclared", "us-gaap:CommonStockDividendsPerShareCashPaid"]
-C_TAX = ["us-gaap:IncomeTaxExpenseBenefit"]
-C_PRETAX = ["us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest", "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesDomestic"]
-C_DA = ["us-gaap:DepreciationDepletionAndAmortization", "us-gaap:DepreciationAmortizationAndAccretionNet", "us-gaap:Depreciation"]
-C_AR = ["us-gaap:AccountsReceivableNetCurrent", "us-gaap:ReceivablesNetCurrent"]
-C_CA = ["us-gaap:AssetsCurrent"]
-C_CL = ["us-gaap:LiabilitiesCurrent"]
+# EDGAR concept aliases per metric — us-gaap first, then ifrs-full
+# (foreign private issuers like TSM/ASML file IFRS XBRL to the SEC —
+# the facts are already ingested under `ifrs-full:` concepts), then
+# `yahoo:` concepts written by the Yahoo fundamentals fallback for
+# issuers with no SEC XBRL coverage at all. dei: is cross-taxonomy.
+C_REV = ["us-gaap:Revenues",
+         "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+         "us-gaap:SalesRevenueNet",
+         "ifrs-full:Revenue", "ifrs-full:RevenueFromContractsWithCustomers",
+         "yahoo:TotalRevenue"]
+C_NI = ["us-gaap:NetIncomeLoss", "us-gaap:ProfitLoss",
+        "ifrs-full:ProfitLoss",
+        "ifrs-full:ProfitLossAttributableToOwnersOfParent",
+        "yahoo:NetIncome"]
+C_OCF = ["us-gaap:NetCashProvidedByUsedInOperatingActivities",
+         "ifrs-full:CashFlowsFromUsedInOperatingActivities",
+         "yahoo:OperatingCashFlow"]
+C_EBIT = ["us-gaap:OperatingIncomeLoss",
+          "ifrs-full:ProfitLossFromOperatingActivities",
+          "ifrs-full:OperatingProfitLoss",
+          "yahoo:OperatingIncome"]
+C_EQUITY = ["us-gaap:StockholdersEquity",
+            "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+            "ifrs-full:EquityAttributableToOwnersOfParent",
+            "ifrs-full:Equity",
+            "yahoo:StockholdersEquity"]
+C_DEBT = ["us-gaap:LongTermDebt", "us-gaap:LongTermDebtNoncurrent",
+          "ifrs-full:LongtermBorrowings", "ifrs-full:NoncurrentBorrowings",
+          "yahoo:LongTermDebt", "yahoo:TotalDebt"]
+C_DEBT_CURRENT = ["us-gaap:LongTermDebtCurrent", "us-gaap:DebtCurrent",
+                  "ifrs-full:CurrentPortionOfLongtermBorrowings",
+                  "ifrs-full:CurrentBorrowings",
+                  "yahoo:CurrentDebt"]
+C_CASH = ["us-gaap:CashAndCashEquivalentsAtCarryingValue",
+          "us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+          "ifrs-full:CashAndCashEquivalents",
+          "yahoo:CashAndCashEquivalents"]
+C_INTEREST = ["us-gaap:InterestExpense", "us-gaap:InterestExpenseNonoperating",
+              "us-gaap:InterestIncomeExpenseNet",
+              "ifrs-full:FinanceCosts", "ifrs-full:InterestExpenseOnBorrowings",
+              "ifrs-full:InterestExpenseOnBonds",
+              "yahoo:InterestExpense", "yahoo:InterestExpenseNonOperating"]
+C_SHARES = ["us-gaap:WeightedAverageNumberOfSharesOutstandingBasic",
+            "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
+            "ifrs-full:AdjustedWeightedAverageShares",
+            "ifrs-full:WeightedAverageNumberOfOrdinarySharesOutstanding",
+            "dei:EntityCommonStockSharesOutstanding",
+            "yahoo:BasicAverageShares", "yahoo:DilutedAverageShares"]
+C_CAPEXC = ["us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
+            "us-gaap:PaymentsToAcquireProductiveAssets",
+            "ifrs-full:PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
+            "ifrs-full:PaymentsToAcquirePropertyPlantAndEquipment",
+            "yahoo:CapitalExpenditure"]
+C_DPS = ["us-gaap:CommonStockDividendsPerShareDeclared",
+         "us-gaap:CommonStockDividendsPerShareCashPaid",
+         "ifrs-full:DividendsPaidOrdinarySharesPerShare",
+         "ifrs-full:DividendsRecognisedAsDistributionsToOwnersPerShare"]
+C_TAX = ["us-gaap:IncomeTaxExpenseBenefit",
+         "ifrs-full:IncomeTaxExpenseContinuingOperations",
+         "ifrs-full:CurrentTaxExpenseIncome",
+         "yahoo:TaxProvision"]
+C_PRETAX = ["us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+            "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesDomestic",
+            "ifrs-full:ProfitLossBeforeTax",
+            "yahoo:PretaxIncome"]
+C_DA = ["us-gaap:DepreciationDepletionAndAmortization",
+        "us-gaap:DepreciationAmortizationAndAccretionNet",
+        "us-gaap:Depreciation",
+        "ifrs-full:DepreciationAmortisationExpense",
+        "ifrs-full:DepreciationAndAmortisationExpense",
+        "ifrs-full:DepreciationExpense",
+        "yahoo:DepreciationAndAmortization"]
+C_AR = ["us-gaap:AccountsReceivableNetCurrent", "us-gaap:ReceivablesNetCurrent",
+        "ifrs-full:CurrentTradeReceivables",
+        "ifrs-full:TradeAndOtherCurrentReceivables",
+        "yahoo:AccountsReceivable"]
+C_CA = ["us-gaap:AssetsCurrent",
+        "ifrs-full:CurrentAssets", "yahoo:CurrentAssets"]
+C_CL = ["us-gaap:LiabilitiesCurrent",
+        "ifrs-full:CurrentLiabilities", "yahoo:CurrentLiabilities"]
 
 POLICY_DEFAULTS: dict[str, Any] = {
     "growth_min": 0.0,               # any positive YoY growth passes
@@ -100,6 +162,14 @@ class CritResult:
 def _insuf(key, name, formula, missing: list[str]) -> CritResult:
     return CritResult(key, name, "insufficient_data", 0.0, formula,
                       evidence={"missing": missing})
+
+
+async def _reporting_currency(db: AsyncSession, inst_id: str,
+                              as_of: datetime) -> str | None:
+    """Currency the issuer's fundamentals are reported in — see
+    fundamentals_query.reporting_currency."""
+    from app.services.fundamentals_query import reporting_currency
+    return await reporting_currency(db, inst_id, as_of)
 
 
 async def _series_all(db, inst_id, as_of, concepts) -> dict:
@@ -221,6 +291,14 @@ async def screen_instrument(
     interest = await latest_instant(db, inst.id, C_INTEREST, as_of)
     ca = await latest_instant(db, inst.id, C_CA, as_of)
     cl = await latest_instant(db, inst.id, C_CL, as_of)
+
+    # reporting-vs-trading currency — ratio criteria (growth, margins,
+    # ROE) are currency-agnostic, but price-linked criteria need the
+    # same unit on both sides; an ADR priced USD on TWD fundamentals
+    # must not produce a fabricated cross-currency ratio
+    fund_ccy = await _reporting_currency(db, inst.id, as_of)
+    px_ccy = inst.currency or "USD"
+    ccy_mismatch = fund_ccy is not None and fund_ccy != px_ccy
 
     fin = (sector_name or "") in FINANCIAL_SECTORS
     crits: list[CritResult] = []
@@ -377,9 +455,20 @@ async def screen_instrument(
                                 "FCF/share > 0",
                                 {"fcf": float(fcf_v), "fcf_ps": float(fcfps)}))
 
-    # 11: P/FCF ≤ policy
+    # 11: P/FCF ≤ policy — price-linked: a currency mismatch makes the
+    # ratio meaningless, so report it honestly instead of computing it
     pfcf = fm.price_ratio(price, fcfps) if fcfps is not None else None
-    if pfcf is None:
+    if ccy_mismatch:
+        crits.append(CritResult(
+            "p_fcf", "Price / FCF", "insufficient_data", 0.0,
+            f"price / FCFps ≤ {policy['p_fcf_max']}",
+            {"missing": ["same-currency FCF/share"],
+             "currency_mismatch": {"fundamentals": fund_ccy,
+                                   "price": px_ccy},
+             "note": ("fundamentals reported in " + str(fund_ccy) +
+                      " vs price in " + px_ccy +
+                      " — needs FX/ADR-ratio normalization")}))
+    elif pfcf is None:
         crits.append(_insuf("p_fcf", "Price / FCF",
                             f"price / FCFps ≤ {policy['p_fcf_max']}",
                             ["price" if price is None else "fcf_ps"]))
@@ -555,8 +644,20 @@ async def screen_instrument(
                                     f"DSCR ≥ {policy['dscr_min']}",
                                     {"dscr": float(dscr)}))
 
-    # 19: intrinsic-value discount (needs Part-6 valuation input)
-    if intrinsic_value is None or price is None:
+    # 19: intrinsic-value discount (needs Part-6 valuation input) —
+    # price-linked, same currency guard as P/FCF
+    if ccy_mismatch:
+        crits.append(CritResult(
+            "iv_discount", "Intrinsic-value discount",
+            "insufficient_data", 0.0,
+            f"(IV − P)/IV ≥ {mandate.margin_of_safety_min_pct if mandate else 20}%",
+            {"missing": ["same-currency intrinsic value"],
+             "currency_mismatch": {"fundamentals": fund_ccy,
+                                   "price": px_ccy},
+             "note": ("fundamentals reported in " + str(fund_ccy) +
+                      " vs price in " + px_ccy +
+                      " — needs FX/ADR-ratio normalization")}))
+    elif intrinsic_value is None or price is None:
         crits.append(_insuf(
             "iv_discount", "Intrinsic-value discount",
             f"(IV − P)/IV ≥ {mandate.margin_of_safety_min_pct if mandate else 20}%",
@@ -603,7 +704,11 @@ async def screen_instrument(
     # ── aggregate ──
     threshold = mandate.green_zone_pass_score if mandate else 15
     out = aggregate_verdict(crits, threshold, inst.listing_status)
-    return {"criteria": [c.to_dict() for c in crits], **out}
+    return {"criteria": [c.to_dict() for c in crits],
+            "fundamental_currency": fund_ccy,
+            "price_currency": px_ccy,
+            "currency_mismatch": ccy_mismatch,
+            **out}
 
 
 async def _screen_non_equity(
@@ -781,6 +886,7 @@ async def run_screen(
     universe_name: str = "approved",
     symbols: list[str] | None = None,
     max_symbols: int = 500,
+    hydrate: bool = False,
 ) -> ScreeningRun:
     """Screen a universe — or an explicit symbol list — into one
     ScreeningRun + ScreeningResult rows (idempotent per run).
@@ -840,7 +946,22 @@ async def run_screen(
         (await db.execute(select(Sector.id, Sector.name))).all()
     )
 
+    hydrated = 0
     for inst, _m in members:
+        # lazy hydration — an Alpaca-pool name carries zero bars/facts;
+        # screening it empty produces a wall of NO DATA that answers
+        # nothing. Pull coverage on first encounter instead (bounded:
+        # max 40 hydrations per run so a broad screen doesn't turn
+        # into a multi-hour backfill; the gapfill job sweeps the rest)
+        if hydrate and hydrated < 40:
+            try:
+                from app.services.universe import coverage_missing, \
+                    hydrate_instrument
+                if await coverage_missing(db, inst):
+                    await hydrate_instrument(db, inst)
+                    hydrated += 1
+            except Exception:
+                await db.rollback()
         sector_name = sector_names.get(inst.sector_id)
         res = await screen_instrument(
             db, inst, policy.params or POLICY_DEFAULTS, mandate, as_of,
@@ -867,5 +988,8 @@ async def run_screen(
     if truncated:
         run.error = (f"truncated at {max_symbols} instruments — "
                      "narrow the universe or pass explicit symbols")
+    if hydrated:
+        run.error = (((run.error + " · ") if run.error else "")
+                     + f"hydrated {hydrated} uncovered instruments")
     run.finished_at = utcnow()
     return run

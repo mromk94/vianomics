@@ -12,7 +12,9 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.fundamentals import FundamentalObservation
 from app.models.instruments import Instrument
+from app.models.market import OhlcvBar
 from app.models.universe import (
     Universe,
     UniverseMembership,
@@ -105,6 +107,71 @@ async def sync_alpaca_universe(
             "instruments_created": created, "members_added": added}
 
 
+async def coverage_missing(db: AsyncSession, inst: Instrument) -> bool:
+    """True when the instrument has no daily bars or no fundamental
+    observations — i.e. it's tracked but would screen 'no data'."""
+    bars = (await db.execute(
+        select(func.count(OhlcvBar.id)).where(
+            OhlcvBar.instrument_id == inst.id,
+            OhlcvBar.timeframe == "1d"))).scalar() or 0
+    if bars == 0:
+        return True
+    obs = (await db.execute(
+        select(func.count(FundamentalObservation.id)).where(
+            FundamentalObservation.instrument_id == inst.id))).scalar() or 0
+    return obs == 0
+
+
+async def hydrate_instrument(db: AsyncSession,
+                             inst: Instrument) -> dict[str, Any]:
+    """Pull bars + fundamentals + market stats for a tracked
+    instrument — the shared hydration path used by first-sight adds
+    (ensure_instrument), lazy screener hydration, and the nightly
+    gapfill sweep. Per-source failures are isolated; the return dict
+    reports exactly which legs landed."""
+    from app.ingestion import jobs as ing
+    out: dict[str, Any] = {"bars": False, "facts": False,
+                           "market_stats": False}
+    sym = inst.symbol
+    try:
+        from app.providers.yahoo import YahooAdapter
+        brun = await ing.ingest_stooq_bars(db, YahooAdapter(), sym)
+        await db.commit()
+        out["bars"] = brun.status == "success"
+    except Exception:
+        await db.rollback()
+    try:
+        from app.providers.edgar import EdgarAdapter
+        frun = await ing.ingest_edgar_facts(db, EdgarAdapter(), sym)
+        await db.commit()
+        out["facts"] = frun.status == "success" and frun.records_ok > 0
+    except Exception:
+        await db.rollback()
+    if not out["facts"]:
+        # no SEC XBRL for this issuer — Yahoo annual financials bridge
+        # the gap (source='yahoo' keeps provenance distinct)
+        try:
+            from app.providers.yahoo import YahooAdapter
+            yrun = await ing.ingest_yahoo_fundamentals(
+                db, YahooAdapter(), sym)
+            await db.commit()
+            out["facts"] = yrun.records_ok > 0
+        except Exception:
+            await db.rollback()
+    try:
+        from app.services.market_context import refresh_market_stats
+        out["market_stats"] = await refresh_market_stats(db, inst)
+        reasons = eligibility_reasons(inst, await rules_for(db))
+        if not reasons:
+            await set_membership(
+                db, universe_name="eligible", instrument=inst,
+                status="active", reason="eligibility rules pass")
+        await db.commit()
+    except Exception:
+        await db.rollback()
+    return out
+
+
 async def ensure_instrument(db: AsyncSession, symbol: str,
                             hydrate: bool = True) -> dict[str, Any]:
     """On-demand security-master add — validate the ticker against a
@@ -117,7 +184,14 @@ async def ensure_instrument(db: AsyncSession, symbol: str,
         select(Instrument).where(Instrument.symbol == sym))
     ).scalar_one_or_none()
     if inst is not None:
-        return {"instrument": inst, "created": False}
+        # already known — but an Alpaca-pool member may carry zero
+        # bars/facts; hydrate on first demand so it can actually screen
+        facts_ok = None
+        if hydrate and await coverage_missing(db, inst):
+            res = await hydrate_instrument(db, inst)
+            facts_ok = res["facts"]
+        return {"instrument": inst, "created": False,
+                "fundamentals": facts_ok}
 
     from app.providers.yahoo import YahooAdapter
     try:
@@ -148,37 +222,66 @@ async def ensure_instrument(db: AsyncSession, symbol: str,
         pass
     await db.commit()
 
+    facts_ok: bool | None = None
     if hydrate:
-        from app.ingestion import jobs as ing
-        try:                                    # price history first
-            await ing.ingest_stooq_bars(db, YahooAdapter(), sym)
-            await db.commit()
-        except Exception:
-            await db.rollback()
-        try:                                    # XBRL fundamentals —
-            from app.providers.edgar import EdgarAdapter  # without them
-            await ing.ingest_edgar_facts(       # the screen is all
-                db, EdgarAdapter(), sym)        # insufficient_data
-            await db.commit()
-        except Exception:
-            await db.rollback()
-        # market stats first (ADV/mcap), then the rules decide the
-        # tier — a ticker with unproven liquidity stays global, it is
-        # NOT silently promoted into the screenable book
+        # bars + fundamentals (EDGAR → Yahoo fallback) + market stats;
+        # eligibility is earned by the rules gate inside
+        # hydrate_instrument — never granted by default
+        res = await hydrate_instrument(db, inst)
+        facts_ok = res["facts"]
+    return {"instrument": inst, "created": True, "name": name,
+            "fundamentals": facts_ok}
+
+
+async def fundamentals_gapfill(db: AsyncSession, limit: int = 40,
+                               stale_days: int = 400
+                               ) -> dict[str, Any]:
+    """Coverage sweep — tracked instruments (bar-covered or tiered)
+    with zero facts or facts older than `stale_days` get re-ingested:
+    EDGAR first, Yahoo fallback for issuers SEC doesn't carry. Bounded
+    per run — nightly cadence converges coverage without melting the
+    job. The 10k-name global pool hydrates lazily on screen instead."""
+    from datetime import timedelta
+    from app.db.base import utcnow
+
+    covered = select(OhlcvBar.instrument_id).distinct()
+    tiered = (select(UniverseMembership.instrument_id)
+              .join(Universe,
+                    UniverseMembership.universe_id == Universe.id)
+              .where(Universe.name != "global",
+                     UniverseMembership.status == "active"))
+    tracked = (await db.execute(
+        select(Instrument).where(
+            or_(Instrument.id.in_(covered),
+                Instrument.id.in_(tiered)),
+            Instrument.asset_class == "equity"))).scalars().all()
+    ids = [i.id for i in tracked]
+    if not ids:
+        return {"status": "success", "checked": 0, "hydrated": 0}
+
+    latest_pub = dict((await db.execute(
+        select(FundamentalObservation.instrument_id,
+               func.max(FundamentalObservation.published_at))
+        .where(FundamentalObservation.instrument_id.in_(ids))
+        .group_by(FundamentalObservation.instrument_id))).all())
+    cutoff = utcnow() - timedelta(days=stale_days)
+    needs = [i for i in tracked
+             if latest_pub.get(i.id) is None
+             or latest_pub[i.id] < cutoff]
+    needs.sort(key=lambda i: (i.market_cap or 0), reverse=True)
+
+    hydrated = failed = 0
+    for inst in needs[:limit]:
         try:
-            from app.services.market_context import (
-                refresh_market_stats)
-            await refresh_market_stats(db, inst)
-            reasons = eligibility_reasons(inst, await rules_for(db))
-            if not reasons:
-                await set_membership(
-                    db, universe_name="eligible", instrument=inst,
-                    status="active",
-                    reason="eligibility rules pass")
-            await db.commit()
+            res = await hydrate_instrument(db, inst)
+            if res.get("facts") or res.get("bars"):
+                hydrated += 1
         except Exception:
             await db.rollback()
-    return {"instrument": inst, "created": True, "name": name}
+            failed += 1
+    return {"status": "success", "checked": len(needs),
+            "hydrated": hydrated, "failed": failed,
+            "backlog": max(0, len(needs) - limit)}
 
 
 async def universe_by_name(db: AsyncSession, name: str, tenant_id: str = "default") -> Universe | None:

@@ -17,23 +17,31 @@ MAX_PERIODS = 6
 MAX_CONCEPTS_PER_STATEMENT = 24
 
 # XBRL concept keyword → statement bucket. Compact map — unmatched
-# concepts land in "other" rather than being mislabeled.
+# concepts land in "other" rather than being mislabeled. Keywords
+# cover us-gaap AND ifrs-full names (CashFlowsFromUsedIn*, PurchaseOf*,
+# CurrentAssets…) plus the yahoo: fallback taxonomy.
 _CASHFLOW = ("NetCashProvidedByUsedIn", "PaymentsToAcquire",
              "PaymentsOfDividends", "PaymentsForRepurchase",
              "ProceedsFrom", "DepreciationDepletionAndAmortization",
              "ShareBasedCompensation", "PaymentsRelatedTo",
-             "PeriodIncreaseDecrease", "IncreaseDecrease")
+             "PeriodIncreaseDecrease", "IncreaseDecrease",
+             "CashFlowsFromUsedIn", "PurchaseOf", "ProceedsFromSalesOf",
+             "DividendsPaid", "DividendsReceived",
+             "OperatingCashFlow", "CapitalExpenditure",
+             "CashDividendsPaid", "FreeCashFlow")
 _BALANCE = ("Assets", "Liabilities", "StockholdersEquity",
+            "Equity", "Borrowings", "TotalDebt", "CurrentDebt",
             "LongTermDebt", "ShortTermBorrowings", "Debt",
             "CashAndCashEquivalents", "Inventory", "Goodwill",
             "RetainedEarnings", "AccountsReceivable",
+            "TradeReceivables", "Receivables",
             "AccountsPayable", "MinorityInterest",
             "CommonStockShares", "EntityCommonStockShares",
             "IntangibleAssets", "PropertyPlantAndEquipment")
 _INCOME = ("Revenue", "Income", "Earnings", "CostOf", "Expense",
            "Profit", "Interest", "Tax", "Dividends", "ShareBased",
            "Operating", "Research", "SellingGeneral",
-           "WeightedAverage")
+           "WeightedAverage", "AverageShares", "EPS", "PerShare")
 
 
 def _statement(concept: str) -> str:
@@ -118,6 +126,71 @@ _ALIAS: dict[str, str] = {
     "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"
     "PeriodIncreaseDecreaseIncludingExchangeRateEffect":
         "CashAndCashEquivalentsPeriodIncreaseDecrease",
+    # ifrs-full → canonical display names — foreign issuers' filings
+    # render as the same statement rows instead of a second taxonomy's
+    # vocabulary
+    "RevenueFromContractsWithCustomers": "Revenues",
+    "ProfitLossAttributableToOwnersOfParent": "NetIncomeLoss",
+    "ProfitLossFromOperatingActivities": "OperatingIncomeLoss",
+    "OperatingProfitLoss": "OperatingIncomeLoss",
+    "Equity": "StockholdersEquity",
+    "EquityAttributableToOwnersOfParent": "StockholdersEquity",
+    "CashFlowsFromUsedInOperatingActivities":
+        "NetCashProvidedByUsedInOperatingActivities",
+    "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities":
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+    "PaymentsToAcquirePropertyPlantAndEquipment":
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+    "LongtermBorrowings": "LongTermDebt",
+    "NoncurrentBorrowings": "LongTermDebtNoncurrent",
+    "CurrentBorrowings": "DebtCurrent",
+    "CurrentPortionOfLongtermBorrowings": "LongTermDebtCurrent",
+    "CurrentAssets": "AssetsCurrent",
+    "CurrentLiabilities": "LiabilitiesCurrent",
+    "CashAndCashEquivalents": "CashAndCashEquivalentsAtCarryingValue",
+    "CurrentTradeReceivables": "AccountsReceivable",
+    "TradeAndOtherCurrentReceivables": "AccountsReceivable",
+    "BasicEarningsLossPerShare": "EarningsPerShareBasic",
+    "DilutedEarningsLossPerShare": "EarningsPerShareDiluted",
+    "AdjustedWeightedAverageShares":
+        "WeightedAverageNumberOfSharesOutstandingBasic",
+    "WeightedAverageNumberOfOrdinarySharesOutstanding":
+        "WeightedAverageNumberOfSharesOutstandingBasic",
+    "FinanceCosts": "InterestExpense",
+    "InterestExpenseOnBorrowings": "InterestExpense",
+    "InterestExpenseOnBonds": "InterestExpense",
+    "ProfitLossBeforeTax": "IncomeLossFromContinuingOperations"
+        "BeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+    "IncomeTaxExpenseContinuingOperations": "IncomeTaxExpenseBenefit",
+    "CurrentTaxExpenseIncome": "IncomeTaxExpenseBenefit",
+    "DepreciationAmortisationExpense":
+        "DepreciationDepletionAndAmortization",
+    "DepreciationAndAmortisationExpense":
+        "DepreciationDepletionAndAmortization",
+    "DepreciationExpense": "DepreciationDepletionAndAmortization",
+    "AmortisationExpense": "DepreciationDepletionAndAmortization",
+    "DividendsPaidOrdinarySharesPerShare":
+        "CommonStockDividendsPerShareDeclared",
+    "DividendsRecognisedAsDistributionsToOwnersPerShare":
+        "CommonStockDividendsPerShareDeclared",
+    # yahoo: fallback taxonomy → same display rows
+    "TotalRevenue": "Revenues",
+    "NetIncome": "NetIncomeLoss",
+    "OperatingIncome": "OperatingIncomeLoss",
+    "OperatingCashFlow": "NetCashProvidedByUsedInOperatingActivities",
+    "CapitalExpenditure": "PaymentsToAcquirePropertyPlantAndEquipment",
+    "TotalDebt": "LongTermDebt",
+    "CurrentDebt": "DebtCurrent",
+    "BasicEPS": "EarningsPerShareBasic",
+    "DilutedEPS": "EarningsPerShareDiluted",
+    "BasicAverageShares": "WeightedAverageNumberOfSharesOutstandingBasic",
+    "DilutedAverageShares":
+        "WeightedAverageNumberOfDilutedSharesOutstanding",
+    "TaxProvision": "IncomeTaxExpenseBenefit",
+    "PretaxIncome": "IncomeLossFromContinuingOperations"
+        "BeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+    "DepreciationAndAmortization":
+        "DepreciationDepletionAndAmortization",
 }
 
 
@@ -126,10 +199,27 @@ def _canonical(concept: str) -> str:
     return f"{tax}:{_ALIAS.get(name, name)}"
 
 
+# taxonomy prefixes in lookup preference order — "" first so an
+# exact caller-specified key always wins; then us-gaap (canonical),
+# ifrs-full (foreign private issuers), yahoo (no-SEC fallback),
+# dei (cross-issuer facts like EntityCommonStockSharesOutstanding)
+_TAXONOMIES = ("", "us-gaap:", "ifrs-full:", "yahoo:", "dei:")
+
+
+def _find(points: dict[str, list[dict]], name: str):
+    """First non-empty point list for a concept name across every
+    taxonomy prefix, in preference order."""
+    for p in _TAXONOMIES:
+        hits = points.get(f"{p}{name}")
+        if hits:
+            return hits
+    return None
+
+
 def _latest(points: dict[str, list[dict]], *concepts: str) -> float | None:
     """First concept (by alias preference) with any point."""
     for c in concepts:
-        hits = points.get(c) or points.get(f"us-gaap:{c}")
+        hits = _find(points, c)
         if hits:
             return hits[0]["value"]
     return None
@@ -140,7 +230,7 @@ def _ttm(points: dict[str, list[dict]], *concepts: str) -> float | None:
     standalone quarters (incl. YTD-derived), else latest FY, else
     latest point."""
     for c in concepts:
-        hits = points.get(c) or points.get(f"us-gaap:{c}")
+        hits = _find(points, c)
         if not hits:
             continue
         q = [p["value"] for p in hits if p["fp"].startswith("Q")]
@@ -157,11 +247,21 @@ async def statement_map(db: AsyncSession, inst: Instrument,
         ratios: derived key ratios, periods: column headers}."""
     rows = (await db.execute(
         select(FO.concept, FO.period_start, FO.period_end, FO.fiscal_period,
-               FO.value, FO.unit, FO.published_at, FO.quality)
+               FO.value, FO.unit, FO.currency, FO.published_at, FO.quality)
         .where(FO.instrument_id == inst.id,
                FO.quality != "quarantined")
         .order_by(FO.period_end.desc(), FO.published_at.desc().nulls_last())
     )).all()
+
+    # reporting currency — rows are period_end desc, so the first
+    # currency-bearing row is the latest filing's unit. When it differs
+    # from the listing's trading currency (TSM: TWD filing, USD ADR)
+    # every price-linked ratio (PE, PB, div yield) would be garbage —
+    # suppress them rather than display a wrong number.
+    fund_ccy = next((r.currency for r in rows if r.currency), None)
+    ccy_mismatch = (
+        fund_ccy is not None
+        and fund_ccy != (inst.currency or "USD"))
 
     # SEC reports the same period_end with multiple durations — a 3-mo
     # quarterly value AND a 6/9-mo YTD value. Pick per fiscal period:
@@ -302,35 +402,49 @@ async def statement_map(db: AsyncSession, inst: Instrument,
 
     # ── derived key ratios (investing.com grid) — only where the
     # facts exist; nulls render as —
-    ni = _ttm(by_concept, "NetIncomeLoss", "ProfitLoss",
-              "us-gaap:NetIncomeLoss")
+    ni = _ttm(by_concept, "NetIncomeLoss", "ProfitLoss", "NetIncome")
     eq = _latest(by_concept, "StockholdersEquity",
                  "StockholdersEquityIncludingPortionAttributableTo"
-                 "NoncontrollingInterest")
+                 "NoncontrollingInterest",
+                 "EquityAttributableToOwnersOfParent", "Equity")
     debt = _latest(by_concept, "LongTermDebt",
                    "LongTermDebtAndCapitalLeaseObligations",
-                   "LongTermDebtNoncurrent")
+                   "LongTermDebtNoncurrent", "LongtermBorrowings",
+                   "NoncurrentBorrowings", "TotalDebt")
     ebitda = _ttm(by_concept, "EBITDA")
     eps = _ttm(by_concept, "EarningsPerShareDiluted",
-               "EarningsPerShareBasic")
+               "EarningsPerShareBasic", "DilutedEarningsLossPerShare",
+               "BasicEarningsLossPerShare", "DilutedEPS", "BasicEPS")
     shares = _latest(by_concept, "EntityCommonStockSharesOutstanding",
                      "CommonStockSharesOutstanding",
-                     "WeightedAverageNumberOfDilutedSharesOutstanding")
+                     "WeightedAverageNumberOfDilutedSharesOutstanding",
+                     "AdjustedWeightedAverageShares",
+                     "DilutedAverageShares", "BasicAverageShares")
     div_ps = _ttm(by_concept,
                   "CommonStockDividendsPerShareDeclared",
-                  "CommonStockDividendsPerShareCashPaid")
+                  "CommonStockDividendsPerShareCashPaid",
+                  "DividendsPaidOrdinarySharesPerShare",
+                  "DividendsRecognisedAsDistributionsToOwnersPerShare")
 
     ratios = {
-        "pe": (close / eps) if close and eps else None,
+        "pe": (close / eps)
+        if close and eps and not ccy_mismatch else None,
         "pb": (close / (eq / shares))
-        if close and eq and shares else None,
+        if close and eq and shares and not ccy_mismatch else None,
         "debt_equity": (debt / eq) if debt is not None and eq else None,
         "roe": (ni / eq) if ni is not None and eq else None,
         "ebitda": ebitda,
-        "dividend_yield": (div_ps / close) if div_ps and close else None,
+        "dividend_yield": (div_ps / close)
+        if div_ps and close and not ccy_mismatch else None,
         "shares": shares,
         "eps_diluted": eps,
     }
+    if ccy_mismatch:
+        ratios["currency_mismatch"] = {
+            "fundamentals": fund_ccy, "price": inst.currency or "USD",
+            "note": ("per-share values are in " + str(fund_ccy) +
+                     "; price-linked ratios suppressed — needs "
+                     "FX/ADR-ratio normalization")}
 
     # union of period columns for the table header — newest first;
     # only ends shared by ≥2 concepts so one-off dei document dates

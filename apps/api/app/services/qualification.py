@@ -137,7 +137,10 @@ async def qualification_gate(
     eps_filed = await fy_series(
         db, inst.id,
         ["us-gaap:EarningsPerShareDiluted",
-         "us-gaap:EarningsPerShareBasic"], as_of, years=12)
+         "us-gaap:EarningsPerShareBasic",
+         "ifrs-full:DilutedEarningsLossPerShare",
+         "ifrs-full:BasicEarningsLossPerShare",
+         "yahoo:DilutedEPS", "yahoo:BasicEPS"], as_of, years=12)
 
     split = _split_distorted(sh_s)
     eps_s = eps_filed or _per_share(ni, sh_s)
