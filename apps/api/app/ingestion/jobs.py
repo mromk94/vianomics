@@ -554,32 +554,34 @@ async def ingest_stooq_bars(
         await mark_sync(session, provider, f"market:{symbol}", True)
         return run
 
-    # bulk dedupe — one query for existing bar times; per-row SELECTs
-    # over a remote DB turn a 500-bar ingest into minutes of latency
-    existing_times = {
-        t for (t,) in (await session.execute(
+    # bulk dedupe by SESSION DATE across ALL sources — an alpaca bar
+    # for a session must block a yahoo duplicate (two rows for one day
+    # corrupts ATR); per-row SELECTs over a remote DB would turn a
+    # 500-bar ingest into minutes of latency
+    existing_dates = {
+        t.date() for (t,) in (await session.execute(
             select(OhlcvBar.time).where(
                 OhlcvBar.instrument_id == inst.id,
                 OhlcvBar.timeframe == "1d",
-                OhlcvBar.source == "yahoo",
                 OhlcvBar.adjusted.is_(False)))).all()
     }
     ok = 0
     today = utcnow().date()
     for r in raw:
         t = r["observed_at"]
-        if t not in existing_times:
+        if t.date() not in existing_dates:
             session.add(OhlcvBar(
                 instrument_id=inst.id, timeframe="1d", time=t,
                 open=r["open"], high=r["high"], low=r["low"],
                 close=r["close"], volume=r["volume"],
                 adjusted=False, source="yahoo",
             ))
-            existing_times.add(t)
+            existing_dates.add(t.date())
         elif t.date() >= today:
-            # today's bar is still forming — an earlier ingest stored
-            # a partial bar; refresh it in place so the "close" isn't
-            # frozen at mid-session values
+            # today's bar is still forming — an earlier yahoo ingest
+            # stored a partial bar; refresh it in place so the "close"
+            # isn't frozen at mid-session values (only same-source
+            # rows — never rewrite another provider's session bar)
             row = (await session.execute(
                 select(OhlcvBar).where(
                     OhlcvBar.instrument_id == inst.id,

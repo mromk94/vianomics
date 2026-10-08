@@ -150,6 +150,44 @@ services:
         sync: false
 
   - type: cronjob
+    name: vaiip-universe-core
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    # Sunday 06:45 UTC — S&P 500 constituents + most-actives refresh.
+    # Credential-free (Wikipedia + Yahoo), so the working book keeps
+    # converging even while Alpaca keys are out of service.
+    schedule: "45 6 * * 0"
+    startCommand: python -m app.cron_trigger universe:core:sync
+    envVars:
+      - key: API_URL
+        value: https://vianomics.onrender.com
+      - key: CRON_JOB
+        value: universe:core:sync
+      - key: CRON_SECRET
+        sync: false
+
+  - type: cronjob
+    name: vaiip-quotes-market-hours
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    # every 15 min during US cash hours (13:00–21:59 UTC covers both
+    # DST regimes) — keeps position marks/quotes fresh intraday;
+    # alpaca tape first, yahoo fills what it can't cover
+    schedule: "*/15 13-21 * * 1-5"
+    startCommand: python -m app.cron_trigger market:quotes
+    envVars:
+      - key: API_URL
+        value: https://vianomics.onrender.com
+      - key: CRON_JOB
+        value: market:quotes
+      - key: CRON_SECRET
+        sync: false
+
+  - type: cronjob
     name: vaiip-ibkr-sync
     runtime: docker
     dockerfilePath: ./Dockerfile

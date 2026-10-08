@@ -20,6 +20,13 @@ class AlpacaAdapter(HttpAdapter):
     trading_base = "https://api.alpaca.markets"   # assets live here
     rps = 3.0  # free tier ~200 req/min
 
+    @staticmethod
+    def _asym(symbol: str) -> str:
+        """Internal tickers are stored in canonical dash form
+        (BRK-B — Yahoo/SEC convention); Alpaca's API wants the dot
+        form for share classes."""
+        return symbol.upper().replace("-", ".")
+
     def __init__(self, api_key: str | None = None,
                  secret_key: str | None = None,
                  feed: str | None = None, **kw: Any) -> None:
@@ -70,7 +77,7 @@ class AlpacaAdapter(HttpAdapter):
             if page_token:
                 params["page_token"] = page_token
             resp = await self._get(
-                f"{self.base_url}/v2/stocks/{symbol.upper()}/bars",
+                f"{self.base_url}/v2/stocks/{self._asym(symbol)}/bars",
                 params=params, headers=self._headers())
             resp.raise_for_status()
             d = resp.json()
@@ -94,7 +101,7 @@ class AlpacaAdapter(HttpAdapter):
     async def latest_quote(self, symbol: str) -> dict | None:
         """NBBO-ish quote {bp,bs,ap,as,t} — IEX tape on free tier."""
         resp = await self._get(
-            f"{self.base_url}/v2/stocks/{symbol.upper()}"
+            f"{self.base_url}/v2/stocks/{self._asym(symbol)}"
             "/quotes/latest",
             params={"feed": self.feed}, headers=self._headers())
         if resp.status_code != 200:
@@ -104,7 +111,7 @@ class AlpacaAdapter(HttpAdapter):
     async def latest_trade(self, symbol: str) -> dict | None:
         """Last trade {p,s,t,x}."""
         resp = await self._get(
-            f"{self.base_url}/v2/stocks/{symbol.upper()}"
+            f"{self.base_url}/v2/stocks/{self._asym(symbol)}"
             "/trades/latest",
             params={"feed": self.feed}, headers=self._headers())
         if resp.status_code != 200:
@@ -116,7 +123,7 @@ class AlpacaAdapter(HttpAdapter):
         one call carries everything a quote row needs plus the day's
         open and prior close."""
         resp = await self._get(
-            f"{self.base_url}/v2/stocks/{symbol.upper()}/snapshot",
+            f"{self.base_url}/v2/stocks/{self._asym(symbol)}/snapshot",
             params={"feed": self.feed}, headers=self._headers())
         if resp.status_code != 200:
             return None

@@ -248,6 +248,37 @@ async def run_job_now(job_key: str,
             n = await mc.refresh_alpaca_quotes(db)
             await db.commit()
             return {"status": "success", "records_ok": len(n)}
+        elif job_key == "market:quotes":
+            # market-hours quote refresh for the TRACKED book — alpaca
+            # snapshots first (paid tape), yahoo meta fills whatever
+            # alpaca skipped or when keys are absent. Indices/sector
+            # ETFs are always refreshed (they're not Alpaca-tradable).
+            from app.services import market_context as mc
+            from app.providers.base import ProviderConfigError
+            from app.models.instruments import Instrument as _I
+            from app.models.universe import (
+                Universe as _U, UniverseMembership as _M)
+            tiered = (select(_M.instrument_id)
+                      .join(_U, _M.universe_id == _U.id)
+                      .where(_U.name != "global",
+                             _M.status == "active"))
+            t_syms = [i.symbol for i in (await db.execute(
+                select(_I).where(_I.id.in_(tiered)))).scalars().all()]
+            try:
+                covered = set(await mc.refresh_alpaca_quotes(db, t_syms))
+            except ProviderConfigError:
+                covered = set()
+            except Exception:
+                covered = set()
+            rest = [s for s in t_syms if s not in covered]
+            n2 = 0
+            if rest:
+                n2 = await mc.refresh_quotes(db, rest)
+            n2 += await mc.refresh_quotes(db)  # context set always
+            await db.commit()
+            return {"status": "success",
+                    "alpaca_covered": len(covered),
+                    "yahoo_covered": n2}
         elif job_key == "portfolio:alpaca:sync":
             from app.services import broker_sync
             res = await broker_sync.sync_alpaca_account(db)
@@ -257,6 +288,31 @@ async def run_job_now(job_key: str,
             # full US-equity discovery pool → 'global' universe
             from app.services import universe as usvc
             res = await usvc.sync_alpaca_universe(db)
+            await db.commit()
+            return res
+        elif job_key == "universe:core:sync":
+            # S&P 500 ∪ most-actives-250 → 'core' working universe —
+            # credential-free (Wikipedia constituents + Yahoo
+            # screener); hydrates a bounded batch per run, the
+            # nightly sweep converges the rest. Registered as a JobRun
+            # so DataOps shows status/history.
+            from app.services import universe as usvc
+            from app.ingestion.upsert import get_or_create
+            from app.models.ops import Job, JobRun
+            from app.db.base import utcnow
+            job, _ = await get_or_create(
+                db, Job, {"key": job_key}, {"kind": "ingestion"})
+            run = JobRun(job_id=job.id)
+            db.add(run)
+            await db.flush()
+            res = await usvc.sync_core_universe(db, hydrate_batch=40)
+            run.status = ("success" if res.get("status") == "success"
+                          else "failed")
+            run.error = res.get("error") or (
+                "; ".join(res["errors"]) if res.get("errors") else None)
+            run.records_in = res.get("constituents") or 0
+            run.records_ok = res.get("core_members_added") or 0
+            run.finished_at = utcnow()
             await db.commit()
             return res
         elif job_key == "portfolio:ibkr:sync":
@@ -427,14 +483,22 @@ async def refresh_daily_bars(db: AsyncSession) -> dict:
                 if run.status != "success":
                     raise RuntimeError(run.error or "alpaca bars")
             else:
-                await ing.ingest_stooq_bars(db, ya, inst.symbol)
+                # same 45d tail as the alpaca path — nightly refresh
+                # doesn't re-pull full history (backfill owns that)
+                await ing.ingest_stooq_bars(
+                    db, ya, inst.symbol,
+                    start=(utcnow() - timedelta(days=45))
+                    .date().isoformat())
             await db.commit()
             ok += 1
         except Exception:
             await db.rollback()
             # alpaca failure → yahoo keeps the book current
             try:
-                await ing.ingest_stooq_bars(db, ya, inst.symbol)
+                await ing.ingest_stooq_bars(
+                    db, ya, inst.symbol,
+                    start=(utcnow() - timedelta(days=45))
+                    .date().isoformat())
                 await db.commit()
                 ok += 1
             except Exception:
@@ -503,15 +567,11 @@ async def _backfill_all():
             await db.rollback()
         insts = (await db.execute(select(Instrument))).scalars().all()
         ya = YahooAdapter()
-        for inst in insts:
-            try:
-                await ing.ingest_stooq_bars(db, ya, inst.symbol)
-                await db.commit()
-            except Exception:
-                await db.rollback()
-        # fundamentals only for names that are actually tracked —
-        # pulling SEC companyfacts for the 10k-name global discovery
-        # pool would take days; pool members hydrate lazily on screen
+        # backfill is bounded to TRACKED names — bar-covered or
+        # tiered-universe members (eligible/approved/core). The 10k
+        # global discovery pool hydrates lazily on screen instead;
+        # pulling every name here would take days of polite-rate
+        # requests.
         from app.models.market import OhlcvBar
         from app.models.universe import Universe, UniverseMembership
         covered_ids = select(OhlcvBar.instrument_id).distinct()
@@ -520,15 +580,20 @@ async def _backfill_all():
                             UniverseMembership.universe_id == Universe.id)
                       .where(Universe.name != "global",
                              UniverseMembership.status == "active"))
-        fact_insts = [i for i in insts
-                      if i.asset_class == "equity"]
-        # cheap coverage check: tracked = has bars or tiered membership
         bar_covered = {r for (r,) in (await db.execute(
             covered_ids)).all()}
         tier_covered = {r for (r,) in (await db.execute(
             tiered_ids)).all()}
-        tracked = [i for i in fact_insts
+        tracked = [i for i in insts
                    if i.id in bar_covered or i.id in tier_covered]
+        for inst in tracked:
+            try:
+                await ing.ingest_stooq_bars(db, ya, inst.symbol)
+                await db.commit()
+            except Exception:
+                await db.rollback()
+        fact_insts = [i for i in tracked
+                      if i.asset_class == "equity"]
         # per-series isolation — one bad series never kills the rest
         # of the macro calendar (the 9/28 partial-ingest failure mode)
         try:
@@ -555,11 +620,11 @@ async def _backfill_all():
         except Exception:
             pass
         # EDGAR is public — a polite UA is baked into HttpAdapter.
-        # Tracked names only (bars-covered or tiered); Yahoo fills the
-        # issuers SEC doesn't carry. Pool members hydrate lazily.
+        # Tracked equities only (bars-covered or tiered); Yahoo fills
+        # the issuers SEC doesn't carry. Pool members hydrate lazily.
         from app.providers.edgar import EdgarAdapter
         ed = EdgarAdapter()
-        for inst in tracked:
+        for inst in fact_insts:
             try:
                 frun = await ing.ingest_edgar_facts(db, ed, inst.symbol)
                 await db.commit()

@@ -38,6 +38,7 @@ interface Detail extends SearchRow {
 
 interface Hierarchy {
   global: number;
+  core: number;
   eligible: number;
   approved: number;
   securities: number;
@@ -190,9 +191,10 @@ export function UniversePage() {
 
       {/* hierarchy strip */}
       {hier && (
-        <div className="rise grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="rise grid grid-cols-2 gap-3 sm:grid-cols-5">
           {[
             ["Global Market", hier.global],
+            ["Core Market", hier.core],
             ["Eligible Markets", hier.eligible],
             ["Approved Universe", hier.approved],
             ["Securities", hier.securities],

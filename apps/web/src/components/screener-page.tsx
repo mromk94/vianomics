@@ -389,7 +389,11 @@ export function ScreenerPage() {
        order. Verdict + asset-class filters apply on top. */
     const pct = (r: Row) => (r.applicable ? r.score / r.applicable : 0);
     return (data?.results ?? [])
-      .filter((r) => !verdict || r.verdict === verdict)
+      .filter((r) =>
+        !verdict
+        || (verdict === "confirm"
+          ? (r.review_items ?? []).length > 0
+          : r.verdict === verdict))
       .filter((r) =>
         !assetClass
         || (assetClass === "etf"
@@ -477,7 +481,16 @@ export function ScreenerPage() {
     {
       key: "qual", header: "Qualified",
       render: (r) =>
-        r.qualified ? <StatusBadge tone="pos">yes</StatusBadge> : <span className="text-faint">—</span>,
+        r.qualified
+          ? <StatusBadge tone="pos">yes</StatusBadge>
+          : (r.review_items ?? []).length > 0
+            ? (
+              <span className="text-warn text-[11px] font-semibold"
+                title={`Needs human confirmation: ${(r.review_items ?? []).join(", ")}`}>
+                pending
+              </span>
+            )
+            : <span className="text-faint">—</span>,
     },
   ];
 
@@ -513,6 +526,7 @@ export function ScreenerPage() {
               options={[
                 { value: "approved", label: "Approved universe" },
                 { value: "eligible", label: "Eligible universe" },
+                { value: "core", label: "Core market (S&P 500+)" },
                 { value: "global", label: "Global (all tracked)" },
                 { value: "custom", label: "Custom tickers" },
               ]}
@@ -562,6 +576,7 @@ export function ScreenerPage() {
                 { value: "", label: "All statuses" },
                 { value: "pass", label: "PASS" },
                 { value: "review", label: "REVIEW" },
+                { value: "confirm", label: "Awaiting confirm" },
                 { value: "fail", label: "FAIL" },
                 { value: "insufficient_data", label: "INSUFFICIENT DATA" },
                 { value: "blocked_by_risk", label: "BLOCKED BY RISK" },

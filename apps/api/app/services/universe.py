@@ -13,7 +13,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.fundamentals import FundamentalObservation
-from app.models.instruments import Instrument
+from app.models.instruments import (
+    Instrument,
+    InstrumentIdentifier,
+    Sector,
+)
 from app.models.market import OhlcvBar
 from app.models.universe import (
     Universe,
@@ -83,8 +87,12 @@ async def sync_alpaca_universe(
             continue
         if a.get("exchange") not in _MAJOR_EXCHANGES:
             continue
-        sym = (a.get("symbol") or "").strip().upper()
-        if not sym or len(sym) > 12 or not sym.replace(".", "").isalnum():
+        # canonical dash form — Alpaca 'BRK.B' stores as 'BRK-B'
+        # (Yahoo/SEC convention); the Alpaca adapter translates back
+        # to dot form at call time
+        sym = ((a.get("symbol") or "").strip().upper()
+               .replace(".", "-"))
+        if not sym or len(sym) > 12 or not sym.replace("-", "").isalnum():
             continue        # skip pairs/ODD lots/test tickers
         inst = existing.get(sym)
         if inst is None:
@@ -105,6 +113,149 @@ async def sync_alpaca_universe(
     await db.flush()
     return {"status": "success", "assets_seen": len(assets),
             "instruments_created": created, "members_added": added}
+
+
+async def sync_core_universe(
+    db: AsyncSession, tenant_id: str = "default",
+    hydrate_batch: int = 40,
+) -> dict[str, Any]:
+    """The desk's working universe — S&P 500 (Wikipedia: real names,
+    GICS sectors, SEC CIKs) ∪ Yahoo most-actives top-250 → 'global'
+    pool + 'core' universe membership.
+
+    Unlike the Alpaca 10k-name discovery dump, core is the tracked
+    book: its members get nightly bars and the fundamentals gapfill
+    sweep automatically (the tracked filter admits any non-global
+    universe membership). `hydrate_batch` pulls bars+facts for the
+    first N uncovered members per call — repeated calls converge to
+    full coverage; /backfill does the one-shot mass hydration.
+    """
+    from app.providers.constituents import (
+        sp500_constituents, yahoo_most_actives)
+
+    sources: dict[str, dict] = {}
+    errors: list[str] = []
+    try:
+        for c in await sp500_constituents():
+            sources[c["symbol"]] = c
+    except Exception as e:
+        errors.append(f"sp500: {e}")
+    try:
+        for c in await yahoo_most_actives(250):
+            # S&P rows carry richer metadata — actives fill in the rest
+            if c["symbol"] not in sources:
+                sources[c["symbol"]] = c
+    except Exception as e:
+        errors.append(f"most_actives: {e}")
+    if not sources:
+        return {"status": "failed",
+                "error": "; ".join(errors) or "no constituent data"}
+
+    global_u = await universe_by_name(db, "global", tenant_id)
+    if global_u is None:
+        global_u = Universe(name="global", tier="global",
+                            description="All known US-listed securities",
+                            tenant_id=tenant_id)
+        db.add(global_u)
+        await db.flush()
+    core_u = await universe_by_name(db, "core", tenant_id)
+    if core_u is None:
+        core_u = Universe(
+            name="core", tier="core",
+            description="Working book — S&P 500 ∪ most-actives top-250",
+            tenant_id=tenant_id)
+        db.add(core_u)
+        await db.flush()
+
+    existing = {i.symbol: i for i in
+                (await db.execute(select(Instrument))).scalars().all()}
+    have_core = {
+        m.instrument_id for m in (await db.execute(
+            select(UniverseMembership).where(
+                UniverseMembership.universe_id == core_u.id))
+        ).scalars().all()}
+    have_global = {
+        m.instrument_id for m in (await db.execute(
+            select(UniverseMembership).where(
+                UniverseMembership.universe_id == global_u.id))
+        ).scalars().all()}
+    sectors = {s.name: s for s in
+               (await db.execute(select(Sector))).scalars().all()}
+    have_cik = {
+        r[0] for r in (await db.execute(
+            select(InstrumentIdentifier.instrument_id)
+            .where(InstrumentIdentifier.scheme == "cik"))).all()}
+
+    created = membered = 0
+    new_insts: list[Instrument] = []
+    for sym, c in sources.items():
+        inst = existing.get(sym)
+        if inst is None:
+            inst = Instrument(
+                symbol=sym, name=c["name"] or sym,
+                asset_class=c.get("asset_class") or "equity",
+                currency="USD", status="watchlist")
+            db.add(inst)
+            await db.flush()
+            existing[sym] = inst
+            created += 1
+        else:
+            # backfill real name — pool rows from other syncs may only
+            # carry the ticker as a placeholder
+            if c.get("name") and (not inst.name or inst.name == sym):
+                inst.name = c["name"]
+        # real GICS sector from the constituents table (don't clobber
+        # a human assignment — only fill when unset)
+        sec_name = c.get("sector")
+        if sec_name and inst.sector_id is None:
+            sec = sectors.get(sec_name)
+            if sec is None:
+                sec = Sector(name=sec_name)
+                db.add(sec)
+                await db.flush()
+                sectors[sec_name] = sec
+            inst.sector_id = sec.id
+        # CIK → InstrumentIdentifier: EDGAR ingest reads this first,
+        # skipping the ticker→CIK map roundtrip entirely
+        if c.get("cik") and inst.id not in have_cik:
+            db.add(InstrumentIdentifier(
+                instrument_id=inst.id, scheme="cik",
+                value=str(c["cik"])))
+            have_cik.add(inst.id)
+        if inst.id not in have_global:
+            db.add(UniverseMembership(
+                universe_id=global_u.id, instrument_id=inst.id,
+                status="active", reason="core constituent sync"))
+            have_global.add(inst.id)
+        if inst.id not in have_core:
+            db.add(UniverseMembership(
+                universe_id=core_u.id, instrument_id=inst.id,
+                status="active",
+                reason=f"{c['index']} constituent"))
+            have_core.add(inst.id)
+            membered += 1
+            if await coverage_missing(db, inst):
+                new_insts.append(inst)
+    await db.commit()
+
+    # bounded hydration — first-call bootstrap pulls bars+facts for
+    # uncovered members; further calls/nightly gapfill finish the job
+    hydrated = 0
+    for inst in new_insts[:hydrate_batch]:
+        try:
+            await hydrate_instrument(db, inst)
+            hydrated += 1
+        except Exception:
+            await db.rollback()
+    if hydrated:
+        await db.commit()
+
+    return {"status": "success", "constituents": len(sources),
+            "instruments_created": created,
+            "core_members_added": membered,
+            "hydrated": hydrated,
+            "uncovered_backlog": max(0, len(new_insts) - hydrated),
+            "errors": errors or None}
 
 
 async def coverage_missing(db: AsyncSession, inst: Instrument) -> bool:
@@ -133,13 +284,32 @@ async def hydrate_instrument(db: AsyncSession,
     out: dict[str, Any] = {"bars": False, "facts": False,
                            "market_stats": False}
     sym = inst.symbol
+    # bars: Alpaca (paid tape) when configured, Yahoo fallback — same
+    # preference order as the nightly refresh. 10y of daily bars
+    # covers technicals/regime history; the deeper archive pull stays
+    # with /backfill, not first-sight hydration
     try:
-        from app.providers.yahoo import YahooAdapter
-        brun = await ing.ingest_stooq_bars(db, YahooAdapter(), sym)
+        from app.providers.alpaca import AlpacaAdapter
+        from app.providers.base import ProviderConfigError
+        try:
+            brun = await ing.ingest_alpaca_bars(
+                db, AlpacaAdapter(), sym, start="2015-01-01")
+            if brun.status != "success":
+                raise RuntimeError(brun.error or "alpaca bars")
+        except ProviderConfigError:
+            raise RuntimeError("alpaca unconfigured")
         await db.commit()
-        out["bars"] = brun.status == "success"
+        out["bars"] = True
     except Exception:
         await db.rollback()
+        try:
+            from app.providers.yahoo import YahooAdapter
+            brun = await ing.ingest_stooq_bars(
+                db, YahooAdapter(), sym, start="2015-01-01")
+            await db.commit()
+            out["bars"] = brun.status == "success"
+        except Exception:
+            await db.rollback()
     try:
         from app.providers.edgar import EdgarAdapter
         frun = await ing.ingest_edgar_facts(db, EdgarAdapter(), sym)
@@ -484,7 +654,7 @@ async def watchlists(db: AsyncSession, tenant_id: str = "default") -> list[dict]
 async def universe_stats(db: AsyncSession, tenant_id: str = "default") -> dict:
     """Counts per tier for the hierarchy header."""
     tiers = {}
-    for name in ("global", "eligible", "approved"):
+    for name in ("global", "core", "eligible", "approved"):
         u = await universe_by_name(db, name, tenant_id)
         if u is None:
             tiers[name] = 0

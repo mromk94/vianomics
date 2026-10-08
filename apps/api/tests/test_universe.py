@@ -98,4 +98,5 @@ async def test_universe_stats(db):
             db, universe_name=u.name, instrument=i, status="active"
         )
     stats = await svc.universe_stats(db)
-    assert stats == {"global": 1, "eligible": 1, "approved": 1, "securities": 1}
+    assert stats == {"global": 1, "core": 0, "eligible": 1,
+                     "approved": 1, "securities": 1}
