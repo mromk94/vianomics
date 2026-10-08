@@ -180,7 +180,8 @@ async def command_center(
     # rolling snapshots; internal book has no nav history yet)
     from app.models.portfolio import ExternalAccount
     ext_accs = (await db.execute(
-        select(ExternalAccount).where(ExternalAccount.connected))
+        select(ExternalAccount).where(
+            ExternalAccount.connected, ExternalAccount.enabled))
     ).scalars().all()
     stats = [re_.equity_stats(a.equity_history or [],
                               float(a.equity) if a.equity else None)
@@ -249,7 +250,8 @@ async def command_center(
     if source != "internal":
         from app.models.portfolio import ExternalAccount
         from app.models.market import MarketQuote
-        q = select(ExternalAccount).where(ExternalAccount.connected)
+        q = select(ExternalAccount).where(
+            ExternalAccount.connected, ExternalAccount.enabled)
         if source != "all":
             q = q.where(ExternalAccount.source == source)
         ext = (await db.execute(q)).scalars().all()

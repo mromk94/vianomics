@@ -107,3 +107,7 @@ class ExternalAccount(Base, IdMixin, TimestampMixin):
     synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True))
     connected: Mapped[bool] = mapped_column(default=True)
+    # `connected` = data flowing in; `enabled` = included in reads
+    # (NAV/cash/risk sizing/pyramid ctx). A source can be connected
+    # but disabled — paused from calcs without disconnecting it.
+    enabled: Mapped[bool] = mapped_column(default=True)

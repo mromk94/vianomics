@@ -86,7 +86,8 @@ async def _context(db: AsyncSession) -> dict:
         from app.models.portfolio import ExternalAccount
         ea = (await db.execute(
             select(ExternalAccount)
-            .where(ExternalAccount.connected))).scalars().all()
+            .where(ExternalAccount.connected,
+                   ExternalAccount.enabled))).scalars().all()
         ext = [{"label": a.label, "equity": float(a.equity or 0),
                 "positions": len(a.positions or []),
                 "synced": a.synced_at.isoformat()[:16]

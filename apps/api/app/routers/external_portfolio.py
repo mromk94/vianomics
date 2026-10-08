@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.base import utcnow
 from app.db.session import get_db
 from app.models.portfolio import ExternalAccount
+from app.security import require
 from app.services.secrets import get_secret
 
 router = APIRouter(prefix="/external", tags=["external-portfolio"])
@@ -103,6 +104,7 @@ async def sources(db: AsyncSession = Depends(get_db)):
     ).scalars().all()
     return [
         {"source": a.source, "label": a.label,
+         "enabled": bool(a.enabled),
          "equity": float(a.equity) if a.equity is not None else None,
          "balance": float(a.balance) if a.balance is not None else None,
          "currency": a.currency,
@@ -111,6 +113,33 @@ async def sources(db: AsyncSession = Depends(get_db)):
          "stale": (a.synced_at is None or
                    (utcnow() - a.synced_at).total_seconds() > 3600)}
         for a in rows]
+
+
+class SourceEnabledIn(BaseModel):
+    enabled: bool
+
+
+@router.post("/sources/{source}/enabled")
+async def toggle_source(
+    source: str,
+    body: SourceEnabledIn,
+    db: AsyncSession = Depends(get_db),
+    user=Depends(require("admin:*")),
+):
+    """Kill switch per source — `connected` (data flowing in) stays
+    untouched; `enabled` gates whether the book reads it into NAV,
+    risk sizing, pyramid context and Command Center views."""
+    acc = (await db.execute(
+        select(ExternalAccount).where(
+            ExternalAccount.source == source,
+            ExternalAccount.connected))
+    ).scalars().first()
+    if acc is None:
+        raise HTTPException(404, f"no connected source '{source}'")
+    acc.enabled = body.enabled
+    db.add(acc)
+    await db.commit()
+    return {"source": acc.source, "enabled": acc.enabled}
 
 
 @router.post("/bamboo/sync")

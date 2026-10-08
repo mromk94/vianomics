@@ -106,7 +106,8 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
     # live, per-name, not as a black-box aggregate ──
     from app.models.portfolio import ExternalAccount
     ext_accounts = (await db.execute(
-        select(ExternalAccount).where(ExternalAccount.connected))
+        select(ExternalAccount).where(
+            ExternalAccount.connected, ExternalAccount.enabled))
     ).scalars().all()
     if ext_accounts:
         insts = (await db.execute(

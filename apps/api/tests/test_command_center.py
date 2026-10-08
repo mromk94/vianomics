@@ -94,3 +94,44 @@ async def test_internal_book_excludes_external_cash(db) -> None:
     combined = await command_center("all", db)
     assert combined.portfolio.cash == 400_000      # ext cash once
     assert combined.portfolio.total_value == 407_500
+
+
+async def test_disabled_source_excluded_from_book(db) -> None:
+    """Kill-switch regression — enabled=False must drop the account
+    from _portfolio_ctx (NAV/cash/risk sizing/pyramid) while it stays
+    connected. Combined view then equals the internal book."""
+    from app.models.portfolio import (
+        ExternalAccount, LedgerEntry, Portfolio)
+    from app.routers.command_center import command_center
+    from app.routers.risk import _portfolio_ctx
+    from app.services import cache
+
+    pf = Portfolio(name="paper", broker="paper")
+    db.add(pf)
+    await db.flush()
+    db.add(LedgerEntry(portfolio_id=pf.id, kind="deposit",
+                       amount=100_000))
+    acc = ExternalAccount(
+        source="mt4", label="MT4 #1", currency="USD",
+        balance=300_000, equity=305_000, connected=True,
+        enabled=False, positions=[], equity_history=[])
+    db.add(acc)
+    await db.commit()
+
+    ctx = await _portfolio_ctx(db)
+    assert ctx["nav"] == 100_000          # disabled book invisible
+    assert ctx["cash"] == 100_000
+    assert ctx["nav_internal"] == 100_000
+
+    cache.invalidate()
+    combined = await command_center("all", db)
+    assert combined.portfolio.cash == 100_000
+    assert combined.portfolio.total_value == 100_000
+
+    acc.enabled = True
+    db.add(acc)
+    await db.commit()
+    cache.invalidate()
+    ctx = await _portfolio_ctx(db)
+    assert ctx["nav"] == 405_000          # back on: book reappears
+    assert ctx["cash"] == 400_000

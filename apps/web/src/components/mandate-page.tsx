@@ -54,6 +54,92 @@ interface EnvStatus {
   demo_fixtures: boolean;
 }
 
+interface ExtSource {
+  source: string; label: string; enabled: boolean; stale: boolean;
+  equity: number | null; balance: number | null; currency: string;
+  positions: number; synced_at: string | null;
+}
+
+/** Connected portfolio accounts (MT4 EA, IBKR bridge, Bamboo…) —
+ * per-source kill switch. `enabled=false` keeps the feed landing but
+ * removes the book from NAV, risk sizing, pyramid context and the
+ * Command Center — the inverse of disconnecting. */
+function ConnectedAccounts() {
+  const [rows, setRows] = useState<ExtSource[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = () =>
+    apiGet<ExtSource[]>("/api/v1/external/sources")
+      .then(setRows).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, []);
+
+  const toggle = async (s: ExtSource) => {
+    setBusy(s.source); setErr(null);
+    try {
+      await apiPost(`/api/v1/external/sources/${s.source}/enabled`,
+        { enabled: !s.enabled });
+      await load();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : "toggle failed");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <SectionCard title="Connected accounts" className="rise">
+      {rows.length === 0 ? (
+        <p className="text-[11px] text-dim">
+          No external accounts connected. MT4 EA pushes and the IBKR
+          bridge register here automatically.
+        </p>
+      ) : (
+        <ul className="space-y-1.5">
+          {rows.map((s) => (
+            <li key={s.source}
+              className="glass-tile flex items-center gap-3 px-3 py-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 text-[12px]">
+                  <span className="truncate font-medium">{s.label}</span>
+                  <StatusBadge tone={s.enabled ? "pos" : "neutral"}>
+                    {s.enabled ? "reading" : "paused"}
+                  </StatusBadge>
+                  {s.stale && <StatusBadge tone="warn">stale</StatusBadge>}
+                </div>
+                <div className="mt-0.5 text-[11px] text-faint">
+                  {s.equity != null &&
+                    `equity $${Math.round(s.equity).toLocaleString()} · `}
+                  {s.positions} pos · synced{" "}
+                  {s.synced_at ? fmtTime(s.synced_at) : "never"}
+                </div>
+              </div>
+              <button
+                disabled={busy === s.source}
+                onClick={() => toggle(s)}
+                className={`rounded-lg border px-2.5 py-1 text-[11px]
+                  transition-colors disabled:opacity-50 ${
+                    s.enabled
+                      ? "border-border text-dim hover:border-neg/60 hover:text-neg"
+                      : "border-pos/60 text-pos hover:bg-pos/10"}`}>
+                {busy === s.source ? "…"
+                  : s.enabled ? "Turn off" : "Turn on"}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-3 text-[11px] text-dim">
+        Off = data keeps syncing, but the book ignores it — NAV, risk
+        utilization, sleeve sizing and pyramid calculations only read
+        accounts that are on.
+      </p>
+      {err && <p className="mt-2 text-[11px] text-neg">{err}</p>}
+    </SectionCard>
+  );
+}
+
 /** API keys, data sources, models — shows what IS configured without
  * ever exposing values. Keys live in the server's .env — see /docs. */
 function EnvSettings() {
@@ -84,6 +170,8 @@ function EnvSettings() {
           ))}
         </ul>
       </SectionCard>
+
+      <ConnectedAccounts />
 
       <SectionCard title="Execution & demo state" className="rise">
         <ul className="space-y-1.5">

@@ -107,12 +107,16 @@ export function CommandCenter() {
   const [loading, setLoading] = useState(true);
   const [source, setSource] = useState<string | null>(null);
   const [extSources, setExtSources] = useState<
-    { source: string; label: string; stale: boolean;
-      synced_at: string | null }[]>([]);
+    { source: string; label: string; enabled: boolean;
+      stale: boolean; synced_at: string | null }[]>([]);
+  // disabled sources stay connected but are excluded from reads —
+  // the selector and stats only see what's switched on
+  const enabledSources = extSources.filter((x) => x.enabled);
 
   const fetchSources = () =>
-    apiGet<{ source: string; label: string; stale: boolean;
-             synced_at: string | null }[]>("/api/v1/external/sources")
+    apiGet<{ source: string; label: string; enabled: boolean;
+             stale: boolean; synced_at: string | null }[]>(
+        "/api/v1/external/sources")
       .then(setExtSources)
       .catch(() => {});
 
@@ -129,19 +133,32 @@ export function CommandCenter() {
   // resolve which sources exist first — only then choose a default
   // (connected accounts → "all"), so the portfolio never paints empty
   useEffect(() => {
-    apiGet<{ source: string; label: string; stale: boolean;
-             synced_at: string | null }[]>("/api/v1/external/sources")
+    apiGet<{ source: string; label: string; enabled: boolean;
+             stale: boolean; synced_at: string | null }[]>(
+        "/api/v1/external/sources")
       .then((xs) => {
         setExtSources(xs);
-        setSource((s) => s ?? (xs.length ? "all" : "internal"));
+        setSource((s) => s ??
+          (xs.some((x) => x.enabled) ? "all" : "internal"));
       })
       .catch(() => setSource((s) => s ?? "internal"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(load, [source]);
+  // a source disabled in settings stops being a valid selection —
+  // snap back to internal (or combined if others remain)
+  useEffect(() => {
+    if (source === null || source === "internal") return;
+    const stillOn = enabledSources.some((x) => x.source === source);
+    if (source === "all" && enabledSources.length === 0)
+      setSource("internal");
+    else if (source !== "all" && !stillOn)
+      setSource(enabledSources.length ? "all" : "internal");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [extSources]);
 
-  const staleFeeds = extSources.filter(
+  const staleFeeds = enabledSources.filter(
     (x) => x.stale && (source === "all" || source === x.source));
 
   if (error) {
@@ -179,8 +196,11 @@ export function CommandCenter() {
             className="rounded-lg border border-border bg-surface-solid px-2.5 py-1.5 text-[12px] text-text">
             <option value="internal">Internal portfolio</option>
             {extSources.map((x) => (
-              <option key={x.source} value={x.source}>{x.label}</option>))}
-            {extSources.length > 0 && <option value="all">All sources combined</option>}
+              <option key={x.source} value={x.source} disabled={!x.enabled}>
+                {x.label}{x.enabled ? "" : " (off)"}
+              </option>))}
+            {enabledSources.length > 0 &&
+              <option value="all">All sources combined</option>}
           </select>
         }
       />
