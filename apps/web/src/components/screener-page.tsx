@@ -289,6 +289,7 @@ export function ScreenerPage() {
   const [data, setData] = useState<{ run: { id: string; policy_version: number; mandate_version: number | null; started_at: string; universe: string } | null; results: Row[] } | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [verdict, setVerdict] = useState("");
+  const [assetClass, setAssetClass] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -381,16 +382,35 @@ export function ScreenerPage() {
     }
   };
 
-  const rows = useMemo(
-    () => (data?.results ?? []).filter((r) => !verdict || r.verdict === verdict),
-    [data, verdict],
-  );
+  const rows = useMemo(() => {
+    /* rank best → worst: raw score desc, then % of applicable
+       criteria desc (a 14/14 outranks a 14/20 — same score, more
+       of its judgeable criteria cleared), then ticker for a stable
+       order. Verdict + asset-class filters apply on top. */
+    const pct = (r: Row) => (r.applicable ? r.score / r.applicable : 0);
+    return (data?.results ?? [])
+      .filter((r) => !verdict || r.verdict === verdict)
+      .filter((r) =>
+        !assetClass
+        || (assetClass === "etf"
+          ? r.asset_class === "etf"
+          : (r.asset_class || "equity") === assetClass))
+      .slice()
+      .sort((a, b) =>
+        b.score - a.score || pct(b) - pct(a)
+        || a.symbol.localeCompare(b.symbol));
+  }, [data, verdict, assetClass]);
 
   const columns: Column<Row>[] = [
     {
       key: "symbol", header: "Ticker",
       render: (r) => (
-        <span className="font-semibold text-accent">{r.symbol}</span>
+        <span className="font-semibold text-accent">
+          {r.symbol}
+          {r.asset_class === "etf" && (
+            <span className="ml-1.5 rounded-full bg-surface-3 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-dim">etf</span>
+          )}
+        </span>
       ),
     },
     { key: "name", header: "Name", render: (r) => <span className="text-dim">{r.name}</span> },
@@ -525,18 +545,29 @@ export function ScreenerPage() {
 
       <SectionCard title="Screening results" className="rise"
         action={
-          <FilterSelect
-            value={verdict}
-            onChange={setVerdict}
-            options={[
-              { value: "", label: "All statuses" },
-              { value: "pass", label: "PASS" },
-              { value: "review", label: "REVIEW" },
-              { value: "fail", label: "FAIL" },
-              { value: "insufficient_data", label: "INSUFFICIENT DATA" },
-              { value: "blocked_by_risk", label: "BLOCKED BY RISK" },
-            ]}
-          />
+          <div className="flex items-center gap-2">
+            <FilterSelect
+              value={assetClass}
+              onChange={setAssetClass}
+              options={[
+                { value: "", label: "All assets" },
+                { value: "equity", label: "Stocks" },
+                { value: "etf", label: "ETFs" },
+              ]}
+            />
+            <FilterSelect
+              value={verdict}
+              onChange={setVerdict}
+              options={[
+                { value: "", label: "All statuses" },
+                { value: "pass", label: "PASS" },
+                { value: "review", label: "REVIEW" },
+                { value: "fail", label: "FAIL" },
+                { value: "insufficient_data", label: "INSUFFICIENT DATA" },
+                { value: "blocked_by_risk", label: "BLOCKED BY RISK" },
+              ]}
+            />
+          </div>
         }>
         <DataTable
           columns={columns}

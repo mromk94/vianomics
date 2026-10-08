@@ -267,7 +267,13 @@ async def latest(db: AsyncSession = Depends(get_db)) -> dict:
         },
         "results": sorted(
             (_result_row(r, i, _cov(i.id)) for r, i in rows),
-            key=lambda x: x["score"], reverse=True,
+            # best → worst: raw score, then share of applicable
+            # criteria cleared, then ticker for stability
+            key=lambda x: (
+                x["score"],
+                x["score"] / x["applicable"] if x["applicable"] else 0,
+            ),
+            reverse=True,
         ),
     }
 
