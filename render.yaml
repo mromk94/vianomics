@@ -169,6 +169,27 @@ services:
         sync: false
 
   - type: cronjob
+    name: vaiip-fundamentals-gapfill
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    # 20:45 UTC Mon–Fri — coverage sweep BEFORE ingest:daily's 22:00
+    # run. Each pass hydrates 40 uncovered tracked names
+    # (bars → EDGAR → Yahoo fallback → market stats); combined with
+    # ingest:daily's embedded sweep the ~600-name core backlog
+    # converges in ~11 nights instead of ~41.
+    schedule: "45 20 * * 1-5"
+    startCommand: python -m app.cron_trigger fundamentals:gapfill
+    envVars:
+      - key: API_URL
+        value: https://vianomics.onrender.com
+      - key: CRON_JOB
+        value: fundamentals:gapfill
+      - key: CRON_SECRET
+        sync: false
+
+  - type: cronjob
     name: vaiip-quotes-market-hours
     runtime: docker
     dockerfilePath: ./Dockerfile
