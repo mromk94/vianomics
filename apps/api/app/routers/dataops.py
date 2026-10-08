@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -229,7 +231,7 @@ async def run_job_now(job_key: str,
             from app.services import market_context as mc
             n = await mc.refresh_alpaca_quotes(db)
             await db.commit()
-            return {"status": "success", "records_ok": n}
+            return {"status": "success", "records_ok": len(n)}
         elif job_key == "portfolio:alpaca:sync":
             from app.services import broker_sync
             res = await broker_sync.sync_alpaca_account(db)
@@ -361,6 +363,7 @@ async def refresh_daily_bars(db: AsyncSession) -> dict:
     ADV + live quotes. Scheduled by the vaiip-ingest-daily cronjob so
     the symbol page and the maintenance loop never run on yesterday's
     book."""
+    from app.db.base import utcnow
     from app.ingestion import jobs as ing
     from app.models.instruments import Instrument
     from app.models.market import OhlcvBar
@@ -387,20 +390,54 @@ async def refresh_daily_bars(db: AsyncSession) -> dict:
         select(Instrument).where(
             or_(Instrument.id.in_(covered),
                 Instrument.id.in_(tiered))))).scalars().all()
+    # prefer the paid Alpaca tape for daily bars when keys exist —
+    # SIP/IEX is the authoritative feed; yahoo is the fallback, never
+    # the only option while alpaca is configured
+    from app.providers.alpaca import AlpacaAdapter
+    from app.providers.base import ProviderConfigError
+    try:
+        alp = AlpacaAdapter()
+    except ProviderConfigError:
+        alp = None
     for inst in tracked:
         try:
-            await ing.ingest_stooq_bars(db, ya, inst.symbol)
+            if alp is not None:
+                # nightly refresh only needs recent sessions — dedupe
+                # covers overlap; deep history is /backfill's job
+                run = await ing.ingest_alpaca_bars(
+                    db, alp, inst.symbol,
+                    start=(utcnow() - timedelta(days=45))
+                    .date().isoformat())
+                if run.status != "success":
+                    raise RuntimeError(run.error or "alpaca bars")
+            else:
+                await ing.ingest_stooq_bars(db, ya, inst.symbol)
             await db.commit()
             ok += 1
         except Exception:
             await db.rollback()
+            # alpaca failure → yahoo keeps the book current
+            try:
+                await ing.ingest_stooq_bars(db, ya, inst.symbol)
+                await db.commit()
+                ok += 1
+            except Exception:
+                await db.rollback()
     try:
         await mc.update_adv(db)
+        # quotes: alpaca snapshots for tracked names it covered;
+        # yahoo for the uncovered + the whole context set
+        t_syms = [i.symbol for i in tracked]
+        covered_q = set(await mc.refresh_alpaca_quotes(db, t_syms))
+        rest = [s for s in t_syms if s not in covered_q]
+        if rest:
+            await mc.refresh_quotes(db, rest)
         await mc.refresh_quotes(db)
         await db.commit()
     except Exception:
         await db.rollback()
-    return {"instruments": ok}
+    return {"instruments": ok,
+            "bars_source": "alpaca" if alp is not None else "yahoo"}
 
 
 @router.post("/backfill", status_code=202)

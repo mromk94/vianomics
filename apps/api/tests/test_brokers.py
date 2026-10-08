@@ -3,7 +3,7 @@ all HTTP mocked, no network."""
 
 import httpx
 import pytest
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from sqlalchemy import select
 
 from app.models.instruments import Instrument
@@ -45,8 +45,39 @@ async def test_alpaca_bars_ingest(db, inst):
     bars = (await db.execute(
         select(OhlcvBar).where(OhlcvBar.source == "alpaca"))
     ).scalars().all()
-    assert len(bars) == 2 and bars[0].timeframe == "1day"
+    # canonical timeframe — '1Day' lands as '1d' so engines see it
+    assert len(bars) == 2 and bars[0].timeframe == "1d"
     assert bars[0].close == pytest.approx(101.5)
+
+
+async def test_alpaca_bars_never_duplicate_a_session(db, inst):
+    """A day already covered by another source (yahoo) must not get a
+    second '1d' row from alpaca — dupes corrupt ATR/returns."""
+    from app.ingestion.jobs import ingest_alpaca_bars
+    from app.db.base import utcnow
+    db.add(OhlcvBar(instrument_id=inst.id, timeframe="1d",
+                    time=utcnow() - timedelta(days=2),
+                    open=1, high=2, low=1, close=1.5,
+                    volume=100, source="yahoo"))
+    await db.commit()
+    same_day = (utcnow() - timedelta(days=2)).strftime(
+        "%Y-%m-%dT04:00:00Z")
+    payload = {"bars": [
+        {"t": same_day, "o": 1, "h": 2, "l": 1, "c": 1.6, "v": 5},
+        {"t": (utcnow() - timedelta(days=1)).strftime(
+            "%Y-%m-%dT04:00:00Z"), "o": 2, "h": 3, "l": 2, "c": 2.5,
+         "v": 6}],
+        "next_page_token": None}
+    ad = AlpacaAdapter(api_key="k", secret_key="s",
+                       client=mock_client(payload))
+    run = await ingest_alpaca_bars(db, ad, "NVDA")
+    assert run.status == "success"
+    bars = (await db.execute(
+        select(OhlcvBar).where(OhlcvBar.instrument_id == inst.id,
+                               OhlcvBar.timeframe == "1d"))
+    ).scalars().all()
+    assert len(bars) == 2   # one per session — no dupe
+    assert {b.source for b in bars} == {"yahoo", "alpaca"}
 
 
 async def test_alpaca_unconfigured(monkeypatch):
@@ -69,7 +100,7 @@ async def test_alpaca_quote_refresh(db, inst, monkeypatch):
     monkeypatch.setattr(
         "app.providers.alpaca.AlpacaAdapter", lambda **kw: FakeAdapter())
     n = await refresh_alpaca_quotes(db, ["NVDA", "^VIX"])
-    assert n == 1  # index skipped — stocks/ETFs only
+    assert n == ["NVDA"]  # index skipped — stocks/ETFs only
     q = (await db.execute(
         select(MarketQuote).where(MarketQuote.source == "alpaca"))
     ).scalar_one()

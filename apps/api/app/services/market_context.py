@@ -247,19 +247,22 @@ async def refresh_quotes(db: AsyncSession,
 
 async def refresh_alpaca_quotes(db: AsyncSession,
                                 symbols: list[str] | None = None
-                                ) -> int:
+                                ) -> list[str]:
     """Alpaca snapshot → market_quotes (source='alpaca'). Snapshot is
     the richest single call: NBBO-ish bid/ask (IEX tape on the free
     tier), last trade, today's open and prior close in one response.
-    Second real-time source alongside MT4/Tiingo/Yahoo."""
+    Second real-time source alongside MT4/Tiingo/Yahoo.
+
+    Returns the symbols actually covered — callers fall back to
+    yahoo for anything Alpaca skipped (index symbols, failures)."""
     from app.providers.alpaca import AlpacaAdapter
     from app.providers.base import ProviderConfigError
     try:
         ad = AlpacaAdapter()
     except ProviderConfigError:
-        return 0
+        return []
     syms = symbols or list(CONTEXT_INSTRUMENTS)
-    n = 0
+    covered: list[str] = []
     for sym in syms:
         if sym.startswith("^"):
             continue  # IEX/SIP carry stocks/ETFs, not indices
@@ -297,5 +300,5 @@ async def refresh_alpaca_quotes(db: AsyncSession,
         row.day_open = day.get("o")
         row.prev_close = prev.get("c")
         row.ts = now
-        n += 1
-    return n
+        covered.append(sym)
+    return covered

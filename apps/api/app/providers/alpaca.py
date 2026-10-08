@@ -21,13 +21,16 @@ class AlpacaAdapter(HttpAdapter):
     rps = 3.0  # free tier ~200 req/min
 
     def __init__(self, api_key: str | None = None,
-                 secret_key: str | None = None, feed: str = "iex",
-                 **kw: Any) -> None:
+                 secret_key: str | None = None,
+                 feed: str | None = None, **kw: Any) -> None:
         super().__init__(**kw)
         self.api_key = api_key or os.environ.get("ALPACA_API_KEY")
         self.secret_key = (secret_key
                            or os.environ.get("ALPACA_SECRET_KEY"))
-        self.feed = feed
+        # ALPACA_FEED=sip on the paid plan — every stored quote/bar
+        # carries source='alpaca'; the feed name rides in provider
+        # capabilities so the tape used is auditable
+        self.feed = feed or os.environ.get("ALPACA_FEED", "iex")
 
     def _headers(self) -> dict[str, str]:
         if not (self.api_key and self.secret_key):

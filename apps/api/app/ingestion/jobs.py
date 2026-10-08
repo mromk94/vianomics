@@ -643,6 +643,14 @@ async def ingest_tiingo_intraday(
     return run
 
 
+# Alpaca timeframe strings → the canonical codes every engine reads
+# ('1Day' must land as '1d' — otherwise bars ingest successfully and
+# are invisible to ATR/technical/sleeve)
+_ALPACA_TF = {"1min": "1m", "5min": "5m", "15min": "15m",
+              "30min": "30m", "1hour": "1h", "4hour": "4h",
+              "1day": "1d", "1week": "1w", "1month": "1mo"}
+
+
 async def ingest_alpaca_bars(
     session: AsyncSession,
     adapter,
@@ -650,9 +658,10 @@ async def ingest_alpaca_bars(
     start: str = "2015-01-01",
     timeframe: str = "1Day",
 ) -> JobRun:
-    """Alpaca stock bars → ohlcv_bars (source='alpaca', timeframe from
-    the API string lowercased: '1day'). Idempotent on
-    (instrument, timeframe, time, source, adjusted)."""
+    """Alpaca stock bars → ohlcv_bars (source='alpaca', canonical
+    timeframe). Idempotent; for daily+ frames dedupes by SESSION DATE
+    across ALL sources so a yahoo-covered day is never duplicated by
+    an alpaca bar (two rows for one session would corrupt ATR)."""
     from app.models.market import OhlcvBar
 
     job, _ = await get_or_create(
@@ -682,24 +691,34 @@ async def ingest_alpaca_bars(
                         run.error)
         return run
 
-    tf = timeframe.lower()
-    existing_times = {
-        t for (t,) in (await session.execute(
-            select(OhlcvBar.time).where(
-                OhlcvBar.instrument_id == inst.id,
-                OhlcvBar.timeframe == tf,
-                OhlcvBar.source == "alpaca",
-                OhlcvBar.adjusted.is_(False)))).all()
-    }
+    tf = _ALPACA_TF.get(timeframe.lower(), timeframe.lower())
+    daily = tf in ("1d", "1w", "1mo")
+    if daily:
+        # one row per session, whichever source wrote it first —
+        # mixed-source history is fine (source column is the audit),
+        # two rows for the same day is not
+        existing_dates = {
+            t.date() for (t,) in (await session.execute(
+                select(OhlcvBar.time).where(
+                    OhlcvBar.instrument_id == inst.id,
+                    OhlcvBar.timeframe == tf))).all()}
+    else:
+        existing_dates = {
+            t for (t,) in (await session.execute(
+                select(OhlcvBar.time).where(
+                    OhlcvBar.instrument_id == inst.id,
+                    OhlcvBar.timeframe == tf,
+                    OhlcvBar.source == "alpaca"))).all()}
     for r in raw:
         t = _parse_dt(r["t"])
-        if t not in existing_times:
+        key = t.date() if daily else t
+        if key not in existing_dates:
             session.add(OhlcvBar(
                 instrument_id=inst.id, timeframe=tf, time=t,
                 open=r["o"], high=r["h"], low=r["l"],
                 close=r["c"], volume=r.get("v"),
                 adjusted=False, source="alpaca"))
-            existing_times.add(t)
+            existing_dates.add(key)
     await session.flush()
     run.records_in = run.records_ok = len(raw)
     run.records_quarantined = 0
