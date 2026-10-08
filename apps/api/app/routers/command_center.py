@@ -135,7 +135,8 @@ async def command_center(
             vix=rg.vix,
             macro_indicators={
                 "overlay": rg.overlay or "",
-                "as_of": rg.as_of.isoformat() if rg.as_of else ""})
+                "as_of": rg.as_of.isoformat() if rg.as_of else ""},
+            sector_preferences=rg.sector_preferences or {})
     else:
         # no persisted run — compute live (same as /macro/current)
         try:
@@ -160,7 +161,8 @@ async def command_center(
                     "unrate": _fv("UNRATE"),
                     "yield curve": _fv("T10Y2Y"),
                     "vix": _fv("VIXCLS"),
-                    "stale": f"{len(c.get('stale_inputs', []))} series"})
+                    "stale": f"{len(c.get('stale_inputs', []))} series"},
+                sector_preferences=c.get("sector_preferences") or {})
             rg = type("Rg", (), {"sector_preferences":
                                  c.get("sector_preferences", {})})()
         except Exception as e:
@@ -223,15 +225,18 @@ async def command_center(
     # external positions live INSIDE ctx as pseudo-positions now —
     # split nav by flag so sources never double-count
     intl_pos = [p for p in pf["positions"] if not p.get("external")]
-    ext_pos = [p for p in pf["positions"] if p.get("external")]
-    intl_nav = sum(p["market_value"] for p in intl_pos)
-    ctx_nav = {x["market_value"] for x in ext_pos}  # per-source below
+    intl_pos_nav = sum(p["market_value"] for p in intl_pos)
+    intl_cash = pf.get("cash_internal") or 0.0
+    has_book = bool(pf.get("has_book"))
     if source == "internal":
-        has_positions = bool(intl_pos)
-        nav = intl_nav or None
-        cash = pf.get("cash") if has_positions else None
-        unreal = [p.get("unrealized", 0) for p in intl_pos]
-        unreal_pnl = sum(unreal) if intl_pos else None
+        # internal book = ledger cash + position market values ONLY —
+        # external account balances are a different book and must not
+        # surface here (they're reachable via the source selector)
+        has_positions = has_book
+        nav = (intl_cash + intl_pos_nav) if has_book else None
+        cash = intl_cash if has_book else None
+        unreal_pnl = (sum(p.get("unrealized", 0) for p in intl_pos)
+                      if intl_pos else None)
         daily_pnl = (sum(p["daily_pnl"] for p in intl_pos
                          if p.get("daily_pnl") is not None)
                      if any(p.get("daily_pnl") is not None
@@ -279,11 +284,14 @@ async def command_center(
                 ext_daily += _usd(float(a.equity)
                                   - float(past[-1]["equity"]), a.currency)
         if source == "all":
-            # ctx already includes external — add only INTERNAL nav
-            nav = (intl_nav or 0) + ext_nav \
-                if (intl_nav or ext_nav) else None
-            cash = (pf.get("cash") or 0) + ext_cash \
-                if (pf.get("cash") or ext_cash) else None
+            # combined book — internal equity (cash + positions) once,
+            # external broker equity once; `pf["cash"]` already folds
+            # ext balances in, so adding ext_cash to it would count
+            # them twice — build from cash_internal instead
+            nav = ((intl_cash + intl_pos_nav) if has_book else 0) \
+                + ext_nav
+            nav = nav or None
+            cash = ((intl_cash if has_book else 0) + ext_cash) or None
             intl_unreal = (sum(p.get("unrealized", 0)
                                for p in intl_pos) if intl_pos else None)
             unreal_pnl = ((intl_unreal or 0) + ext_unreal
@@ -650,7 +658,6 @@ async def command_center(
         except Exception as e:
             import logging
             logging.warning("CC sectors failed: %s", e)
-            sectors = [SectorPerf(sector=f"_debug:{e}"[:60])]
     if not sectors:
         pref_score = {"favored": 80.0, "neutral": 50.0, "avoid": 20.0}
         sectors = [SectorPerf(sector=s,
@@ -712,12 +719,57 @@ async def command_center(
         market_strip.sort(
             key=lambda x: (grp_rank.get(x["group"], 9), x["symbol"]))
 
+    # Layer-IV sleeve (doc Phase-0/Step-2) — computed inside
+    # _portfolio_ctx alongside the risk context so the dashboard shows
+    # exactly the caps the order gate enforces
+    sleeve_ctx = pf.get("sleeve") or {}
+    sleeve = None
+    if sleeve_ctx.get("enabled"):
+        st = sleeve_ctx.get("state") or {}
+        sleeve = {
+            "sleeve_equity": st.get("sleeve_equity"),
+            "gross": st.get("gross"),
+            "effective_gross_cap": st.get("effective_gross_cap"),
+            "gross_cap": st.get("gross_cap"),
+            "used_margin": st.get("used_margin"),
+            "free_margin": st.get("free_margin"),
+            "margin_utilisation": st.get("margin_utilisation"),
+            "effective_leverage": st.get("effective_leverage"),
+            "maint_margin_used": st.get("maint_margin_used"),
+            "buffer_capped": st.get("buffer_capped"),
+            "max_asset_notional": st.get("max_asset_notional"),
+            "starter_notional": st.get("starter_notional"),
+            "portfolio_stop_usd": st.get("portfolio_stop_usd"),
+            "per_trade_risk_budget": st.get("per_trade_risk_budget"),
+            "open_positions": st.get("positions_used"),
+            "max_positions": st.get("max_positions"),
+            "unrealized_pnl": st.get("unrealized_pnl"),
+            "realized_pnl": st.get("realized_pnl"),
+            "drawdown_pct": st.get("drawdown_pct"),
+            "drawdown_usd": st.get("drawdown_usd"),
+            "stop_floor_usd": sleeve_ctx.get("stop_floor_usd"),
+            "stop_floor_binding": sleeve_ctx.get("stop_floor_binding"),
+            "distance_to_portfolio_stop_usd": sleeve_ctx.get(
+                "distance_to_portfolio_stop_usd"),
+            "cooldown": sleeve_ctx.get("cooldown"),
+            "lifecycle": sleeve_ctx.get("lifecycle"),
+            "positions": [
+                {"symbol": p["symbol"], "state": p["state"],
+                 "market_value": p["market_value"],
+                 "unrealized": p.get("unrealized"),
+                 "open_risk": p.get("open_risk"),
+                 "stop": p.get("stop"), "target": p.get("target"),
+                 "current_price": p.get("current_price")}
+                for p in (sleeve_ctx.get("positions") or [])],
+        }
+
     resp = CommandCenterResponse(
         generated_at=datetime.now(UTC).isoformat(),
         portfolio=portfolio,
         split=split,
         regime=regime,
         risk=risk,
+        sleeve=sleeve,
         cio=cio,
         agents=agents,
         sectors=sectors,

@@ -35,6 +35,9 @@ class RegimeSnapshot(BaseModel):
     fear_greed: int | None = None
     vix: float | None = None
     macro_indicators: dict[str, str] = Field(default_factory=dict)
+    # sector → favored|neutral|avoid — drives the rotation overlay;
+    # the UI renders these, never a hardcoded list
+    sector_preferences: dict[str, str] = Field(default_factory=dict)
 
 
 class RiskUtilization(BaseModel):
@@ -147,6 +150,9 @@ class CommandCenterResponse(BaseModel):
     calendar: list[CalendarEvent] = Field(default_factory=list)
     # market-context strip — indices, vol, rates, macro & sector ETFs
     market: list[dict] = Field(default_factory=list)
+    # Layer-IV trading sleeve (doc Phase-0) — equity, gross/margin
+    # caps, stop-floor distance; None until the sleeve is enabled
+    sleeve: dict | None = None
     signals: list[TradeSignal] = Field(default_factory=list)
     watchlist: list[WatchlistItem] = Field(default_factory=list)
     approvals: list[ApprovalItem] = Field(default_factory=list)

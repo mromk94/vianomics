@@ -161,6 +161,11 @@ export function CommandCenter() {
   const isDemo = (k: string) => demo.has(k);
   const macro = data ? Object.entries(data.regime.macro_indicators) : [];
   const fg = data?.regime.fear_greed;
+  const prefOf = (w: string) =>
+    Object.entries(data?.regime.sector_preferences ?? {})
+      .filter(([, v]) => v === w).map(([k]) => k);
+  const favoredSectors = prefOf("favored");
+  const avoidSectors = prefOf("avoid");
 
   return (
     <div className="space-y-4">
@@ -217,6 +222,49 @@ export function CommandCenter() {
               {(data.portfolio.holdings!.length ?? 0) > 8 &&
                 <span className="text-faint">+{data.portfolio.holdings!.length - 8} more</span>}
             </div>
+          )}
+
+          {/* Layer-IV trading sleeve — 30% of capital, 5X cap (V2 doc) */}
+          {data.sleeve && (
+            <SectionCard title="Trading Sleeve" className="rise rise-1"
+              action={data.sleeve.cooldown
+                ? "COOLDOWN — human release required"
+                : `${data.sleeve.open_positions ?? 0}/${data.sleeve.max_positions ?? 5} positions`}>
+              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 xl:grid-cols-6">
+                {[
+                  { label: "Sleeve equity", value: fmtCurrency(data.sleeve.sleeve_equity), tone: "" },
+                  { label: "Gross / cap", value: `${fmtCurrency(data.sleeve.gross)} / ${fmtCurrency(data.sleeve.effective_gross_cap)}`, tone: data.sleeve.buffer_capped ? "text-warn" : "" },
+                  { label: "Leverage", value: data.sleeve.effective_leverage != null ? `${fmtNum(data.sleeve.effective_leverage, 2)}×` : "—", tone: "" },
+                  { label: "Margin used / free", value: `${fmtCurrency(data.sleeve.used_margin)} / ${fmtCurrency(data.sleeve.free_margin)}`, tone: "" },
+                  { label: "Stop floor dist.", value: fmtCurrency(data.sleeve.distance_to_portfolio_stop_usd), tone: (data.sleeve.distance_to_portfolio_stop_usd ?? 1) <= 0 ? "text-neg" : "" },
+                  { label: "Sleeve P&L", value: `${fmtCurrency(data.sleeve.unrealized_pnl)}${data.sleeve.realized_pnl ? ` (${data.sleeve.realized_pnl >= 0 ? "+" : ""}${fmtNum(data.sleeve.realized_pnl)} rlz)` : ""}`, tone: (data.sleeve.unrealized_pnl ?? 0) >= 0 ? "text-pos" : "text-neg" },
+                ].map((m) => (
+                  <div key={m.label} className="glass-tile px-3.5 py-2.5">
+                    <div className="text-[10px] tracking-wider text-dim uppercase">{m.label}</div>
+                    <div className={`num mt-0.5 text-[15px] font-semibold ${m.tone}`}>{m.value}</div>
+                  </div>
+                ))}
+              </div>
+              {data.sleeve.positions.length > 0 && (
+                <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-[12px]">
+                  {data.sleeve.positions.map((p) => (
+                    <span key={p.symbol} className="flex items-center gap-1.5">
+                      <Sym s={p.symbol} />
+                      <span className="text-faint">{p.state.replace(/_/g, " ")}</span>
+                      <span className="num">{fmtCurrency(p.market_value)}</span>
+                      {p.stop != null && (
+                        <span className="num text-neg">stop {fmtNum(p.stop, 2)}</span>)}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {data.sleeve.cooldown && data.sleeve.lifecycle && (
+                <div className="mt-2.5 border-t border-border pt-2 text-[12px] text-neg">
+                  Portfolio stop breached{data.sleeve.lifecycle.reason ? ` — ${data.sleeve.lifecycle.reason}` : ""}.
+                  Re-entry requires CIO release.
+                </div>
+              )}
+            </SectionCard>
           )}
 
           {/* CIO Recommendation */}
@@ -296,10 +344,17 @@ export function CommandCenter() {
                       </div>
                     ))}
                   </div>
-                  <div className="mt-3 flex items-center gap-1.5 border-t border-border pt-2.5 text-[12px] text-dim">
-                    <Info className="size-3 text-accent" />
-                    Sector preference: Technology, Consumer Discretionary, Industrials
-                  </div>
+                  {(favoredSectors.length > 0 || avoidSectors.length > 0) && (
+                    <div className="mt-3 flex items-center gap-1.5 border-t border-border pt-2.5 text-[12px] text-dim">
+                      <Info className="size-3 text-accent" />
+                      {favoredSectors.length > 0 && (
+                        <span>Favored: <strong className="text-pos">{favoredSectors.join(", ")}</strong></span>
+                      )}
+                      {avoidSectors.length > 0 && (
+                        <span>· Avoid: <strong className="text-neg">{avoidSectors.join(", ")}</strong></span>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </SectionCard>
@@ -551,23 +606,51 @@ export function CommandCenter() {
             </SectionCard>
           </div>
 
-          {/* Provider health footer */}
-          <div className="rise rise-6 flex flex-wrap items-center justify-center gap-x-5 gap-y-1.5 border-t border-border pt-3 pb-1 text-[11px] text-faint">
-            {data.providers.map((p) => (
-              <span key={p.name} className="flex items-center gap-1.5">
-                <span
-                  className={`size-1.5 rounded-full ${
-                    p.status === "up" ? "bg-pos pulse-dot" : p.status === "down" ? "bg-neg" : p.status === "degraded" ? "bg-warn" : "bg-faint"
-                  }`}
-                />
-                {p.name}
-              </span>
-            ))}
-            <span className="w-full text-center sm:w-auto">
-              VAIIP · Vesturs AI{demo.size > 0 ? " · simulated sections labeled DEMO" : ""}
-            </span>
-          </div>
+          {/* Data sources — collapsed by default; deliberate expand */}
+          <DataSources providers={data.providers} demo={demo.size > 0} />
         </>
+      )}
+    </div>
+  );
+}
+
+/* ── data sources / provider health — collapsed until asked for ── */
+
+function DataSources({ providers, demo }: {
+  providers: { name: string; status: string; last_sync: string | null;
+    detail: string | null }[];
+  demo: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const down = providers.filter((p) => p.status === "down").length;
+  const degraded = providers.filter((p) => p.status === "degraded").length;
+  return (
+    <div className="rise rise-6 border-t border-border pt-3 pb-1">
+      <button onClick={() => setOpen((o) => !o)}
+        className="mx-auto flex items-center gap-2 text-[11px] text-faint">
+        {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        Data sources ({providers.length})
+        {down > 0 && <span className="text-neg">· {down} down</span>}
+        {down === 0 && degraded > 0 && (
+          <span className="text-warn">· {degraded} degraded</span>)}
+      </button>
+      {open && (
+        <div className="mt-2 flex flex-wrap items-center justify-center gap-x-5 gap-y-1.5 text-[11px] text-faint">
+          {providers.map((p) => (
+            <span key={p.name} className="flex items-center gap-1.5"
+              title={p.last_sync ? `last sync ${fmtTime(p.last_sync)}` : (p.detail ?? "no sync recorded")}>
+              <span
+                className={`size-1.5 rounded-full ${
+                  p.status === "up" ? "bg-pos pulse-dot" : p.status === "down" ? "bg-neg" : p.status === "degraded" ? "bg-warn" : "bg-faint"
+                }`}
+              />
+              {p.name}
+            </span>
+          ))}
+          <span className="w-full text-center sm:w-auto">
+            VAIIP · Vesturs AI{demo ? " · simulated sections labeled DEMO" : ""}
+          </span>
+        </div>
       )}
     </div>
   );

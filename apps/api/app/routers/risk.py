@@ -324,6 +324,16 @@ async def _portfolio_ctx(db: AsyncSession) -> dict:
             unstopped += p["market_value"]
     pf = {
         "nav": nav, "cash": display_cash, "positions": positions,
+        # internal-ledger book, isolated — `cash`/`nav` above fold in
+        # every connected external account (display/concentration view);
+        # these are the figures the internal source view and order
+        # sizing gate against — external balances must never inflate
+        # the ledger's own cash or equity
+        "cash_internal": cash,
+        "nav_internal": cash + sum(
+            p["market_value"] for p in positions
+            if not p.get("external")),
+        "has_book": pf is not None,
         "unrealized_pnl": unrealized, "daily_pnl": daily,
         "gross": (sum(p["market_value"] for p in positions) / nav
                   if nav else 0.0),

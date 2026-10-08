@@ -219,7 +219,43 @@ export interface CommandCenter {
     fear_greed: number | null;
     vix: number | null;
     macro_indicators: Record<string, string>;
+    sector_preferences: Record<string, string>;
   };
+  // Layer-IV trading sleeve — null until enabled in limits
+  sleeve: {
+    sleeve_equity: number | null;
+    gross: number | null;
+    effective_gross_cap: number | null;
+    gross_cap: number | null;
+    used_margin: number | null;
+    free_margin: number | null;
+    margin_utilisation: number | null;
+    effective_leverage: number | null;
+    maint_margin_used: number | null;
+    buffer_capped: boolean | null;
+    max_asset_notional: number | null;
+    starter_notional: number | null;
+    portfolio_stop_usd: number | null;
+    per_trade_risk_budget: number | null;
+    open_positions: number | null;
+    max_positions: number | null;
+    unrealized_pnl: number | null;
+    realized_pnl: number | null;
+    drawdown_pct: number | null;
+    drawdown_usd: number | null;
+    stop_floor_usd: number | null;
+    stop_floor_binding: string | null;
+    distance_to_portfolio_stop_usd: number | null;
+    cooldown: boolean | null;
+    lifecycle: { state: string; cooldown_at: string | null;
+      reason: string | null; liquidated_at: string | null } | null;
+    positions: {
+      symbol: string; state: string; market_value: number;
+      unrealized: number | null; open_risk: number | null;
+      stop: number | null; target: number | null;
+      current_price: number | null;
+    }[];
+  } | null;
   risk: {
     drawdown_pct: number | null;
     drawdown_limit_pct: number;

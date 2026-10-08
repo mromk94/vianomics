@@ -69,6 +69,43 @@ services:
         sync: false              # driven CMD reads this instead
 
   - type: cronjob
+    name: vaiip-technical-scan
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    # 22:15 UTC Mon–Fri — after ingest:daily's fresh bars (22:00),
+    # before pyramid:maintain (22:30). Populates technical_scan_results
+    # — the feed behind Command Center trade signals and pyramid seeds.
+    schedule: "15 22 * * 1-5"
+    startCommand: python -m app.cron_trigger technical:scan
+    envVars:
+      - key: API_URL
+        value: https://vianomics.onrender.com
+      - key: CRON_JOB
+        value: technical:scan
+      - key: CRON_SECRET
+        sync: false
+
+  - type: cronjob
+    name: vaiip-pyramid-seed
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    region: oregon
+    # 22:20 UTC Mon–Fri — converts today's entry_signals into
+    # trade-eligible pyramid candidates awaiting PM approval
+    schedule: "20 22 * * 1-5"
+    startCommand: python -m app.cron_trigger pyramid:seed
+    envVars:
+      - key: API_URL
+        value: https://vianomics.onrender.com
+      - key: CRON_JOB
+        value: pyramid:seed
+      - key: CRON_SECRET
+        sync: false
+
+  - type: cronjob
     name: vaiip-pyramid-maintain
     runtime: docker
     dockerfilePath: ./Dockerfile

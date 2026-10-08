@@ -489,7 +489,8 @@ def scenario_pnl(positions: list[dict], shock_pct: float,
     """Portfolio P&L under uniform shock (beta-scaled)."""
     total = sum(p["market_value"] for p in positions)
     pnl = sum(p["market_value"] * shock_pct
-              * p.get("beta", 1.0) * beta_mult for p in positions)
+              * (p["beta"] if p.get("beta") is not None else 1.0)
+              * beta_mult for p in positions)
     return {"shock": shock_pct, "pnl": pnl, "nav_after": total + pnl}
 
 
