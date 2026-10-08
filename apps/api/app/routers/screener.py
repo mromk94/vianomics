@@ -198,15 +198,29 @@ async def screen_job(jrun_id: str,
                             if jrun.finished_at else None)}
 
 
+# Results of a COMPLETED run are immutable (the only mutation is
+# /results/{symbol}/confirm, which invalidates its run_id below), so
+# the serialized payload is cached per run — a broad-universe screen
+# materializes hundreds of criteria JSONB rows and rebuilding it on
+# every page load was pushing the endpoint past the client timeout
+# while a background screen held the DB busy.
+_LATEST_CACHE: dict[str, dict] = {}
+
+
 @router.get("/latest")
 async def latest(db: AsyncSession = Depends(get_db)) -> dict:
     run_obj = (
         await db.execute(
-            select(ScreeningRun).order_by(ScreeningRun.started_at.desc())
+            select(ScreeningRun)
+            .where(ScreeningRun.status == "complete")
+            .order_by(ScreeningRun.started_at.desc())
         )
     ).scalars().first()
-    if run_obj is None or run_obj.status != "complete":
+    if run_obj is None:
         return {"run": None, "results": []}
+    cached = _LATEST_CACHE.get(run_obj.id)
+    if cached is not None:
+        return cached
     rows = (
         await db.execute(
             select(ScreeningResult, Instrument)
@@ -256,7 +270,7 @@ async def latest(db: AsyncSession = Depends(get_db)) -> dict:
                            if b.get("latest_bar") else None),
         }
 
-    return {
+    payload = {
         "run": {
             "id": run_obj.id,
             "universe": run_obj.universe,
@@ -276,6 +290,11 @@ async def latest(db: AsyncSession = Depends(get_db)) -> dict:
             reverse=True,
         ),
     }
+    # keep only the latest few runs' payloads — prior runs are dead weight
+    if len(_LATEST_CACHE) > 3:
+        _LATEST_CACHE.clear()
+    _LATEST_CACHE[run_obj.id] = payload
+    return payload
 
 
 @router.get("/results/{symbol}")
@@ -444,6 +463,7 @@ async def confirm(
                         "criterion": body.criterion,
                         "new_verdict": res.verdict})
     await db.commit()
+    _LATEST_CACHE.pop(res.run_id, None)  # verdict changed post-commit
     return _result_row(res, inst)
 
 

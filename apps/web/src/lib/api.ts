@@ -49,6 +49,10 @@ const SLOW_PREFIXES = [
   "/api/v1/symbol/", "/api/v1/research/", "/api/v1/committee/",
   "/api/v1/risk/eligibility", "/api/v1/risk/pyramid",
   "/api/v1/risk/atr", "/api/v1/risk/sleeve", "/api/v1/dataops/",
+  // screener reads materialize a whole run's criteria JSON and share
+  // the DB pool with the background screen — the first (uncached)
+  // build legitimately exceeds the fast tier under load
+  "/api/v1/screener/",
 ];
 
 function defaultTimeout(path: string): number {
