@@ -51,10 +51,27 @@ exact surface `IbkrAdapter` expects (same shape as `AlpacaAdapter`).
    ```bash
    cd /opt && unzip /path/to/IBCLinux-*.zip -d ibc
    ```
-   Edit `/opt/ibc/config.ini`: `IbLoginId`, `IbPassword`,
-   `TradingMode=paper`, `ReadOnlyApi=yes` (flip to `no` with order
-   testing), `AcceptNonBrokerageAccountWarning=yes`. See IBC docs for
-   the full key list.
+   The unit runs as `vaiip` and IBC reads **its** home — copy
+   `/opt/ibc/config.ini` to `/home/vaiip/ibc/config.ini` and edit THAT:
+   `IbLoginId`, `IbPassword`, `TradingMode=paper`, `ReadOnlyApi=yes`
+   (flip to `no` with order testing),
+   `AcceptNonBrokerageAccountWarning=yes`. See IBC docs for the full
+   key list.
+
+   **JRE gotcha** (seen in practice): if IBC exits `status=6` with
+   "Can't find suitable Java installation", the bundled-JRE pointer in
+   `~/Jts/ibgateway/<ver>/.install4j/pref_jre.cfg` is stale (the
+   installer temp dir is gone). The standalone bundle's real JRE lives
+   at `~/ibgateway/jre` — put that path in `pref_jre.cfg`. IBC skips
+   the Oracle-vendor check for config-supplied JREs. If the Gateway
+   then cycles "login dialog not displayed", add to
+   `~/ibgateway/ibgateway.vmoptions` (above `### keep on update`):
+   ```
+   --add-opens java.desktop/javax.swing=ALL-UNNAMED
+   --add-opens java.desktop/java.awt=ALL-UNNAMED
+   --add-opens java.desktop/sun.awt=ALL-UNNAMED
+   ```
+   — and ensure the unit runs under `xvfb-run` (see deploy/).
 
 7. **Bridge**:
    ```bash

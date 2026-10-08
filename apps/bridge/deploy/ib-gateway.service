@@ -6,8 +6,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=vaiip
-# IBC's gatewaystart.sh handles the virtual display itself
-ExecStart=/opt/ibc/gatewaystart.sh -inline
+# gatewaystart.sh does NOT handle the display — without an X server
+# the Swing login dialog never renders and IBC times out in a 60s
+# restart loop. xvfb-run provides the virtual framebuffer.
+ExecStart=/usr/bin/xvfb-run -a /opt/ibc/gatewaystart.sh -inline
 Restart=always
 RestartSec=15
 

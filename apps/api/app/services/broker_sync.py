@@ -279,6 +279,7 @@ async def sync_ibkr_bridge(db: AsyncSession) -> dict:
             continue            # equities only — matches the UI shape
         qty = float(p.get("qty") or 0)
         cur = quote_map.get(p["symbol"])
+        cur = float(cur) if cur is not None else None
         positions.append({
             "symbol": p["symbol"], "qty": qty,
             "price": float(p.get("avg_cost") or 0),
