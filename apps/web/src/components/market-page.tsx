@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { apiGet } from "@/lib/api";
+import { apiGet, apiPost } from "@/lib/api";
 import { fmtNum, fmtPct } from "@/lib/format";
 import { DataTable } from "@/components/ui/data-table";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -52,11 +52,25 @@ export function MarketPage() {
   const [view, setView] = useState<"snapshot" | "signals">("snapshot");
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    load();
+  }, []);
+
+  const [refreshing, setRefreshing] = useState(false);
+  function load() {
     apiGet<Snap[]>("/api/v1/market/snapshot").then(setRows)
       .catch((e) => setError(e.message));
     apiGet<Quote[]>("/api/v1/market/quotes").then(setLive).catch(() => setLive([]));
     apiGet<Signal[]>("/api/v1/market/signals").then(setSigs).catch(() => setSigs([]));
-  }, []);
+  }
+  function refreshQuotes() {
+    setRefreshing(true);
+    // kick the tracked-book quote sweep; the API keeps working even if
+    // the client window lapses, so reload again after it lands
+    apiPost("/api/v1/dataops/run/market:quotes", {})
+      .catch(() => null)
+      .finally(() => { setRefreshing(false); load(); });
+    window.setTimeout(load, 30000);
+  }
 
   return (
     <div className="space-y-4">
@@ -65,38 +79,22 @@ export function MarketPage() {
         subtitle="live tape + daily bars + full technical signal surface"
         meta={rows ? `${rows.length} instruments` : ""}
         actions={
-          <div className="flex rounded-lg border border-border p-0.5 text-[12px]">
+          <div className="flex items-center gap-2">
+            <button onClick={refreshQuotes} disabled={refreshing}
+              className="rounded-md border border-border px-3 py-1 text-[12px] text-dim hover:text-text disabled:opacity-40">
+              {refreshing ? "refreshing…" : "Refresh quotes"}
+            </button>
+            <div className="flex rounded-lg border border-border p-0.5 text-[12px]">
             {(["snapshot", "signals"] as const).map((v) => (
               <button key={v} onClick={() => setView(v)}
                 className={`rounded-md px-3 py-1 capitalize ${view === v ? "bg-accent font-semibold text-[#0b0f1a]" : "text-dim"}`}>
                 {v}
               </button>
             ))}
+            </div>
           </div>
         } />
       {error && <ErrorState title="API error" detail={error} />}
-
-      {(live?.length ?? 0) > 0 && (
-        <SectionCard title="Live Tape" className="rise"
-          action="bid/ask — MT4 EA push · yahoo refresh">
-          <DataTable
-            columns={[
-              { key: "s", header: "Symbol", render: (r: Quote) => <span className="font-semibold text-accent">{r.symbol}</span> },
-              { key: "src", header: "Source", render: (r) => <span className="text-[10px] uppercase tracking-wider text-faint">{r.source}</span> },
-              { key: "b", header: "Bid", align: "right", render: (r) => <span className="num">{r.bid != null ? fmtNum(r.bid, 4) : "—"}</span> },
-              { key: "a", header: "Ask", align: "right", render: (r) => <span className="num">{r.ask != null ? fmtNum(r.ask, 4) : "—"}</span> },
-              { key: "sp", header: "Spread", align: "right", render: (r) => <span className="num text-faint">{r.spread != null ? fmtNum(r.spread, 4) : "—"}</span> },
-              { key: "pc", header: "Prev close", align: "right", render: (r) => <span className="num text-dim">{r.prev_close != null ? fmtNum(r.prev_close, 2) : "—"}</span> },
-              { key: "t", header: "Age", align: "right", render: (r) => (
-                <span className={`num text-[11px] ${r.stale ? "text-neg" : "text-faint"}`}>
-                  {r.age_s < 120 ? `${r.age_s}s` : r.age_s < 7200 ? `${Math.round(r.age_s / 60)}m` : `${Math.round(r.age_s / 3600)}h`}
-                  {r.stale && " · stale"}
-                </span>) },
-            ]}
-            rows={live ?? []} rowKey={(r) => `${r.source}:${r.symbol}`}
-          />
-        </SectionCard>
-      )}
 
       <SectionCard className="rise"
         title={view === "signals" ? "Signal Surface" : "Daily Snapshot"}
@@ -156,6 +154,28 @@ export function MarketPage() {
           )
         )}
       </SectionCard>
+
+      {(live?.length ?? 0) > 0 && (
+        <SectionCard title="Live Tape" className="rise"
+          action="bid/ask — MT4 EA push · alpaca/yahoo 15m refresh">
+          <DataTable
+            columns={[
+              { key: "s", header: "Symbol", render: (r: Quote) => <span className="font-semibold text-accent">{r.symbol}</span> },
+              { key: "src", header: "Source", render: (r) => <span className="text-[10px] uppercase tracking-wider text-faint">{r.source}</span> },
+              { key: "b", header: "Bid", align: "right", render: (r) => <span className="num">{r.bid != null ? fmtNum(r.bid, 4) : "—"}</span> },
+              { key: "a", header: "Ask", align: "right", render: (r) => <span className="num">{r.ask != null ? fmtNum(r.ask, 4) : "—"}</span> },
+              { key: "sp", header: "Spread", align: "right", render: (r) => <span className="num text-faint">{r.spread != null ? fmtNum(r.spread, 4) : "—"}</span> },
+              { key: "pc", header: "Prev close", align: "right", render: (r) => <span className="num text-dim">{r.prev_close != null ? fmtNum(r.prev_close, 2) : "—"}</span> },
+              { key: "t", header: "Age", align: "right", render: (r) => (
+                <span className={`num text-[11px] ${r.stale ? "text-neg" : "text-faint"}`}>
+                  {r.age_s < 120 ? `${r.age_s}s` : r.age_s < 7200 ? `${Math.round(r.age_s / 60)}m` : `${Math.round(r.age_s / 3600)}h`}
+                  {r.stale && " · stale"}
+                </span>) },
+            ]}
+            rows={live ?? []} rowKey={(r) => `${r.source}:${r.symbol}`}
+          />
+        </SectionCard>
+      )}
     </div>
   );
 }

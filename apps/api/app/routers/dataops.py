@@ -214,15 +214,14 @@ async def run_job_now(job_key: str,
             task.add_done_callback(_BG_TASKS.discard)
             return {"status": "started",
                     "note": "universe pipeline running in background"}
-        elif job_key in ("market:context", "market:quotes"):
-            # context seed (indices/sector ETFs) + quote refresh
+        elif job_key == "market:context":
+            # context seed only (indices/sector ETFs/macro) —
+            # market:quotes has its own branch below (alpaca-first
+            # tracked-book sweep); listing it here shadowed it
             from app.services import market_context as mc
             n1 = await mc.ensure_market_context(db)
-            n2 = await mc.refresh_quotes(db) if job_key == \
-                "market:quotes" else 0
             await db.commit()
-            return {"status": "success",
-                    "records_ok": n1 + n2}
+            return {"status": "success", "records_ok": n1}
         elif job_key == "ingest:fred:calendar":
             from app.services.secrets import get_secret
             import os
