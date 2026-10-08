@@ -461,3 +461,45 @@ async def test_run_screen_caps_broad_universe(db):
     assert len(res) == 2
     assert "truncated" in (run.error or "")
     assert run.status == "complete"
+
+
+async def test_run_screen_survives_hydration_rollback(db, monkeypatch):
+    """Regression for the MissingGreenlet run-killer: a rollback
+    during lazy hydration expires every ORM object in the session.
+    Screening the NEXT member must not trip implicit lazy reload —
+    attribute snapshots + per-member savepoints keep the run alive,
+    and a failed hydration still screens the member as no-data."""
+    from app.models.screening import ScreeningResult
+    from app.models.universe import Universe, UniverseMembership
+    import app.services.universe as uni
+    from app.services.green_zone import run_screen
+
+    u = Universe(name="eligible", tier="eligible")
+    db.add(u)
+    insts = [Instrument(symbol=f"R{i}", name=f"R{i}Co")
+             for i in range(3)]
+    db.add_all(insts)
+    await db.flush()
+    for i in insts:
+        db.add(UniverseMembership(universe_id=u.id, instrument_id=i.id))
+    policy = ScreeningPolicy(version=1, is_active=True,
+                             params=POLICY_DEFAULTS)
+    db.add(policy)
+    await db.flush()
+
+    async def boom(db_, inst_):
+        # worst case: hydrate legs failed so hard a FULL rollback ran —
+        # every member object is now expired
+        await db_.rollback()
+        raise RuntimeError("provider exploded")
+    monkeypatch.setattr(uni, "hydrate_instrument", boom)
+
+    run = await run_screen(db, policy, None, as_of=ASOF,
+                           universe_name="eligible", hydrate=True)
+    assert run.status == "complete"
+    assert run.instruments == 3          # no member lost to the crash
+    res = (await db.execute(
+        select(ScreeningResult)
+        .where(ScreeningResult.run_id == run.id))).scalars().all()
+    assert len(res) == 3
+    assert all(r.verdict == "insufficient_data" for r in res)

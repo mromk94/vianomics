@@ -584,16 +584,18 @@ async def _backfill_all():
             covered_ids)).all()}
         tier_covered = {r for (r,) in (await db.execute(
             tiered_ids)).all()}
-        tracked = [i for i in insts
+        # snapshot (id, symbol, class) — a failed ingest rolls the
+        # session back and expires every ORM object; iterating plain
+        # values keeps the sweep alive instead of tripping
+        # MissingGreenlet on the next expired `inst.symbol`
+        tracked = [(i.id, i.symbol, i.asset_class) for i in insts
                    if i.id in bar_covered or i.id in tier_covered]
-        for inst in tracked:
+        for _iid, sym, _cls in tracked:
             try:
-                await ing.ingest_stooq_bars(db, ya, inst.symbol)
+                await ing.ingest_stooq_bars(db, ya, sym)
                 await db.commit()
             except Exception:
                 await db.rollback()
-        fact_insts = [i for i in tracked
-                      if i.asset_class == "equity"]
         # per-series isolation — one bad series never kills the rest
         # of the macro calendar (the 9/28 partial-ingest failure mode)
         try:
@@ -624,9 +626,11 @@ async def _backfill_all():
         # the issuers SEC doesn't carry. Pool members hydrate lazily.
         from app.providers.edgar import EdgarAdapter
         ed = EdgarAdapter()
-        for inst in fact_insts:
+        for _iid, sym, cls in tracked:
+            if cls != "equity":
+                continue
             try:
-                frun = await ing.ingest_edgar_facts(db, ed, inst.symbol)
+                frun = await ing.ingest_edgar_facts(db, ed, sym)
                 await db.commit()
                 if not (frun.status == "success" and frun.records_ok):
                     raise RuntimeError("no edgar facts")
@@ -634,7 +638,7 @@ async def _backfill_all():
                 await db.rollback()
                 try:
                     await ing.ingest_yahoo_fundamentals(
-                        db, ya, inst.symbol)
+                        db, ya, sym)
                     await db.commit()
                 except Exception:
                     await db.rollback()

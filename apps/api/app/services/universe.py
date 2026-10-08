@@ -187,7 +187,7 @@ async def sync_core_universe(
             .where(InstrumentIdentifier.scheme == "cik"))).all()}
 
     created = membered = 0
-    new_insts: list[Instrument] = []
+    new_ids: list[str] = []
     for sym, c in sources.items():
         inst = existing.get(sym)
         if inst is None:
@@ -235,26 +235,29 @@ async def sync_core_universe(
             have_core.add(inst.id)
             membered += 1
             if await coverage_missing(db, inst):
-                new_insts.append(inst)
+                new_ids.append(inst.id)
     await db.commit()
 
     # bounded hydration — first-call bootstrap pulls bars+facts for
-    # uncovered members; further calls/nightly gapfill finish the job
+    # uncovered members; further calls/nightly gapfill finish the job.
+    # Ids + db.get per iteration: a failed leg's rollback expires ORM
+    # state; re-fetching keeps the loop alive instead of tripping
+    # MissingGreenlet on the next expired attribute.
     hydrated = 0
-    for inst in new_insts[:hydrate_batch]:
+    for iid in new_ids[:hydrate_batch]:
         try:
-            await hydrate_instrument(db, inst)
+            live = await db.get(Instrument, iid)
+            await hydrate_instrument(db, live)
             hydrated += 1
+            await db.commit()
         except Exception:
             await db.rollback()
-    if hydrated:
-        await db.commit()
 
     return {"status": "success", "constituents": len(sources),
             "instruments_created": created,
             "core_members_added": membered,
             "hydrated": hydrated,
-            "uncovered_backlog": max(0, len(new_insts) - hydrated),
+            "uncovered_backlog": max(0, len(new_ids) - hydrated),
             "errors": errors or None}
 
 
@@ -287,58 +290,64 @@ async def hydrate_instrument(db: AsyncSession,
     # bars: Alpaca (paid tape) when configured, Yahoo fallback — same
     # preference order as the nightly refresh. 10y of daily bars
     # covers technicals/regime history; the deeper archive pull stays
-    # with /backfill, not first-sight hydration
+    # with /backfill, not first-sight hydration.
+    #
+    # Each leg runs inside a SAVEPOINT (begin_nested) rather than its
+    # own commit/rollback: a full rollback expires EVERY ORM object in
+    # the session, and callers iterating member lists hit
+    # MissingGreenlet on the next attribute access. Savepoint rollback
+    # only discards the leg's own writes; the caller's commit persists
+    # whatever landed.
     try:
         from app.providers.alpaca import AlpacaAdapter
         from app.providers.base import ProviderConfigError
-        try:
-            brun = await ing.ingest_alpaca_bars(
-                db, AlpacaAdapter(), sym, start="2015-01-01")
-            if brun.status != "success":
-                raise RuntimeError(brun.error or "alpaca bars")
-        except ProviderConfigError:
-            raise RuntimeError("alpaca unconfigured")
-        await db.commit()
+        async with db.begin_nested():
+            try:
+                brun = await ing.ingest_alpaca_bars(
+                    db, AlpacaAdapter(), sym, start="2015-01-01")
+                if brun.status != "success":
+                    raise RuntimeError(brun.error or "alpaca bars")
+            except ProviderConfigError:
+                raise RuntimeError("alpaca unconfigured")
         out["bars"] = True
     except Exception:
-        await db.rollback()
         try:
             from app.providers.yahoo import YahooAdapter
-            brun = await ing.ingest_stooq_bars(
-                db, YahooAdapter(), sym, start="2015-01-01")
-            await db.commit()
+            async with db.begin_nested():
+                brun = await ing.ingest_stooq_bars(
+                    db, YahooAdapter(), sym, start="2015-01-01")
             out["bars"] = brun.status == "success"
         except Exception:
-            await db.rollback()
+            pass
     try:
         from app.providers.edgar import EdgarAdapter
-        frun = await ing.ingest_edgar_facts(db, EdgarAdapter(), sym)
-        await db.commit()
+        async with db.begin_nested():
+            frun = await ing.ingest_edgar_facts(db, EdgarAdapter(), sym)
         out["facts"] = frun.status == "success" and frun.records_ok > 0
     except Exception:
-        await db.rollback()
+        pass
     if not out["facts"]:
         # no SEC XBRL for this issuer — Yahoo annual financials bridge
         # the gap (source='yahoo' keeps provenance distinct)
         try:
             from app.providers.yahoo import YahooAdapter
-            yrun = await ing.ingest_yahoo_fundamentals(
-                db, YahooAdapter(), sym)
-            await db.commit()
+            async with db.begin_nested():
+                yrun = await ing.ingest_yahoo_fundamentals(
+                    db, YahooAdapter(), sym)
             out["facts"] = yrun.records_ok > 0
         except Exception:
-            await db.rollback()
+            pass
     try:
         from app.services.market_context import refresh_market_stats
-        out["market_stats"] = await refresh_market_stats(db, inst)
-        reasons = eligibility_reasons(inst, await rules_for(db))
-        if not reasons:
-            await set_membership(
-                db, universe_name="eligible", instrument=inst,
-                status="active", reason="eligibility rules pass")
-        await db.commit()
+        async with db.begin_nested():
+            out["market_stats"] = await refresh_market_stats(db, inst)
+            reasons = eligibility_reasons(inst, await rules_for(db))
+            if not reasons:
+                await set_membership(
+                    db, universe_name="eligible", instrument=inst,
+                    status="active", reason="eligibility rules pass")
     except Exception:
-        await db.rollback()
+        pass
     return out
 
 
@@ -360,6 +369,7 @@ async def ensure_instrument(db: AsyncSession, symbol: str,
         if hydrate and await coverage_missing(db, inst):
             res = await hydrate_instrument(db, inst)
             facts_ok = res["facts"]
+            await db.commit()
         return {"instrument": inst, "created": False,
                 "fundamentals": facts_ok}
 
@@ -399,6 +409,9 @@ async def ensure_instrument(db: AsyncSession, symbol: str,
         # hydrate_instrument — never granted by default
         res = await hydrate_instrument(db, inst)
         facts_ok = res["facts"]
+        # hydrate's legs are savepoints — the caller-level commit is
+        # what actually persists the bars/facts that landed
+        await db.commit()
     return {"instrument": inst, "created": True, "name": name,
             "fundamentals": facts_ok}
 
@@ -435,17 +448,22 @@ async def fundamentals_gapfill(db: AsyncSession, limit: int = 40,
         .where(FundamentalObservation.instrument_id.in_(ids))
         .group_by(FundamentalObservation.instrument_id))).all())
     cutoff = utcnow() - timedelta(days=stale_days)
-    needs = [i for i in tracked
+    needs = [(i.id, i.market_cap or 0) for i in tracked
              if latest_pub.get(i.id) is None
              or latest_pub[i.id] < cutoff]
-    needs.sort(key=lambda i: (i.market_cap or 0), reverse=True)
+    needs.sort(key=lambda t: t[1], reverse=True)
 
     hydrated = failed = 0
-    for inst in needs[:limit]:
+    for iid, _mc in needs[:limit]:
         try:
-            res = await hydrate_instrument(db, inst)
+            # fresh object per iteration — a rollback expires ORM
+            # state wholesale; db.get re-loads in the async context
+            # instead of tripping MissingGreenlet on lazy refresh
+            live = await db.get(Instrument, iid)
+            res = await hydrate_instrument(db, live)
             if res.get("facts") or res.get("bars"):
                 hydrated += 1
+            await db.commit()
         except Exception:
             await db.rollback()
             failed += 1

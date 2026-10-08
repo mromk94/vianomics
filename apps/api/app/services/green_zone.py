@@ -15,6 +15,7 @@ Design rules implemented:
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select
@@ -36,6 +37,12 @@ from app.services.fundamentals_query import (
 from app.services.universe import universe_by_name
 
 FINANCIAL_SECTORS = {"Financials", "Real Estate"}  # ratio-variant sectors
+
+# scalar columns snapshotted per member before screening — keep in
+# sync with every `inst.*` attribute screen_instrument reads
+_SNAP_FIELDS = ("id", "symbol", "name", "asset_class",
+                "listing_status", "currency", "sector_id",
+                "industry_id", "market_cap", "avg_dollar_volume_30d")
 
 # EDGAR concept aliases per metric — us-gaap first, then ifrs-full
 # (foreign private issuers like TSM/ASML file IFRS XBRL to the SEC —
@@ -906,8 +913,13 @@ async def run_screen(
     )
     db.add(run)
     await db.flush()
+    run_id = run.id  # snapshot — a mid-loop rollback expires `run`
 
     truncated = False
+    # notes accumulate in locals — run.* stays WRITE-ONLY until the
+    # end; reading an attribute off a rolled-back-expired run object
+    # mid-loop is implicit lazy IO → MissingGreenlet
+    notes: list[str] = []
     if symbols:
         wanted = [s.upper().strip() for s in symbols if s.strip()]
         rows = (await db.execute(
@@ -917,7 +929,7 @@ async def run_screen(
         members = [(i, None) for i in rows]
         missing = sorted(set(wanted) - found)
         if missing:
-            run.error = "unknown: " + ", ".join(missing[:10])
+            notes.append("unknown: " + ", ".join(missing[:10]))
     else:
         universe = await universe_by_name(db, universe_name)
         if universe is None:
@@ -946,50 +958,83 @@ async def run_screen(
         (await db.execute(select(Sector.id, Sector.name))).all()
     )
 
+    # Snapshot every member's scalars BEFORE the loop. Any rollback —
+    # savepoint or full — can expire ORM state, and reading an expired
+    # attribute on AsyncSession is implicit lazy IO → MissingGreenlet,
+    # which is exactly what killed broad screens mid-run. Plain
+    # namespaces are immune; hydration re-fetches live objects by id.
+    snaps = [
+        SimpleNamespace(**{f: getattr(inst, f) for f in _SNAP_FIELDS})
+        for inst, _m in members
+    ]
     hydrated = 0
-    for inst, _m in members:
+    screened = 0
+    failed: list[str] = []
+    for snap in snaps:
         # lazy hydration — an Alpaca-pool name carries zero bars/facts;
         # screening it empty produces a wall of NO DATA that answers
-        # nothing. Pull coverage on first encounter instead (bounded:
-        # max 40 hydrations per run so a broad screen doesn't turn
-        # into a multi-hour backfill; the gapfill job sweeps the rest)
+        # nothing. Pull coverage on first encounter (bounded: max
+        # 40/run so a broad screen stays a screen, not a backfill;
+        # gapfill sweeps the rest overnight). Runs OUTSIDE the screen
+        # savepoint: hydration manages its own leg savepoints, and a
+        # rollback here must not poison the member's screen — a failed
+        # hydrate still evaluates against whatever data exists.
         if hydrate and hydrated < 40:
             try:
-                from app.services.universe import coverage_missing, \
-                    hydrate_instrument
-                if await coverage_missing(db, inst):
-                    await hydrate_instrument(db, inst)
+                from app.services.universe import (
+                    coverage_missing, hydrate_instrument)
+                live = await db.get(Instrument, snap.id)
+                if live is not None and \
+                        await coverage_missing(db, live):
+                    await hydrate_instrument(db, live)
                     hydrated += 1
+                    # freshly-hydrated stats feed the screen
+                    for f in _SNAP_FIELDS:
+                        setattr(snap, f, getattr(live, f))
             except Exception:
-                await db.rollback()
-        sector_name = sector_names.get(inst.sector_id)
-        res = await screen_instrument(
-            db, inst, policy.params or POLICY_DEFAULTS, mandate, as_of,
-            price=await _latest_close(db, inst.id, as_of),
-            intrinsic_value=await _latest_iv(db, inst, sector_name),
-            sector_name=sector_name,
-        )
-        db.add(
-            ScreeningResult(
-                run_id=run.id,
-                instrument_id=inst.id,
-                score=res["score"],
-                applicable=res["applicable"],
-                qualified=res["qualified"],
-                verdict=res["verdict"],
-                blocked_reasons=res["blocked_reasons"],
-                criteria=res["criteria"],
-                as_of=as_of,
-            )
-        )
-        run.instruments += 1
+                pass
+        try:
+            async with db.begin_nested():
+                sector_name = sector_names.get(snap.sector_id)
+                res = await screen_instrument(
+                    db, snap, policy.params or POLICY_DEFAULTS, mandate,
+                    as_of,
+                    price=await _latest_close(db, snap.id, as_of),
+                    intrinsic_value=await _latest_iv(db, snap,
+                                                     sector_name),
+                    sector_name=sector_name,
+                )
+                db.add(
+                    ScreeningResult(
+                        run_id=run_id,
+                        instrument_id=snap.id,
+                        score=res["score"],
+                        applicable=res["applicable"],
+                        qualified=res["qualified"],
+                        verdict=res["verdict"],
+                        blocked_reasons=res["blocked_reasons"],
+                        criteria=res["criteria"],
+                        as_of=as_of,
+                    )
+                )
+            screened += 1
+            run.instruments = screened   # write-only — safe on an
+                                         # expired object; `+=` reads
+        except Exception:
+            # one bad name must not kill a 600-row screen — the
+            # savepoint discards only this member's writes
+            failed.append(snap.symbol)
 
     run.status = "complete"
     if truncated:
-        run.error = (f"truncated at {max_symbols} instruments — "
-                     "narrow the universe or pass explicit symbols")
+        notes.append(
+            f"truncated at {max_symbols} instruments — "
+            "narrow the universe or pass explicit symbols")
     if hydrated:
-        run.error = (((run.error + " · ") if run.error else "")
-                     + f"hydrated {hydrated} uncovered instruments")
+        notes.append(f"hydrated {hydrated} uncovered instruments")
+    if failed:
+        notes.append(f"screen failed for {len(failed)}: "
+                     + ", ".join(sorted(failed)[:10]))
+    run.error = " · ".join(notes) or None
     run.finished_at = utcnow()
     return run
