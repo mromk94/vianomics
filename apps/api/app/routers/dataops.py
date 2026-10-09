@@ -467,18 +467,46 @@ async def run_job_now(job_key: str,
         elif job_key == "ingest:daily":
             # lean daily refresh — bars + market context/quotes only
             # (the scheduled post-close pull; /backfill is the full
-            # pipeline incl. EDGAR/FRED/scans)
+            # pipeline incl. EDGAR/FRED/scans). ~600+ tracked names
+            # far outlive the HTTP window, so this runs as a
+            # background task with a JobRun for progress — same
+            # pattern as universe:core:sync / fundamentals:gapfill.
+            import asyncio
+            from app.db.session import SessionFactory
             from app.ingestion.upsert import get_or_create
             from app.models.ops import Job, JobRun
             from app.db.base import utcnow
-            res = await refresh_daily_bars(db)
             job, _ = await get_or_create(
                 db, Job, {"key": job_key}, {"kind": "ingestion"})
-            run = JobRun(job_id=job.id, status="success",
-                         finished_at=utcnow(),
-                         records_ok=res["instruments"])
+            run = JobRun(job_id=job.id, status="running")
             db.add(run)
             await db.commit()
+            rid = run.id
+
+            async def _bg():
+                async with SessionFactory() as s:
+                    r = await s.get(JobRun, rid)
+                    try:
+                        res = await refresh_daily_bars(s)
+                        r.status = "success"
+                        r.records_ok = res["instruments"]
+                        r.error = (f"bars={res.get('bars_source')} "
+                                   f"gapfill={res.get('gapfill')}")
+                        # new bars land → snapshots/scans must not
+                        # serve the pre-refresh cache
+                        from app.services import cache
+                        cache.invalidate()
+                    except Exception as e:
+                        r.status = "failed"
+                        r.error = str(e)[:300]
+                    r.finished_at = utcnow()
+                    await s.commit()
+            task = asyncio.create_task(_bg())
+            _BG_TASKS.add(task)
+            task.add_done_callback(_BG_TASKS.discard)
+            return {"status": "started", "job_run_id": rid,
+                    "note": "daily refresh in background — "
+                            "status on DataOps"}
         elif job_key.startswith("ingest:yahoo:") or \
                 job_key.startswith("ingest:stooq:"):
             run = await ing.ingest_stooq_bars(db, adapters["yahoo"](), parts[-1])
