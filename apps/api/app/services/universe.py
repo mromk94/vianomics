@@ -347,6 +347,18 @@ async def hydrate_instrument(db: AsyncSession,
         except Exception:
             pass
     try:
+        # StockRow depth-extension — runs even when XBRL landed: its
+        # ~10y annual history is what the 10Y CAGR growth criteria
+        # screen against. Unconfigured key → skipped, not an error.
+        from app.providers.stockrow import StockRowAdapter
+        async with db.begin_nested():
+            srun = await ing.ingest_stockrow_fundamentals(
+                db, StockRowAdapter(), sym)
+        out["facts"] = out["facts"] or srun.records_ok > 0
+        out["stockrow"] = srun.records_ok
+    except Exception:
+        pass
+    try:
         from app.services.market_context import refresh_market_stats
         async with db.begin_nested():
             out["market_stats"] = await refresh_market_stats(db, inst)
@@ -471,6 +483,75 @@ async def fundamentals_gapfill(db: AsyncSession, limit: int = 40,
             live = await db.get(Instrument, iid)
             res = await hydrate_instrument(db, live)
             if res.get("facts") or res.get("bars"):
+                hydrated += 1
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            failed += 1
+    return {"status": "success", "checked": len(needs),
+            "hydrated": hydrated, "failed": failed,
+            "backlog": max(0, len(needs) - limit)}
+
+
+async def stockrow_depth_gapfill(db: AsyncSession, limit: int = 30,
+                                 refresh_days: int = 30
+                                 ) -> dict[str, Any]:
+    """StockRow depth sweep — tracked instruments without a recent
+    StockRow fundamentals attempt get the ~10y annual ingest so the
+    10Y CAGR criteria screen real history. Self-converging:
+    SyncStatus(fundamentals:{sym}) marks every attempt, so covered
+    AND uncovered symbols skip until `refresh_days` passes — no
+    endless retries on tickers StockRow doesn't carry."""
+    from datetime import timedelta
+    import os
+    from app.db.base import utcnow
+    from app.models.providers import DataProvider
+    from app.models.ops import SyncStatus
+
+    # no key → no work and no attempt marks, so configuring the key
+    # later doesn't wait out a stale-attempt cooldown
+    if not os.environ.get("STOCKROW_API_KEY"):
+        return {"status": "skipped", "reason": "STOCKROW_API_KEY "
+                "unconfigured", "checked": 0, "hydrated": 0}
+
+    covered = select(OhlcvBar.instrument_id).distinct()
+    tiered = (select(UniverseMembership.instrument_id)
+              .join(Universe,
+                    UniverseMembership.universe_id == Universe.id)
+              .where(Universe.name != "global",
+                     UniverseMembership.status == "active"))
+    tracked = (await db.execute(
+        select(Instrument).where(
+            or_(Instrument.id.in_(covered),
+                Instrument.id.in_(tiered)),
+            Instrument.asset_class == "equity"))).scalars().all()
+    if not tracked:
+        return {"status": "success", "checked": 0, "hydrated": 0}
+
+    prov = (await db.execute(
+        select(DataProvider).where(DataProvider.key == "stockrow"))
+    ).scalar_one_or_none()
+    attempted: dict[str, datetime] = {}
+    if prov is not None:
+        for ds, ts in (await db.execute(
+                select(SyncStatus.dataset, SyncStatus.last_attempt_at)
+                .where(SyncStatus.provider_id == prov.id,
+                       SyncStatus.dataset.like("fundamentals:%")))).all():
+            attempted[ds.split(":", 1)[1]] = ts
+    cutoff = utcnow() - timedelta(days=refresh_days)
+    needs = [i.symbol for i in tracked
+             if attempted.get(i.symbol) is None
+             or attempted[i.symbol] < cutoff]
+    needs = needs[:limit]
+
+    from app.ingestion import jobs as ing
+    hydrated = failed = 0
+    for sym in needs:
+        try:
+            from app.providers.stockrow import StockRowAdapter
+            run = await ing.ingest_stockrow_fundamentals(
+                db, StockRowAdapter(), sym)
+            if run.records_ok:
                 hydrated += 1
             await db.commit()
         except Exception:

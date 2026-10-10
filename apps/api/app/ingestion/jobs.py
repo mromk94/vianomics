@@ -334,6 +334,145 @@ async def ingest_yahoo_fundamentals(
     return run
 
 
+# StockRow annual metrics → FundamentalObservation concepts. kind
+# 'fy' (flow: period_start = end−364d so fy_series accepts) or
+# 'instant' (balance at period_end). abs=True: capex, dividends
+# and interest expense arrive as outflow NEGATIVES (or vary by
+# filer) — the engines need the positive magnitude (fcf = ocf −
+# capex; coverage = EBIT ÷ |interest|).
+STOCKROW_ANNUAL: dict[str, tuple[str, str, bool]] = {
+    # income statement / cash flow — fiscal-year flows
+    "revenue": ("stockrow:Revenue", "fy", False),
+    "netinc": ("stockrow:NetIncome", "fy", False),
+    "opinc": ("stockrow:OperatingIncome", "fy", False),
+    "ebitda": ("stockrow:EBITDA", "fy", False),
+    "ebt": ("stockrow:PretaxIncome", "fy", False),
+    "taxprov": ("stockrow:IncomeTaxProvision", "fy", False),
+    "opcf": ("stockrow:OperatingCashFlow", "fy", False),
+    "fcf": ("stockrow:FreeCashFlow", "fy", False),
+    "capex": ("stockrow:CapitalExpenditures", "fy", True),
+    "depamor": ("stockrow:DepreciationAmortization", "fy", False),
+    "intexop": ("stockrow:InterestExpenseOperating", "fy", True),
+    "nonopintx": ("stockrow:InterestExpenseNonoperating", "fy", True),
+    "dividendcom": ("stockrow:CommonDividendsPaid", "fy", True),
+    "epsd": ("stockrow:DilutedEPS", "fy", False),
+    "shsdila": ("stockrow:DilutedSharesAvg", "fy", False),
+    "bvps": ("stockrow:BookValuePerShare", "fy", False),
+    "fcfps": ("stockrow:FreeCashFlowPerShare", "fy", False),
+    # balance sheet — fiscal-year-end instants
+    "receivables": ("stockrow:Receivables", "instant", False),
+    "equityt": ("stockrow:StockholdersEquity", "instant", False),
+    "assettot": ("stockrow:TotalAssets", "instant", False),
+    "assetscurrt": ("stockrow:CurrentAssets", "instant", False),
+    "tcurrliab": ("stockrow:CurrentLiabilities", "instant", False),
+    "ltdebttot": ("stockrow:LongTermDebt", "instant", False),
+    "debtcurrp": ("stockrow:CurrentDebt", "instant", False),
+    "cashstinv": ("stockrow:CashAndShortTermInvestments", "instant", False),
+    "shscomm": ("stockrow:CommonSharesOutstanding", "instant", False),
+    "liabtot": ("stockrow:TotalLiabilities", "instant", False),
+}
+
+
+async def ingest_stockrow_fundamentals(
+    session: AsyncSession,
+    adapter: ProviderAdapter,
+    symbol: str,
+) -> JobRun:
+    """StockRow annual metric history → FundamentalObservations under
+    `stockrow:` concepts — the ~10y depth extension for issuers whose
+    local XBRL history is short (and the canonical source for
+    non-filers Yahoo doesn't carry). source='stockrow' keeps
+    provenance distinct; concept aliases merge under us-gaap/ifrs
+    per fy_series's extend-don't-compete rule.
+
+    published_at stamps the period_end (StockRow doesn't expose filed
+    dates) — deterministic so re-runs dedupe on the unique key, same
+    convention as the Yahoo bridge. per-ticker failures inside one
+    slug are skipped, never zeroed — a missing metric is a gap."""
+    from datetime import timedelta
+
+    job, _ = await get_or_create(
+        session, Job,
+        {"key": f"ingest:stockrow:fundamentals:{symbol}"},
+        {"kind": "ingestion"})
+    run = JobRun(job_id=job.id)
+    session.add(run)
+    await session.flush()
+
+    provider = await _provider(session, "stockrow")
+    inst = await _instrument(session, symbol)
+    if inst is None:
+        run.status, run.error, run.finished_at = (
+            "failed", f"instrument {symbol} not found", utcnow())
+        return run
+    if not getattr(adapter, "api_key", None):
+        run.status, run.error, run.finished_at = (
+            "failed", "STOCKROW_API_KEY not configured", utcnow())
+        await mark_sync(session, provider, f"fundamentals:{symbol}",
+                        False, run.error)
+        return run
+
+    def _aware(dt):
+        return (dt.replace(tzinfo=UTC)
+                if dt is not None and dt.tzinfo is None else dt)
+
+    existing = {
+        (r[0], r[1].isoformat(),
+         r[2].date().isoformat() if r[2] else None)
+        for r in (await session.execute(
+            select(FundamentalObservation.concept,
+                   FundamentalObservation.period_end,
+                   FundamentalObservation.published_at)
+            .where(FundamentalObservation.instrument_id == inst.id))
+        ).all()
+    }
+
+    n_in = n_ok = n_slugs = 0
+    for slug, (concept, kind, take_abs) in STOCKROW_ANNUAL.items():
+        try:
+            series = await adapter.annual_series(
+                symbol, slug, limit=12)
+        except Exception:
+            continue          # provider gap per-slug → skip, don't fail
+        if not series:
+            continue
+        n_slugs += 1
+        for end, val in series.items():
+            n_in += 1
+            key = (concept, end.isoformat(), end.isoformat())
+            if key in existing:
+                continue
+            existing.add(key)
+            stamped = _aware(datetime.combine(
+                end, datetime.min.time()))
+            session.add(FundamentalObservation(
+                instrument_id=inst.id,
+                concept=concept,
+                period_start=(end - timedelta(days=364)
+                              if kind == "fy" else None),
+                period_end=end,
+                fiscal_period="FY",
+                source="stockrow",
+                value=Decimal(str(abs(val) if take_abs else val)),
+                unit=("shares" if "Shares" in concept else
+                      "per_share" if "PerShare" in concept
+                      or "EPS" in concept else "cash"),
+                observed_at=stamped,
+                published_at=stamped,
+                source_ref=f"stockrow:{slug}",
+            ))
+            n_ok += 1
+    await session.flush()
+
+    run.records_in = n_in
+    run.records_ok = n_ok
+    run.records_quarantined = 0
+    run.status = "success"
+    run.finished_at = utcnow()
+    await mark_sync(session, provider, f"fundamentals:{symbol}", True)
+    return run
+
+
 async def ingest_fred_series(
     session: AsyncSession,
     adapter: ProviderAdapter,

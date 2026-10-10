@@ -140,7 +140,8 @@ async def qualification_gate(
          "us-gaap:EarningsPerShareBasic",
          "ifrs-full:DilutedEarningsLossPerShare",
          "ifrs-full:BasicEarningsLossPerShare",
-         "yahoo:DilutedEPS", "yahoo:BasicEPS"], as_of, years=12)
+         "yahoo:DilutedEPS", "yahoo:BasicEPS",
+         "stockrow:DilutedEPS"], as_of, years=12)
 
     # StockRow depth-extension — when local XBRL covers fewer than ~8
     # fiscal years, merge the provider's ~10y annual series UNDER the

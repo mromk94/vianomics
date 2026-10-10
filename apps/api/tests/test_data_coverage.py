@@ -197,6 +197,67 @@ async def test_yahoo_fundamentals_ingest(db):
     assert keys["revenue_growth"]["evidence"]["cagr"] > 0
 
 
+async def test_stockrow_fundamentals_ingest(db):
+    """StockRow annual metric history → stockrow:-concept observations.
+    10y of revenue lands as FY rows the screen's CAGR reads; capex
+    arrives negative → stored positive (us-gaap outflow convention);
+    a second run dedupes on the deterministic published_at stamp."""
+    from app.ingestion.jobs import ingest_stockrow_fundamentals
+
+    class FakeStockRow:
+        api_key = "x"
+
+        async def annual_series(self, ticker, slug, limit=12):
+            if slug == "revenue":
+                return {date(2015 + i, 1, 31): 4.0e8 * 1.12 ** i
+                        for i in range(11)}
+            if slug == "capex":
+                return {date(2024, 1, 31): -5.0e7,
+                        date(2025, 1, 31): -6.0e7}
+            if slug == "equityt":
+                return {date(2025, 1, 31): 5.0e8}
+            return {}
+
+    inst = Instrument(symbol="SROW", name="StockRowCo")
+    db.add(inst)
+    await db.flush()
+
+    run = await ingest_stockrow_fundamentals(db, FakeStockRow(), "SROW")
+    await db.commit()
+    assert run.status == "success"
+    assert run.records_ok == 14          # 11 rev + 2 capex + 1 equity
+
+    obs = (await db.execute(
+        select(FundamentalObservation).where(
+            FundamentalObservation.instrument_id == inst.id))
+    ).scalars().all()
+    by_concept = {}
+    for o in obs:
+        by_concept.setdefault(o.concept, []).append(o)
+    rev = by_concept["stockrow:Revenue"]
+    assert len(rev) == 11
+    assert all(o.source == "stockrow" for o in rev)
+    assert all(o.fiscal_period == "FY" for o in rev)
+    assert all(o.source_ref == "stockrow:revenue" for o in rev)
+    # outflow convention — negative capex stored positive
+    cap = by_concept["stockrow:CapitalExpenditures"]
+    assert all(float(o.value) > 0 for o in cap)
+    # instant rows carry no period_start but stay fy_series-visible
+    eq = by_concept["stockrow:StockholdersEquity"][0]
+    assert eq.period_start is None and eq.fiscal_period == "FY"
+
+    run2 = await ingest_stockrow_fundamentals(
+        db, FakeStockRow(), "SROW")
+    await db.commit()
+    assert run2.records_ok == 0          # idempotent
+
+    # the stockrow: aliases feed fy_series → the screen's 10Y CAGR
+    res = await screen_instrument(db, inst, POLICY_DEFAULTS, None, ASOF)
+    keys = {c["key"]: c for c in res["criteria"]}
+    assert keys["revenue_growth"]["status"] == "pass"
+    assert keys["revenue_growth"]["evidence"]["years"] >= 9
+
+
 async def test_ensure_instrument_hydrates_uncovered_existing(db):
     """A security-master row that exists but has zero coverage (e.g.
     an Alpaca-pool member) must hydrate on demand — not return

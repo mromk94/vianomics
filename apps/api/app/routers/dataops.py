@@ -17,6 +17,7 @@ OPS_JOBS = [
     ("universe:core:sync", "ingestion"),
     ("universe:alpaca:sync", "ingestion"),
     ("fundamentals:gapfill", "ingestion"),
+    ("fundamentals:stockrow:depth", "ingestion"),
     ("market:quotes", "ingestion"),
     ("ingest:daily", "ingestion"),
     ("portfolio:alpaca:sync", "ingestion"),
@@ -244,6 +245,14 @@ async def run_job_now(job_key: str,
                         "error": f"{sym} not in universe"}
             run = await ing.ingest_yahoo_fundamentals(
                 db, adapters["yahoo"](), sym)
+        elif job_key.startswith("ingest:stockrow:fundamentals:"):
+            sym = parts[-1]
+            if await _instr(db, sym) is None:
+                return {"status": "failed",
+                        "error": f"{sym} not in universe"}
+            from app.providers.stockrow import StockRowAdapter
+            run = await ing.ingest_stockrow_fundamentals(
+                db, StockRowAdapter(), sym)
         elif job_key == "fundamentals:gapfill":
             # coverage sweep — tracked instruments with missing/stale
             # facts re-ingest (EDGAR → Yahoo fallback). ~8min at the
@@ -284,6 +293,44 @@ async def run_job_now(job_key: str,
             return {"status": "started", "job_run_id": rid,
                     "note": "gapfill in background — ~8min at "
                             "limit=40; status on DataOps"}
+        elif job_key == "fundamentals:stockrow:depth":
+            # StockRow 10y-depth sweep — self-converging via
+            # SyncStatus attempt marks; ~30s/ticker at the bound
+            import asyncio
+            from app.db.session import SessionFactory
+            from app.ingestion.upsert import get_or_create
+            from app.models.ops import Job, JobRun
+            from app.db.base import utcnow
+            job, _ = await get_or_create(
+                db, Job, {"key": job_key}, {"kind": "ingestion"})
+            run = JobRun(job_id=job.id, status="running")
+            db.add(run)
+            await db.commit()
+            rid = run.id
+
+            async def _bg_sr():
+                from app.services import universe as usvc
+                async with SessionFactory() as s:
+                    r = await s.get(JobRun, rid)
+                    try:
+                        res = await usvc.stockrow_depth_gapfill(
+                            s, limit=30)
+                        r.status = "success"
+                        r.records_in = res.get("checked") or 0
+                        r.records_ok = res.get("hydrated") or 0
+                        r.error = (f"backlog={res.get('backlog')} "
+                                   f"failed={res.get('failed')}")
+                    except Exception as e:
+                        r.status = "failed"
+                        r.error = str(e)[:300]
+                    r.finished_at = utcnow()
+                    await s.commit()
+            task = asyncio.create_task(_bg_sr())
+            _BG_TASKS.add(task)
+            task.add_done_callback(_BG_TASKS.discard)
+            return {"status": "started", "job_run_id": rid,
+                    "note": "stockrow depth sweep in background — "
+                            "~30s/ticker at limit=30; status on DataOps"}
         elif job_key.startswith("ingest:fred:"):
             from app.services.secrets import get_secret
             import os
@@ -618,16 +665,26 @@ async def refresh_daily_bars(db: AsyncSession) -> dict:
     # fundamentals coverage sweep — a small nightly batch re-ingests
     # tracked names whose facts are missing or stale, so foreign
     # issuers and newly-tracked symbols stop screening "no data"
-    gapfill = None
+    gapfill = sr_depth = None
     try:
         from app.services import universe as usvc
         gapfill = await usvc.fundamentals_gapfill(db, limit=15)
         await db.commit()
     except Exception:
         await db.rollback()
+    try:
+        # StockRow depth sweep — a small nightly batch extends tracked
+        # names to ~10y annual history for the 10Y CAGR criteria.
+        # SyncStatus attempts make it self-converging; unconfigured
+        # key short-circuits to zero work.
+        from app.services import universe as usvc
+        sr_depth = await usvc.stockrow_depth_gapfill(db, limit=10)
+        await db.commit()
+    except Exception:
+        await db.rollback()
     return {"instruments": ok,
             "bars_source": "alpaca" if alp is not None else "yahoo",
-            "gapfill": gapfill}
+            "gapfill": gapfill, "stockrow_depth": sr_depth}
 
 
 _BG_TASKS: set = set()

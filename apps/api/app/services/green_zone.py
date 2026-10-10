@@ -53,50 +53,52 @@ C_REV = ["us-gaap:Revenues",
          "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
          "us-gaap:SalesRevenueNet",
          "ifrs-full:Revenue", "ifrs-full:RevenueFromContractsWithCustomers",
-         "yahoo:TotalRevenue"]
+         "yahoo:TotalRevenue", "stockrow:Revenue"]
 C_NI = ["us-gaap:NetIncomeLoss", "us-gaap:ProfitLoss",
         "ifrs-full:ProfitLoss",
         "ifrs-full:ProfitLossAttributableToOwnersOfParent",
-        "yahoo:NetIncome"]
+        "yahoo:NetIncome", "stockrow:NetIncome"]
 C_OCF = ["us-gaap:NetCashProvidedByUsedInOperatingActivities",
          "ifrs-full:CashFlowsFromUsedInOperatingActivities",
-         "yahoo:OperatingCashFlow"]
+         "yahoo:OperatingCashFlow", "stockrow:OperatingCashFlow"]
 C_EBIT = ["us-gaap:OperatingIncomeLoss",
           "ifrs-full:ProfitLossFromOperatingActivities",
           "ifrs-full:OperatingProfitLoss",
-          "yahoo:OperatingIncome"]
+          "yahoo:OperatingIncome", "stockrow:OperatingIncome"]
 C_EQUITY = ["us-gaap:StockholdersEquity",
             "us-gaap:StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
             "ifrs-full:EquityAttributableToOwnersOfParent",
             "ifrs-full:Equity",
-            "yahoo:StockholdersEquity"]
+            "yahoo:StockholdersEquity", "stockrow:StockholdersEquity"]
 C_DEBT = ["us-gaap:LongTermDebt", "us-gaap:LongTermDebtNoncurrent",
           "ifrs-full:LongtermBorrowings", "ifrs-full:NoncurrentBorrowings",
-          "yahoo:LongTermDebt", "yahoo:TotalDebt"]
+          "yahoo:LongTermDebt", "yahoo:TotalDebt", "stockrow:LongTermDebt"]
 C_DEBT_CURRENT = ["us-gaap:LongTermDebtCurrent", "us-gaap:DebtCurrent",
                   "ifrs-full:CurrentPortionOfLongtermBorrowings",
                   "ifrs-full:CurrentBorrowings",
-                  "yahoo:CurrentDebt"]
+                  "yahoo:CurrentDebt", "stockrow:CurrentDebt"]
 C_CASH = ["us-gaap:CashAndCashEquivalentsAtCarryingValue",
           "us-gaap:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
           "ifrs-full:CashAndCashEquivalents",
-          "yahoo:CashAndCashEquivalents"]
+          "yahoo:CashAndCashEquivalents", "stockrow:CashAndShortTermInvestments"]
 C_INTEREST = ["us-gaap:InterestExpense", "us-gaap:InterestExpenseNonoperating",
               "us-gaap:InterestIncomeExpenseNet",
               "ifrs-full:FinanceCosts", "ifrs-full:InterestExpenseOnBorrowings",
               "ifrs-full:InterestExpenseOnBonds",
-              "yahoo:InterestExpense", "yahoo:InterestExpenseNonOperating"]
+              "yahoo:InterestExpense", "yahoo:InterestExpenseNonOperating",
+              "stockrow:InterestExpenseOperating", "stockrow:InterestExpenseNonoperating"]
 C_SHARES = ["us-gaap:WeightedAverageNumberOfSharesOutstandingBasic",
             "us-gaap:WeightedAverageNumberOfDilutedSharesOutstanding",
             "ifrs-full:AdjustedWeightedAverageShares",
             "ifrs-full:WeightedAverageNumberOfOrdinarySharesOutstanding",
             "dei:EntityCommonStockSharesOutstanding",
-            "yahoo:BasicAverageShares", "yahoo:DilutedAverageShares"]
+            "yahoo:BasicAverageShares", "yahoo:DilutedAverageShares",
+            "stockrow:DilutedSharesAvg"]
 C_CAPEXC = ["us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
             "us-gaap:PaymentsToAcquireProductiveAssets",
             "ifrs-full:PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
             "ifrs-full:PaymentsToAcquirePropertyPlantAndEquipment",
-            "yahoo:CapitalExpenditure"]
+            "yahoo:CapitalExpenditure", "stockrow:CapitalExpenditures"]
 C_DPS = ["us-gaap:CommonStockDividendsPerShareDeclared",
          "us-gaap:CommonStockDividendsPerShareCashPaid",
          "ifrs-full:DividendsPaidOrdinarySharesPerShare",
@@ -104,26 +106,28 @@ C_DPS = ["us-gaap:CommonStockDividendsPerShareDeclared",
 C_TAX = ["us-gaap:IncomeTaxExpenseBenefit",
          "ifrs-full:IncomeTaxExpenseContinuingOperations",
          "ifrs-full:CurrentTaxExpenseIncome",
-         "yahoo:TaxProvision"]
+         "yahoo:TaxProvision", "stockrow:IncomeTaxProvision"]
 C_PRETAX = ["us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
             "us-gaap:IncomeLossFromContinuingOperationsBeforeIncomeTaxesDomestic",
             "ifrs-full:ProfitLossBeforeTax",
-            "yahoo:PretaxIncome"]
+            "yahoo:PretaxIncome", "stockrow:PretaxIncome"]
 C_DA = ["us-gaap:DepreciationDepletionAndAmortization",
         "us-gaap:DepreciationAmortizationAndAccretionNet",
         "us-gaap:Depreciation",
         "ifrs-full:DepreciationAmortisationExpense",
         "ifrs-full:DepreciationAndAmortisationExpense",
         "ifrs-full:DepreciationExpense",
-        "yahoo:DepreciationAndAmortization"]
+        "yahoo:DepreciationAndAmortization", "stockrow:DepreciationAmortization"]
 C_AR = ["us-gaap:AccountsReceivableNetCurrent", "us-gaap:ReceivablesNetCurrent",
         "ifrs-full:CurrentTradeReceivables",
         "ifrs-full:TradeAndOtherCurrentReceivables",
-        "yahoo:AccountsReceivable"]
+        "yahoo:AccountsReceivable", "stockrow:Receivables"]
 C_CA = ["us-gaap:AssetsCurrent",
-        "ifrs-full:CurrentAssets", "yahoo:CurrentAssets"]
+        "ifrs-full:CurrentAssets", "yahoo:CurrentAssets",
+        "stockrow:CurrentAssets"]
 C_CL = ["us-gaap:LiabilitiesCurrent",
-        "ifrs-full:CurrentLiabilities", "yahoo:CurrentLiabilities"]
+        "ifrs-full:CurrentLiabilities", "yahoo:CurrentLiabilities",
+        "stockrow:CurrentLiabilities"]
 
 POLICY_DEFAULTS: dict[str, Any] = {
     "growth_min": 0.10,              # 10Y CAGR ≥ 10% (Software Modifications §A)
