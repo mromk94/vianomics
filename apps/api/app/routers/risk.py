@@ -1234,8 +1234,9 @@ class PyramidPreviewIn(BaseModel):
     equity: float | None = Field(None, gt=0)    # default: live NAV
     cash: float | None = None                   # default: live cash
     atr_override: float | None = Field(None, gt=0)  # edited-period ATR
+    leverage: float | None = Field(None, ge=1, le=100)  # sleeve × cap
     direction: Literal["long", "short"] = "long"
-    timeframe: Literal["1d", "1w", "1mo"] = "1d"  # primary sheet frame
+    timeframe: Literal["1d", "2d", "3d", "1w", "1mo"] = "1d"  # primary
 
 
 @router.post("/pyramid/preview")
@@ -1280,6 +1281,22 @@ async def pyramid_preview(
     sector_gross = 0.0
     st = None
     if sleeve["enabled"]:
+        # hypothetical equity / leverage — the calculator answers
+        # "what if the sleeve ran at THIS size and THIS leverage":
+        # caps recompute against the override while open-position
+        # gross/margin rates stay live
+        if body.equity or body.leverage:
+            cfg2 = dict(sleeve["config"])
+            if body.leverage:
+                cfg2["target_leverage"] = float(body.leverage)
+            base = sleeve["state"]
+            hypo = re_.sleeve_state(
+                equity, base["gross"], cfg2,
+                open_positions=base.get("open_positions", 0),
+                maint_margin=base.get("maint_margin_used"))
+            hypo.update({k: v for k, v in base.items()
+                         if k not in hypo})
+            sleeve = {**sleeve, "config": cfg2, "state": hypo}
         st = sleeve["state"]
         asset_gross = sum(
             p["market_value"] for p in sleeve["positions"]
@@ -1333,10 +1350,16 @@ async def pyramid_preview(
             "atr_pct": atr_f / entry if entry else None,
         }
 
-    frames = {"1d": "daily", "1w": "weekly", "1mo": "monthly"}
+    sub = (rep.get("daily") or {}).get("sub") or {}
+    atr_for = {
+        "1d": (rep.get("daily") or {}).get("atr_abs"),
+        "2d": (sub.get("2d") or {}).get("atr_abs"),
+        "3d": (sub.get("3d") or {}).get("atr_abs"),
+        "1w": (rep.get("weekly") or {}).get("atr_abs"),
+        "1mo": (rep.get("monthly") or {}).get("atr_abs"),
+    }
     sheets = {}
-    for tf_k, rep_k in frames.items():
-        atr_f = (rep.get(rep_k) or {}).get("atr_abs")
+    for tf_k, atr_f in atr_for.items():
         if tf_k == body.timeframe and body.atr_override:
             atr_f = body.atr_override
         sheets[tf_k] = (_sheet(atr_f) if atr_f
@@ -1364,7 +1387,9 @@ async def pyramid_preview(
                 "pct": sheet["atr_pct"],
                 "weekly_pct": rep["weekly"]["atr_pct"]},
         "inputs": {"entry": entry, "equity": equity, "cash": cash,
-                   "risk_pct": body.risk_pct},
+                   "risk_pct": body.risk_pct,
+                   "leverage": body.leverage,
+                   "atr_override": body.atr_override},
         "sheet": sheet,
         "sheets": sheets,
         "primary_timeframe": primary,

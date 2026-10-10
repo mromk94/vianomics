@@ -16,7 +16,7 @@ export function Dialog({
   title: string;
   children: React.ReactNode;
   wide?: boolean;
-  size?: "md" | "lg" | "xl" | "full";
+  size?: "md" | "lg" | "xl" | "2xl" | "full";
 }) {
   const ref = useRef<HTMLDialogElement>(null);
 
@@ -37,6 +37,7 @@ export function Dialog({
 
   const sz = size ?? (wide ? "lg" : "md");
   const maxW = sz === "full" ? "max-w-[96vw]"
+    : sz === "2xl" ? "max-w-7xl"
     : sz === "xl" ? "max-w-5xl"
     : sz === "lg" ? "max-w-3xl" : "max-w-lg";
 

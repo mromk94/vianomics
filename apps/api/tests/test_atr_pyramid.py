@@ -100,6 +100,41 @@ async def test_atr_report_unknown(db):
     assert await atr_svc.atr_report(db, "NOPE") is None
 
 
+async def test_resample_sessions_anchors_to_newest(db):
+    """2d/3d buckets count SESSIONS anchored to the last bar — the
+    newest bucket is always complete; only the oldest keeps a
+    history remainder (same convention as technical.aggregate)."""
+    bars = _bars(31)                     # odd count → remainder first
+    two = atr_svc._resample_sessions(bars, 2)
+    assert len(two) == 16                # 15×2 + 1 leftover
+    assert two[-1]["close"] == bars[-1]["close"]
+    assert two[-1]["high"] == max(b["high"] for b in bars[-2:])
+    assert two[-1]["low"] == min(b["low"] for b in bars[-2:])
+    assert two[-1]["open"] == bars[-2]["open"]
+    # first bucket holds the single remainder session
+    assert two[0]["close"] == bars[0]["close"]
+    three = atr_svc._resample_sessions(bars, 3)
+    assert three[-1]["close"] == bars[-1]["close"]
+    assert len(three) == 11              # 10×3 + 1 leftover
+
+
+async def test_atr_report_includes_multiday_frames(db):
+    """daily.sub['2d']/['3d'] run the identical workbook formula on
+    n-session price buckets — same price history the bars endpoint
+    serves under its 2d/3d filter."""
+    await _seed(db, n=60)
+    rep = await atr_svc.atr_report(db, "TST")
+    bars = _bars(60)
+    for n, key in ((2, "2d"), (3, "3d")):
+        sub = rep["daily"]["sub"][key]
+        rb = atr_svc._resample_sessions(bars, n)
+        pct = _wb_pct(rb, 6)
+        assert sub["atr_pct"] == pytest.approx(pct)
+        assert sub["atr_abs"] == pytest.approx(
+            rb[-1]["close"] * pct)
+        assert sub["unit_sessions"] == n
+
+
 async def test_resample_weekly_groups(db):
     bars = _bars(20)
     weekly = atr_svc._resample(bars, "1w")
@@ -142,6 +177,44 @@ async def test_pyramid_preview_insufficient_bars(db):
         await pyramid_preview(PyramidPreviewIn(
             symbol="TST", equity=1e6, cash=1e6), db)
     assert e.value.status_code == 422
+
+
+async def test_preview_leverage_override_scales_sleeve(db):
+    """The calculator's leverage slider must drive the sleeve gross
+    cap — equity input already feeds sleeve_equity; leverage feeds
+    target_leverage. Caps recompute on the hypothetical pair."""
+    from app.models.risk import LimitConfig
+    from app.routers.risk import PyramidPreviewIn, pyramid_preview
+    await _seed(db)
+    db.add(LimitConfig(version=1, payload={
+        "sleeve_enabled": True, "min_sectors": 0}))
+    await db.flush()
+
+    rep = await pyramid_preview(PyramidPreviewIn(
+        symbol="TST", equity=1_000_000, leverage=2.0), db)
+    assert rep["sleeve"]["config"]["target_leverage"] == 2.0
+    st = rep["sleeve"]["state"]
+    assert st["sleeve_equity"] == pytest.approx(300_000)
+    # 2× cap = $600k — under the maint-margin safe bound at the
+    # default 16%, so it stands as the effective cap
+    assert st["effective_gross_cap"] == pytest.approx(600_000)
+
+
+async def test_preview_multiday_timeframe_sheet(db):
+    """timeframe='2d' must make the 2-session-bucket ATR the primary
+    sheet — same workbook formula, n-session price buckets."""
+    from app.routers.risk import PyramidPreviewIn, pyramid_preview
+    await _seed(db, n=60)
+    rep = await pyramid_preview(PyramidPreviewIn(
+        symbol="TST", equity=1_000_000, cash=500_000,
+        timeframe="2d"), db)
+    assert rep["primary_timeframe"] == "2d"
+    sh2 = rep["sheets"]["2d"]
+    rb = atr_svc._resample_sessions(_bars(60), 2)
+    atr2 = rb[-1]["close"] * _wb_pct(rb, 6)
+    assert sh2["atr_abs"] == pytest.approx(atr2)
+    assert sh2["stop"] == pytest.approx(159 - 1.5 * atr2)
+    assert sh2["target"] == pytest.approx(159 + 3 * atr2)
 
 
 # ── candidate seeding ──

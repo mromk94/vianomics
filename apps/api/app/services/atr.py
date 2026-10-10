@@ -57,6 +57,27 @@ def _resample(bars: list[dict], period: str) -> list[dict]:
     return out
 
 
+def _resample_sessions(bars: list[dict], n: int) -> list[dict]:
+    """Daily bars → n-SESSION buckets (2-day/3-day frames). Buckets
+    count trading sessions, not calendar days, and are anchored to
+    the newest bar — every bucket is exactly n consecutive sessions
+    except possibly the oldest, which keeps the history remainder.
+    Same convention as technical.aggregate's 2d/3d path."""
+    out = []
+    i = len(bars)
+    while i > 0:
+        chunk = bars[max(0, i - n):i]
+        i -= n
+        out.append({
+            "time": chunk[0]["time"], "open": chunk[0]["open"],
+            "high": max(x["high"] for x in chunk),
+            "low": min(x["low"] for x in chunk),
+            "close": chunk[-1]["close"],
+        })
+    out.reverse()
+    return out
+
+
 def _frame_report(bars: list[dict], window: int) -> dict:
     """Workbook column for one timeframe: per-bar range%
     = mean(H−L of 2 bars) ÷ prev OPEN; 'current ATR%' = the mean of
@@ -120,8 +141,21 @@ async def atr_report(db: AsyncSession, symbol: str,
         }
 
     daily = _frame_report(bars, d)
+    two_d = _frame_report(_resample_sessions(bars, 2), d)
+    three_d = _frame_report(_resample_sessions(bars, 3), d)
     weekly = _frame_report(_resample(bars, "1w"), w)
     monthly = _frame_report(_resample(bars, "1mo"), m)
+
+    def _sub(fr: dict, n: int) -> dict:
+        # horizon windows in bucket units — scaled so they span the
+        # same session horizons as the daily frame (6d/24d/72d…)
+        return {
+            "atr_abs": fr["atr_abs"], "atr_pct": fr["atr_pct"],
+            "period": d, "bars": fr["bars"], "unit_sessions": n,
+            "windows": _window_avgs(
+                fr["atr_pct_series"],
+                tuple(max(1, x // n) for x in DAILY_WINDOWS)),
+        }
 
     return {
         "symbol": inst.symbol, "name": inst.name,
@@ -133,6 +167,10 @@ async def atr_report(db: AsyncSession, symbol: str,
             "period": d,
             "windows": _window_avgs(daily["atr_pct_series"], DAILY_WINDOWS),
             "bars": daily["bars"],
+            # multi-day frames from the same price history the bar
+            # endpoint serves — 2-session and 3-session buckets run
+            # through the identical workbook formula
+            "sub": {"2d": _sub(two_d, 2), "3d": _sub(three_d, 3)},
         },
         "weekly": {
             "atr_abs": weekly["atr_abs"],
