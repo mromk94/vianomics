@@ -264,7 +264,7 @@ function evidenceChips(c: Criterion): { k: string; v: string }[] {
     if (typeof v === "object") return JSON.stringify(v);
     const n = Number(v);
     if (!Number.isFinite(n)) return String(v);
-    if (/_pct$|growth$|^growth|^delta_pp|^roe$|^roic$|margin|change|ratio$|^spread|r63|discount/.test(k))
+    if (/_pct$|growth$|^growth|cagr|^delta_pp|^roe$|^roic$|margin|change|ratio$|^spread|r63|discount/.test(k))
       return k === "ratio" || k === "current_ratio" ? `${n.toFixed(2)}×` : pct(n);
     if (/price|^iv$|^close$|^sma$|^fcf_ps$|bvps/.test(k)) return px(n);
     if (/rev|ni$|ocf|equity|debt|cash|fcf$|adv30|interest|prev|curr|shares|market_value|capex|dps/.test(k))

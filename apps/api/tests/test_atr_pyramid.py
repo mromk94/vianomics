@@ -128,11 +128,14 @@ async def test_atr_report_includes_multiday_frames(db):
     for n, key in ((2, "2d"), (3, "3d")):
         sub = rep["daily"]["sub"][key]
         rb = atr_svc._resample_sessions(bars, n)
-        pct = _wb_pct(rb, 6)
+        # window parity: the daily frame's 6-session 'current ATR'
+        # maps to 6/n buckets on an n-session frame, not 6 buckets
+        pct = _wb_pct(rb, max(2, 6 // n))
         assert sub["atr_pct"] == pytest.approx(pct)
         assert sub["atr_abs"] == pytest.approx(
             rb[-1]["close"] * pct)
         assert sub["unit_sessions"] == n
+        assert sub["period"] == max(2, 6 // n)
 
 
 async def test_resample_weekly_groups(db):
@@ -211,7 +214,7 @@ async def test_preview_multiday_timeframe_sheet(db):
     assert rep["primary_timeframe"] == "2d"
     sh2 = rep["sheets"]["2d"]
     rb = atr_svc._resample_sessions(_bars(60), 2)
-    atr2 = rb[-1]["close"] * _wb_pct(rb, 6)
+    atr2 = rb[-1]["close"] * _wb_pct(rb, 3)   # 6 sessions = 3 buckets
     assert sh2["atr_abs"] == pytest.approx(atr2)
     assert sh2["stop"] == pytest.approx(159 - 1.5 * atr2)
     assert sh2["target"] == pytest.approx(159 + 3 * atr2)

@@ -142,6 +142,44 @@ async def qualification_gate(
          "ifrs-full:BasicEarningsLossPerShare",
          "yahoo:DilutedEPS", "yahoo:BasicEPS"], as_of, years=12)
 
+    # StockRow depth-extension — when local XBRL covers fewer than ~8
+    # fiscal years, merge the provider's ~10y annual series UNDER the
+    # local one (local wins each period_end; StockRow only fills ends
+    # the local series lacks — same extend-don't-compete rule as
+    # fy_series alias merge). Unconfigured/absent → local-only.
+    _sr_used: dict[str, int] = {}
+    try:
+        from app.providers.stockrow import StockRowAdapter
+        _a = StockRowAdapter()
+        _sr = _a if _a.api_key else None
+    except Exception:
+        _sr = None
+
+    async def _ext(series: dict, slug: str, min_years: float = 8.0):
+        if _sr is None:
+            return
+        items = sorted(series.items())
+        span = ((items[-1][0] - items[0][0]).days / 365.25
+                if len(items) >= 2 else 0.0)
+        if span >= min_years:
+            return
+        try:
+            ext = await _sr.annual_series(inst.symbol, slug)
+        except Exception:
+            return
+        added = 0
+        for pe, v in ext.items():
+            if pe not in series:
+                series[pe] = v
+                added += 1
+        if added:
+            _sr_used[slug] = _sr_used.get(slug, 0) + added
+
+    await _ext(rev, "revenue"); await _ext(ni, "netinc")
+    await _ext(ocf, "opcf"); await _ext(ebit, "ebit")
+    await _ext(eq_s, "equityt"); await _ext(sh_s, "shsdila")
+    await _ext(eps_filed, "epsd")
+
     split = _split_distorted(sh_s)
     eps_s = eps_filed or _per_share(ni, sh_s)
     # FCF needs BOTH ocf and capex — a missing capex must not read as
@@ -362,6 +400,12 @@ async def qualification_gate(
         "five_numbers": five,
         "initial_screen": screen,
         "valuation": valuation,
+        # provenance — which series StockRow extended past the local
+        # XBRL history (metric slug → points added). Absent → local
+        # filings only.
+        "data_sources": ({"xbrl": "filed fundamentals",
+                          "stockrow": _sr_used}
+                         if _sr_used else {"xbrl": "filed fundamentals"}),
         "note": ("Four M's are machine proxies over filed fundamentals "
                  "— a human qualitative review may override. This gate "
                  "never creates an order."),

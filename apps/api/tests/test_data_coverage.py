@@ -38,7 +38,9 @@ def _obs(inst_id, concept, value, period_end, currency="USD",
 def _tsm_like(db, inst, currency="TWD"):
     """IFRS-filer fixture — the concepts TSM actually publishes to the
     SEC under the ifrs-full taxonomy (verified against companyfacts)."""
-    fy = [(2023, 2.0e12), (2024, 2.3e12), (2025, 2.9e12)]
+    # 11 FY years (2015→2025, ~11%/yr revenue) — the 10Y CAGR growth
+    # criteria need a full decade of history to pass, not a stub
+    fy = [(2015 + i, 1.0e12 * 1.112 ** i) for i in range(11)]
     for i, (y, v) in enumerate(fy):
         pe = date(y, 12, 31)
         rows = [
@@ -84,9 +86,10 @@ async def test_ifrs_filer_screens_real_not_no_data(db):
 
     res = await screen_instrument(db, inst, POLICY_DEFAULTS, None, ASOF)
     keys = {c["key"]: c for c in res["criteria"]}
-    # growth criteria now compute from ifrs-full observations
+    # growth criteria now compute 10Y CAGR from ifrs-full observations
     assert keys["revenue_growth"]["status"] == "pass"
-    assert keys["revenue_growth"]["evidence"]["growth"] > 0.1
+    assert keys["revenue_growth"]["evidence"]["cagr"] > 0.1
+    assert keys["revenue_growth"]["evidence"]["years"] >= 9
     assert keys["net_income_growth"]["status"] == "pass"
     assert keys["ocf_growth"]["status"] == "pass"
     assert keys["roe"]["status"] == "pass"           # NI/equity ~29%
@@ -184,11 +187,14 @@ async def test_yahoo_fundamentals_ingest(db):
     await db.commit()
     assert run2.records_ok == 0
 
-    # the screen reads the yahoo concepts — revenue growth computable
+    # the screen reads the yahoo concepts — revenue growth computes on
+    # them. 2 FY points is a 1y span → 'review' (partial history), not
+    # a 10Y pass and never 'insufficient'
     res = await screen_instrument(
         db, inst, POLICY_DEFAULTS, None, ASOF)
     keys = {c["key"]: c for c in res["criteria"]}
-    assert keys["revenue_growth"]["status"] == "pass"
+    assert keys["revenue_growth"]["status"] == "review"
+    assert keys["revenue_growth"]["evidence"]["cagr"] > 0
 
 
 async def test_ensure_instrument_hydrates_uncovered_existing(db):

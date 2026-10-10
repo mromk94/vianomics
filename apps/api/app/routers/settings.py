@@ -52,6 +52,9 @@ KEY_SPECS = [
     ("IBKR Flex query id", "IBKR_FLEX_QUERY_ID",
      "Activity Flex Query including Open Positions + Cash Report",
      "IBKR read-only portfolio sync"),
+    ("StockRow API key", "STOCKROW_API_KEY",
+     "stockrow.com → API dashboard → sr_live_… key",
+     "10-year fundamentals + CAGR metrics — extends screener/research history"),
     ("MT4 push secret", "MT4_PUSH_SECRET",
      "any string — goes in the VAIIP_Push.mq4 EA input field",
      "MetaTrader 4 → platform portfolio sync"),
@@ -294,6 +297,7 @@ NOTIF_KEY_NAMES = {
     "TRADINGVIEW_WEBHOOK_SECRET",
     "MT4_PUSH_SECRET",
     "BAMBOO_CLIENT_ID", "BAMBOO_CLIENT_SECRET", "BAMBOO_BASE_URL",
+    "STOCKROW_API_KEY",
 }
 
 CHANNEL_SPECS = [

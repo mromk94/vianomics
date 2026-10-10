@@ -70,3 +70,43 @@ async def test_ibkr_refuses_until_configured():
 
     with pytest.raises(ProviderConfigError):
         IbkrAdapter()
+
+
+async def test_stockrow_unconfigured_without_key(monkeypatch):
+    from app.providers.stockrow import StockRowAdapter
+
+    monkeypatch.delenv("STOCKROW_API_KEY", raising=False)
+    adapter = StockRowAdapter()
+    assert adapter.capabilities()["configured"] is False
+    with pytest.raises(ProviderConfigError):
+        await adapter.metric_history("LULU", "revenue")
+
+
+async def test_stockrow_annual_series_parse(monkeypatch):
+    from app.providers.stockrow import StockRowAdapter
+
+    monkeypatch.delenv("STOCKROW_API_KEY", raising=False)
+    payload = {"data": [
+        {"period_end": "2025-01-31", "value": 1200},
+        {"period_end": "2024-01-31", "value": 1000},
+        {"period_end": "2023-01-31", "value": 800},
+    ]}
+    adapter = StockRowAdapter(api_key="k", client=mock_client(payload))
+    series = await adapter.annual_series("LULU", "revenue")
+    # oldest→newest date-keyed dict, ready for first→last CAGR
+    import datetime as _dt
+    assert series == {
+        _dt.date(2023, 1, 31): 800.0,
+        _dt.date(2024, 1, 31): 1000.0,
+        _dt.date(2025, 1, 31): 1200.0,
+    }
+
+
+async def test_stockrow_unknown_ticker_returns_empty(monkeypatch):
+    """404/no coverage → empty series, never a fabricated zero —
+    callers treat it as 'provider doesn't cover this name'."""
+    from app.providers.stockrow import StockRowAdapter
+
+    adapter = StockRowAdapter(api_key="k",
+                              client=mock_client({}, status=404))
+    assert await adapter.metric_history("ZZZZ", "revenue") == []

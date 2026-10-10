@@ -34,6 +34,19 @@ def growth(prev, curr) -> Decimal | None:
     return (c - p) / abs(p)
 
 
+def cagr(first, last, years: float) -> Decimal | None:
+    """Compound annual growth rate: (last/first)^(1/years) − 1.
+    Undefined for non-positive bases (loss→profit transitions,
+    negative equity) or spans under ~1 year — callers mark those
+    insufficient rather than passing them."""
+    f, l = _d(first), _d(last)
+    # both ends must be positive — a negative base OR a negative/
+    # zero ending makes the fractional power undefined (nan)
+    if f is None or l is None or f <= 0 or l <= 0 or years < 0.9:
+        return None
+    return Decimal(str(float(l / f) ** (1.0 / years) - 1.0))
+
+
 def margin(numerator, denominator) -> Decimal | None:
     """e.g. operating margin = operating_income / revenue."""
     n, d = _d(numerator), _d(denominator)

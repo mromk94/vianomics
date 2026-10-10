@@ -91,17 +91,22 @@ async def test_full_growth_company_scores_high(db):
     inst = Instrument(symbol="GROW", name="GrowCo")
     db.add(inst)
     await db.flush()
+    # 11 FY points (2015→2025, a full 10y span) compounding ~10-15%
+    # annually — the growth criteria are 10Y CAGR ≥ 10% per the spec,
+    # so a pass must come from a real decade of history
+    def _grow(base, g, n=11):
+        return [(2015 + i, round(base * g ** i, 1)) for i in range(n)]
     _add_obs(
         db, inst,
         {
-            "rev": [(2023, 800), (2024, 1000), (2025, 1200)],
-            "ni": [(2023, 80), (2024, 100), (2025, 130)],
-            "ocf": [(2023, 110), (2024, 140), (2025, 170)],
-            "ebit": [(2023, 120), (2024, 170), (2025, 220)],
+            "rev": _grow(460, 1.101),        # ~10.1% CAGR → 1205
+            "ni": _grow(33, 1.147),          # ~14.7% CAGR → 130
+            "ocf": _grow(65, 1.101),         # ~10.1% CAGR → 170
+            "ebit": _grow(84, 1.10),         # ~10% CAGR → 218
             "shares": [(2023, 105), (2024, 102), (2025, 100)],
             "capex": [(2023, 30), (2024, 30), (2025, 30)],
             "dps": [(2023, 1.0), (2024, 1.1), (2025, 1.25)],
-            "ar": [(2024, 100), (2025, 105)],
+            "ar": [(2023, 95), (2024, 100), (2025, 105)],
             "tax": [(2025, 20)], "pretax": [(2025, 120)],
             "da": [(2025, 40)],
         },
@@ -116,6 +121,10 @@ async def test_full_growth_company_scores_high(db):
     keys = {c["key"]: c for c in res["criteria"]}
     assert res["score"] >= 15
     assert keys["revenue_growth"]["status"] == "pass"
+    # evidence carries the full CAGR trail, not a one-year delta
+    ev = keys["revenue_growth"]["evidence"]
+    assert ev["years"] >= 9 and ev["source"] == "xbrl"
+    assert ev["cagr"] == pytest.approx(0.10, abs=0.005)
     assert keys["cash_conversion"]["status"] == "pass"  # 170/130 = 1.31
     assert keys["share_count"]["status"] == "pass"      # declining
     assert keys["debt_ebitda"]["status"] == "pass"      # 200/(220+40)=0.77
@@ -126,6 +135,55 @@ async def test_full_growth_company_scores_high(db):
     if keys["moat"]["status"] == "review":
         assert res["verdict"] == "review"  # ≥15 but unconfirmed
         assert res["qualified"] is False
+
+
+async def test_short_history_growth_is_review_not_pass(db):
+    """A 2y series is not a 10Y CAGR — the spec's growth bar can't be
+    met on a stub of history. Status 'review' flags it for a human;
+    it must never read as a pass or a fail."""
+    inst = Instrument(symbol="YOUNG", name="YoungCo")
+    db.add(inst)
+    await db.flush()
+    _add_obs(
+        db, inst,
+        {"rev": [(2024, 100), (2025, 160)],   # +60% YoY — still review
+         "ni": [(2024, 10), (2025, 18)],
+         "ocf": [(2024, 12), (2025, 20)]},
+    )
+    await db.commit()
+    res = await screen_instrument(db, inst, POLICY_DEFAULTS, None, ASOF)
+    for k in ("revenue_growth", "net_income_growth", "ocf_growth"):
+        c = _crit(res, k)
+        assert c["status"] == "review"
+        assert c["review_required"] is True
+        assert c["score"] == 0.5
+        assert c["evidence"]["years"] < 5
+
+
+async def test_stockrow_extends_short_history(db, monkeypatch):
+    """Local XBRL covering <5y → StockRow's ~10y annual series fills
+    the span; the criterion passes on the extended history and the
+    evidence attributes the source."""
+    from datetime import date as _date
+    inst = Instrument(symbol="SREXT", name="SrExt")
+    db.add(inst)
+    await db.flush()
+    _add_obs(db, inst, {"rev": [(2024, 900), (2025, 1100)]})
+    await db.commit()
+
+    async def fake_series(self, ticker, slug, limit=12):
+        assert slug == "revenue"
+        return {_date(2015 + i, 1, 31): 400.0 * 1.11 ** i
+                for i in range(11)}
+    monkeypatch.setattr(
+        "app.providers.stockrow.StockRowAdapter.annual_series",
+        fake_series)
+    res = await screen_instrument(db, inst, POLICY_DEFAULTS, None, ASOF)
+    c = _crit(res, "revenue_growth")
+    assert c["status"] == "pass"
+    assert c["evidence"]["source"] == "stockrow"
+    assert c["evidence"]["years"] >= 9
+    assert c["evidence"]["cagr"] == pytest.approx(0.11, abs=0.005)
 
 
 async def test_missing_data_never_passes(db):

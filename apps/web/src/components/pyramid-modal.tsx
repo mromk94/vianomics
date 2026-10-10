@@ -83,7 +83,9 @@ function AtrTable({ title, unit, data, labels, sub }:
               <span className="uppercase text-faint">{s.k} ATR </span>
               {pct(s.data?.atr_pct)}
               <span className="ml-1 text-[9px] text-faint">
-                ${fmtNum(s.data?.atr_abs, 2)} · {s.data?.bars ?? 0} bars
+                ${fmtNum(s.data?.atr_abs, 2)}
+                {s.data?.window_sessions != null &&
+                  ` · ${s.data.window_sessions}s win`}
               </span>
             </div>
           ))}
@@ -636,8 +638,11 @@ export function PyramidModal({ open, onClose, initial, onCreated }:
           </div>
 
           {/* ── right — price history beside the ATR card for
-              side-by-side observation ── */}
-          <PriceHistory sym={sym} />
+              side-by-side observation; fixed height so the table
+              scrolls inside the card instead of stretching the modal ── */}
+          <div className="h-[420px] min-h-0 self-start xl:h-[560px]">
+            <PriceHistory sym={sym} />
+          </div>
         </div>
       )}
 

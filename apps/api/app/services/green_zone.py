@@ -126,7 +126,8 @@ C_CL = ["us-gaap:LiabilitiesCurrent",
         "ifrs-full:CurrentLiabilities", "yahoo:CurrentLiabilities"]
 
 POLICY_DEFAULTS: dict[str, Any] = {
-    "growth_min": 0.0,               # any positive YoY growth passes
+    "growth_min": 0.10,              # 10Y CAGR ≥ 10% (Software Modifications §A)
+    "cagr_span_min_years": 5,        # shorter span → review, never silent pass
     "margin_expansion_min_pp": 0.0,  # Δ margin ≥ 0 passes
     "roe_min": 0.15,
     "roic_min": 0.12,
@@ -180,10 +181,42 @@ async def _reporting_currency(db: AsyncSession, inst_id: str,
 
 
 async def _series_all(db, inst_id, as_of, concepts) -> dict:
+    # 11y window — the screen's growth criteria are 10Y CAGR; the
+    # extra year covers fiscal-year drift in the earliest point.
     return {
-        tag: await fy_series(db, inst_id, con, as_of)
+        tag: await fy_series(db, inst_id, con, as_of, years=11)
         for tag, con in concepts.items()
     }
+
+
+# Green Zone series tag → StockRow annual metric slug. Used to extend
+# local XBRL history to a full 10-year span for the CAGR criteria —
+# StockRow covers ~10y of annual fundamentals per the API docs.
+STOCKROW_SLUGS = {
+    "rev": "revenue", "ni": "netinc", "ocf": "opcf",
+    "ebit": "ebit", "ar": "receivables", "shares": "shsdila",
+    "equity": "equityt",
+}
+
+
+async def _stockrow_series(inst: Instrument, tag: str,
+                           cache: dict) -> dict:
+    """StockRow fallback for a local series that's too short for the
+    10Y CAGR read. Returns {period_end: value} or {} — unconfigured
+    key, no coverage, and transport errors all degrade to empty so
+    the screen keeps working on local data alone."""
+    slug = STOCKROW_SLUGS.get(tag)
+    if not slug:
+        return {}
+    if tag in cache:
+        return cache[tag]
+    try:
+        from app.providers.stockrow import StockRowAdapter
+        cache[tag] = await StockRowAdapter().annual_series(
+            inst.symbol, slug)
+    except Exception:
+        cache[tag] = {}
+    return cache[tag]
 
 
 # Asset classes with no issuer fundamentals — their thesis comes from
@@ -310,27 +343,54 @@ async def screen_instrument(
     fin = (sector_name or "") in FINANCIAL_SECTORS
     crits: list[CritResult] = []
 
-    def growth_crit(key, name, series_key, formula):
-        prev, cur = last_two(S[series_key])
-        if prev is None or cur is None:
+    _sr_cache: dict = {}
+
+    async def growth_crit(key, name, series_key):
+        """Growth criteria are 10Y CAGR per the spec — first→last
+        annual point over the available span, not adjacent-year YoY.
+        Local XBRL series are preferred; when the local span is too
+        short the StockRow ~10y series extends it. A span under
+        cagr_span_min_years is flagged 'review' (partial history),
+        never a silent pass; a non-positive base is insufficient."""
+        gmin = float(policy.get("growth_min", 0.10))
+        formula = f"10Y CAGR ≥ {gmin:.0%}"
+        series = dict(S[series_key])
+        source = "xbrl"
+        items = sorted(series.items())
+        span = ((items[-1][0] - items[0][0]).days / 365.25
+                if len(items) >= 2 else 0.0)
+        if span < float(policy.get("cagr_span_min_years", 5)):
+            ext = await _stockrow_series(inst, series_key, _sr_cache)
+            ext_items = sorted(ext.items())
+            ext_span = ((ext_items[-1][0] - ext_items[0][0]).days
+                        / 365.25 if len(ext_items) >= 2 else 0.0)
+            if ext_span > span:
+                series, items, span, source = ext, ext_items, ext_span, "stockrow"
+        if len(items) < 2:
             return _insuf(key, name, formula, [f"{series_key} history"])
-        g = fm.growth(prev, cur)
+        (d0, v0), (d1, v1) = items[0], items[-1]
+        g = fm.cagr(v0, v1, span)
         if g is None:
             return CritResult(key, name, "insufficient_data", 0.0, formula,
-                              {"prev": prev, "curr": cur,
-                               "note": "base ≤ 0 — growth undefined"})
-        ok = g >= Decimal(str(policy["growth_min"]))
+                              {"first": v0, "last": v1,
+                               "years": round(span, 1), "source": source,
+                               "note": "base ≤ 0 — CAGR undefined"})
+        ev = {"first_end": d0.isoformat(), "last_end": d1.isoformat(),
+              "first": v0, "last": v1, "years": round(span, 1),
+              "cagr": float(g), "source": source}
+        ok = g >= Decimal(str(gmin))
+        if span < float(policy.get("cagr_span_min_years", 5)):
+            ev["note"] = ("partial history — CAGR over "
+                          f"{round(span, 1)}y, spec wants ~10y")
+            return CritResult(key, name, "review", 0.5, formula, ev,
+                              review_required=True)
         return CritResult(key, name, "pass" if ok else "fail",
-                          1.0 if ok else 0.0, formula,
-                          {"prev": prev, "curr": cur, "growth": float(g)})
+                          1.0 if ok else 0.0, formula, ev)
 
-    # 1-3: growth criteria
-    crits.append(growth_crit("revenue_growth", "Revenue growth", "rev",
-                             "(rev_t − rev_{t−1}) / rev_{t−1} > 0"))
-    crits.append(growth_crit("net_income_growth", "Net income growth", "ni",
-                             "(NI_t − NI_{t−1}) / |NI_{t−1}| > 0"))
-    crits.append(growth_crit("ocf_growth", "Operating cash flow growth", "ocf",
-                             "(OCF_t − OCF_{t−1}) / |OCF_{t−1}| > 0"))
+    # 1-3: growth criteria — 10Y CAGR ≥ 10% (rev, NI, OCF)
+    crits.append(await growth_crit("revenue_growth", "Revenue growth", "rev"))
+    crits.append(await growth_crit("net_income_growth", "Net income growth", "ni"))
+    crits.append(await growth_crit("ocf_growth", "Operating cash flow growth", "ocf"))
 
     # 4: margin expansion (operating margin Δ)
     prev_r, cur_r = last_two(S["rev"])
@@ -384,28 +444,61 @@ async def screen_instrument(
                                 "NOPAT / invested capital ≥ 12%",
                                 {"roic": float(roic_v)}))
 
-    # 7: revenue vs receivables — revenue growth ≥ AR growth
-    prev_ar, cur_ar = last_two(S["ar"])
-    if prev_r is None or cur_r is None or prev_ar is None or cur_ar is None:
+    # 7: revenue vs receivables — revenue growing ≥ AR growth.
+    # Same-span CAGR comparison where both series have ≥2y; YoY
+    # fallback when AR history is short — AR growth must never
+    # outrun revenue without the screen noticing.
+    ar_items = sorted(S["ar"].items())
+    if len(ar_items) < 2:
+        ar_ext = await _stockrow_series(inst, "ar", _sr_cache)
+        if len(ar_ext) >= 2:
+            ar_items = sorted(ar_ext.items())
+    if prev_r is None or cur_r is None or len(ar_items) < 2:
         crits.append(_insuf("revenue_receivables", "Revenue vs receivables",
                             "rev_growth ≥ AR_growth", ["rev or AR history"]))
     else:
-        rg, ag = fm.growth(prev_r, cur_r), fm.growth(prev_ar, cur_ar)
+        # compare CAGRs over each series' own span — both must span
+        # ≥1y; non-positive bases degrade to the last-two YoY read
+        rev_items = sorted(S["rev"].items())
+        (r0, rv0), (r1, rv1) = rev_items[0], rev_items[-1]
+        (a0, av0), (a1, av1) = ar_items[0], ar_items[-1]
+        r_years = (r1 - r0).days / 365.25
+        a_years = (a1 - a0).days / 365.25
+        rg = fm.cagr(rv0, rv1, r_years)
+        ag = fm.cagr(av0, av1, a_years)
         if rg is None or ag is None:
-            crits.append(CritResult("revenue_receivables",
-                                    "Revenue vs receivables",
-                                    "insufficient_data", 0.0,
-                                    "rev_growth ≥ AR_growth",
-                                    {"note": "undefined growth base"}))
+            # fall back to adjacent-year comparison when a CAGR base
+            # is non-positive (loss-year revenue is rare; AR ≥ 0)
+            rg2 = fm.growth(rv0, rv1)
+            ag2 = fm.growth(ar_items[-2][1], av1)
+            if rg2 is None or ag2 is None:
+                crits.append(CritResult("revenue_receivables",
+                                        "Revenue vs receivables",
+                                        "insufficient_data", 0.0,
+                                        "rev_growth ≥ AR_growth",
+                                        {"note": "undefined growth base"}))
+            else:
+                ok = rg2 >= ag2
+                crits.append(CritResult("revenue_receivables",
+                                        "Revenue vs receivables",
+                                        "pass" if ok else "fail",
+                                        1.0 if ok else 0.0,
+                                        "rev_growth ≥ AR_growth",
+                                        {"rev_growth": float(rg2),
+                                         "ar_growth": float(ag2),
+                                         "basis": "yoy"}))
         else:
             ok = rg >= ag
             crits.append(CritResult("revenue_receivables",
                                     "Revenue vs receivables",
                                     "pass" if ok else "fail",
                                     1.0 if ok else 0.0,
-                                    "rev_growth ≥ AR_growth",
-                                    {"rev_growth": float(rg),
-                                     "ar_growth": float(ag)}))
+                                    "rev_cagr ≥ AR_cagr",
+                                    {"rev_cagr": float(rg),
+                                     "ar_cagr": float(ag),
+                                     "rev_years": round(r_years, 1),
+                                     "ar_years": round(a_years, 1),
+                                     "basis": "cagr"}))
 
     # 8: cash conversion OCF / NI ≥ 0.9
     _, ocf_l = last_two(S["ocf"])

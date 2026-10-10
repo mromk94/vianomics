@@ -41,6 +41,24 @@ async def _active_policy(db: AsyncSession) -> ScreeningPolicy:
         )
         db.add(p)
         await db.flush()
+    elif ("cagr_span_min_years" not in (p.params or {})
+          or float((p.params or {}).get("growth_min", 0)) <
+          float(gz.POLICY_DEFAULTS["growth_min"])):
+        # spec upgrade: the Software Modifications doc mandates 10Y
+        # CAGR ≥ 10% for growth criteria — a policy seeded under the
+        # old YoY defaults gets a NEW VERSION, not a silent edit, so
+        # prior runs stay replayable under their recorded params
+        upgraded = {**gz.POLICY_DEFAULTS, **(p.params or {}),
+                    "growth_min": gz.POLICY_DEFAULTS["growth_min"],
+                    "cagr_span_min_years":
+                        gz.POLICY_DEFAULTS["cagr_span_min_years"]}
+        p.is_active = False
+        p = ScreeningPolicy(
+            version=p.version + 1, is_active=True,
+            change_note="spec upgrade: growth criteria → 10Y CAGR ≥10%",
+            params=upgraded)
+        db.add(p)
+        await db.flush()
     return p
 
 

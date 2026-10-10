@@ -141,8 +141,12 @@ async def atr_report(db: AsyncSession, symbol: str,
         }
 
     daily = _frame_report(bars, d)
-    two_d = _frame_report(_resample_sessions(bars, 2), d)
-    three_d = _frame_report(_resample_sessions(bars, 3), d)
+    # n-session frames keep the SAME session horizon as the daily
+    # window: the workbook's '6' means 6 trading sessions, so a 2d
+    # frame averages 3 buckets, a 3d frame 2 — not 6 buckets (12/18
+    # sessions), which silently doubled-tripled the lookback.
+    two_d = _frame_report(_resample_sessions(bars, 2), max(2, d // 2))
+    three_d = _frame_report(_resample_sessions(bars, 3), max(2, d // 3))
     weekly = _frame_report(_resample(bars, "1w"), w)
     monthly = _frame_report(_resample(bars, "1mo"), m)
 
@@ -151,7 +155,9 @@ async def atr_report(db: AsyncSession, symbol: str,
         # same session horizons as the daily frame (6d/24d/72d…)
         return {
             "atr_abs": fr["atr_abs"], "atr_pct": fr["atr_pct"],
-            "period": d, "bars": fr["bars"], "unit_sessions": n,
+            "period": max(2, d // n), "bars": fr["bars"],
+            "unit_sessions": n,
+            "window_sessions": max(2, d // n) * n,
             "windows": _window_avgs(
                 fr["atr_pct_series"],
                 tuple(max(1, x // n) for x in DAILY_WINDOWS)),
